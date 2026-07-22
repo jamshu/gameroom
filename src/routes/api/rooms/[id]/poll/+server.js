@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import { adminExecute } from '$lib/server/odoo.js';
 import { EVENT, MEMBER, requireMember, parseState, publicRoom, publicMembers, jsonError } from '$lib/server/room.js';
-import { thiefView } from '$lib/server/gamelogic.js';
+import { stateView } from '$lib/server/gamelogic.js';
 
 export const prerender = false;
 
@@ -21,24 +21,31 @@ export async function GET({ params, url, cookies }) {
 		const since = Number(url.searchParams.get('since')) || 0;
 		const gv = Number(url.searchParams.get('gv')) || 0;
 
-		// presence heartbeat — write at most every ~6s, not every poll
+		// presence heartbeat — write at most every ~6s, not every poll. It needs
+		// last_seen from the member read above, so it can't join that wave, but it
+		// is independent of the events query and rides along with it.
 		const last = member.x_studio_last_seen
 			? new Date(member.x_studio_last_seen.replace(' ', 'T') + 'Z').getTime()
 			: 0;
-		if (Date.now() - last > 6000) {
-			await adminExecute(MEMBER, 'write', [[member.id], { x_studio_last_seen: odooNow() }]);
-			member.x_studio_last_seen = odooNow();
-		}
+		const needHeartbeat = Date.now() - last > 6000;
 
 		// events: public ones + those privately targeted at me (WebRTC signals)
-		const events = await adminExecute(EVENT, 'search_read', [
-			[
-				['x_studio_room_id', '=', Number(params.id)],
-				['id', '>', since],
-				'|', ['x_studio_target_uid', '=', false], ['x_studio_target_uid', '=', uid]
-			],
-			['x_studio_type', 'x_studio_payload', 'x_studio_sender_uid']
-		], { order: 'id asc', limit: 200 });
+		const [events] = await Promise.all([
+			adminExecute(EVENT, 'search_read', [
+				[
+					['x_studio_room_id', '=', Number(params.id)],
+					['id', '>', since],
+					'|', ['x_studio_target_uid', '=', false], ['x_studio_target_uid', '=', uid]
+				],
+				['x_studio_type', 'x_studio_payload', 'x_studio_sender_uid']
+			], { order: 'id asc', limit: 200 }),
+			// awaited, never fire-and-forget: Amplify freezes the container once the
+			// response buffers, and a dropped heartbeat feeds sweepAbandonedRooms
+			needHeartbeat
+				? adminExecute(MEMBER, 'write', [[member.id], { x_studio_last_seen: odooNow() }])
+				: Promise.resolve()
+		]);
+		if (needHeartbeat) member.x_studio_last_seen = odooNow();
 
 		const out = {
 			ok: true,
@@ -54,13 +61,7 @@ export async function GET({ params, url, cookies }) {
 		};
 
 		const state = parseState(room);
-		if (state && state.v > gv) {
-			out.state = {
-				v: state.v,
-				voice: state.voice || [],
-				game: viewOf(state.game, uid)
-			};
-		}
+		if (state && state.v > gv) out.state = stateView(state, uid);
 		return json(out);
 	} catch (e) {
 		const { body, status } = jsonError(e);
@@ -74,11 +75,4 @@ function safeParse(s) {
 	} catch {
 		return {};
 	}
-}
-
-/** Per-session game view — thief-finder is filtered, others have no secrets. */
-function viewOf(game, uid) {
-	if (!game) return null;
-	if (game.type === 'thief_finder') return thiefView(game, uid);
-	return game;
 }

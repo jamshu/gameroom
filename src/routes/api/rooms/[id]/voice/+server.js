@@ -1,5 +1,6 @@
 import { json } from '@sveltejs/kit';
 import { requireMember, parseState, writeState, appendEvent, jsonError, httpError } from '$lib/server/room.js';
+import { stateView } from '$lib/server/gamelogic.js';
 
 export const prerender = false;
 
@@ -25,7 +26,7 @@ export async function POST({ params, request, cookies }) {
 
 		await writeState(params.id, state);
 		await appendEvent(params.id, 'system', { kind: `voice-${action}`, uid }, uid);
-		return json({ ok: true, voice: state.voice });
+		return json({ ok: true, voice: state.voice, state: stateView(state, uid) });
 	} catch (e) {
 		const { body, status } = jsonError(e);
 		return json(body, { status });

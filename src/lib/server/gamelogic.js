@@ -148,6 +148,29 @@ export function thiefView(game, uid) {
 	};
 }
 
+/* ------------------------------ client views ------------------------------ */
+
+/**
+ * The ONLY shape a game may take when it leaves the server. Thief-finder is
+ * filtered per-uid (its `secret` map must never be serialized); chess and
+ * carroms hold no secrets.
+ *
+ * Every caller — the poll and every write endpoint that echoes state back —
+ * must go through here. Returning `state.game` raw leaks the thief's identity
+ * to the whole room.
+ */
+export function gameView(game, uid) {
+	if (!game) return null;
+	if (game.type === 'thief_finder') return thiefView(game, uid);
+	return game;
+}
+
+/** The per-session `state` envelope shared by the poll and POST responses. */
+export function stateView(state, uid) {
+	if (!state) return null;
+	return { v: state.v, voice: state.voice || [], game: gameView(state.game, uid) };
+}
+
 /* -------------------------------- carroms --------------------------------- */
 
 // Board is normalized 0..1000, center (500,500). Piece radius 18, striker 24.

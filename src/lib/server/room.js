@@ -31,11 +31,17 @@ export async function getMembers(roomId) {
 	], { order: 'id asc' });
 }
 
-/** Auth + accepted membership. Returns { uid, room, member, members }. */
+/**
+ * Auth + accepted membership. Returns { uid, room, member, members }.
+ *
+ * The two reads are independent given `uid` (and `requireUser` does no I/O in
+ * the normal path), so they go out together — this is on the hot path of every
+ * poll. Kept as one `Promise.all` on purpose: if the room is gone, `getRoom`
+ * rejecting should win over the 403 an empty member list would produce.
+ */
 export async function requireMember(cookies, roomId) {
 	const { uid } = await requireUser(cookies);
-	const room = await getRoom(roomId);
-	const members = await getMembers(roomId);
+	const [room, members] = await Promise.all([getRoom(roomId), getMembers(roomId)]);
 	const member = members.find(
 		(m) => m.x_studio_user_id?.[0] === uid && m.x_studio_status === 'accepted'
 	);
@@ -58,9 +64,17 @@ export function parseState(room) {
 	}
 }
 
-export async function writeState(roomId, state) {
+/**
+ * Bump the state version and persist. `extraVals` folds other x_gameroom fields
+ * (e.g. status) into the SAME write — start/rematch used to write this record
+ * twice in a row.
+ */
+export async function writeState(roomId, state, extraVals = {}) {
 	state.v = (state.v || 0) + 1;
-	await adminExecute(ROOM, 'write', [[Number(roomId)], { x_studio_state: JSON.stringify(state) }]);
+	await adminExecute(ROOM, 'write', [
+		[Number(roomId)],
+		{ ...extraVals, x_studio_state: JSON.stringify(state) }
+	]);
 	return state;
 }
 
@@ -152,14 +166,21 @@ export async function sweepAbandonedRooms() {
 }
 
 /** Mark the room finished and persist per-user scores onto member rows. */
+/**
+ * Scores differ per member, so Odoo's multi-id `write` can't batch them — but
+ * they're independent rows and can at least go out together instead of one
+ * blocking round trip each.
+ */
 export async function finishRoom(roomId, members, scoresByUid = {}) {
-	for (const m of members) {
-		const uid = m.x_studio_user_id?.[0];
-		if (uid != null && scoresByUid[uid] != null) {
-			await adminExecute(MEMBER, 'write', [[m.id], { x_studio_score: scoresByUid[uid] }]);
-		}
-	}
-	await adminExecute(ROOM, 'write', [[Number(roomId)], { x_studio_status: 'finished' }]);
+	const scoreWrites = members
+		.filter((m) => m.x_studio_user_id?.[0] != null && scoresByUid[m.x_studio_user_id[0]] != null)
+		.map((m) =>
+			adminExecute(MEMBER, 'write', [[m.id], { x_studio_score: scoresByUid[m.x_studio_user_id[0]] }])
+		);
+	await Promise.all([
+		...scoreWrites,
+		adminExecute(ROOM, 'write', [[Number(roomId)], { x_studio_status: 'finished' }])
+	]);
 }
 
 export function jsonError(e) {

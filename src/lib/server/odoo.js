@@ -14,6 +14,49 @@ export function assertConfigured() {
 	}
 }
 
+/**
+ * Turn a non-2xx Odoo response into a typed, readable error.
+ *
+ * Odoo Online answers throttling and gateway failures with an HTML page, so
+ * calling res.json() on it used to surface a raw
+ * `Unexpected token '<', "<html><bod"...` — which says nothing about what went
+ * wrong. `transient` marks the cases where Odoo rejected the request at the
+ * HTTP layer, i.e. it never reached the ORM.
+ */
+async function transportError(res) {
+	const body = await res.text().catch(() => '');
+	const snippet = body
+		.replace(/<[^>]*>/g, ' ')
+		.replace(/\s+/g, ' ')
+		.trim()
+		.slice(0, 140);
+	const label =
+		res.status === 429
+			? 'Odoo is rate limiting the app (HTTP 429)'
+			: res.status >= 500
+				? `Odoo is unavailable (HTTP ${res.status})`
+				: `Odoo returned HTTP ${res.status}`;
+	const e = new Error(snippet ? `${label}: ${snippet}` : label);
+	e.httpStatus = res.status;
+	e.transient = res.status === 429 || res.status >= 500;
+	const ra = Number(res.headers.get('retry-after'));
+	e.retryAfterMs = Number.isFinite(ra) && ra > 0 ? Math.min(ra * 1000, 5000) : null;
+	return e;
+}
+
+/** Parse a JSON body, but report an HTML/garbage body as itself, not as a SyntaxError. */
+async function parseJson(res) {
+	const text = await res.text();
+	try {
+		return JSON.parse(text);
+	} catch {
+		const e = new Error(`Odoo returned a non-JSON response (HTTP ${res.status})`);
+		e.httpStatus = res.status;
+		e.transient = true;
+		throw e;
+	}
+}
+
 /** Low-level JSON-RPC POST. Returns { result, setCookie[] }. */
 async function rpc(path, params, cookie) {
 	const headers = { 'Content-Type': 'application/json' };
@@ -23,13 +66,14 @@ async function rpc(path, params, cookie) {
 		headers,
 		body: JSON.stringify({ jsonrpc: '2.0', method: 'call', params, id: Date.now() })
 	});
+	if (!res.ok) throw await transportError(res);
 	const setCookie =
 		typeof res.headers.getSetCookie === 'function'
 			? res.headers.getSetCookie()
 			: res.headers.get('set-cookie')
 				? [res.headers.get('set-cookie')]
 				: [];
-	const data = await res.json();
+	const data = await parseJson(res);
 	if (data.error) {
 		const err = data.error;
 		const e = new Error(err.data?.message || err.message || 'Odoo error');
@@ -66,7 +110,8 @@ async function service(serviceName, method, args) {
 			id: Date.now()
 		})
 	});
-	const data = await res.json();
+	if (!res.ok) throw await transportError(res);
+	const data = await parseJson(res);
 	if (data.error) throw new Error(data.error.data?.message || data.error.message || 'Odoo error');
 	return data.result;
 }
@@ -87,9 +132,41 @@ async function adminLogin() {
 	return _adminLoginPromise;
 }
 
+const IDEMPOTENT = new Set(['read', 'search', 'search_read', 'search_count', 'fields_get', 'name_get']);
+const MAX_RETRIES = 2; // up to 3 attempts
+
+/**
+ * Retry policy, which turns on whether Odoo actually *ran* the request.
+ *
+ * - `transient` (HTTP 429/5xx, or an HTML body): Odoo rejected it at the front
+ *   door and it never reached the ORM, so replaying is safe **even for writes**.
+ *   This is the case that matters — Odoo Online throttles under load, and it
+ *   used to fail a whole poll (or a chat send) with an opaque parse error.
+ * - Anything else (a network blip, an ORM-level error): the write may already
+ *   have applied, so only reads may be replayed. Retrying a `create` here would
+ *   double-post a chat message.
+ */
+function retryableAfter(e, method, attempt) {
+	if (attempt >= MAX_RETRIES) return null;
+	const odooNeverRanIt = e?.transient === true;
+	if (!odooNeverRanIt && !(e?.httpStatus == null && IDEMPOTENT.has(method))) return null;
+	// honour Retry-After when Odoo sends one; otherwise exponential + jitter
+	return e?.retryAfterMs ?? Math.round(250 * 2 ** attempt + Math.random() * 150);
+}
+
 export async function adminExecute(model, method, args = [], kwargs = {}) {
 	const uid = await adminLogin();
-	return service('object', 'execute_kw', [env.ODOO_DB, uid, env.ODOO_API_KEY, model, method, args, kwargs]);
+	for (let attempt = 0; ; attempt++) {
+		try {
+			return await service('object', 'execute_kw', [
+				env.ODOO_DB, uid, env.ODOO_API_KEY, model, method, args, kwargs
+			]);
+		} catch (e) {
+			const wait = retryableAfter(e, method, attempt);
+			if (wait == null) throw e;
+			await new Promise((r) => setTimeout(r, wait));
+		}
+	}
 }
 
 /**

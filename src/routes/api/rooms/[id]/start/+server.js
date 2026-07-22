@@ -1,7 +1,6 @@
 import { json } from '@sveltejs/kit';
-import { adminExecute } from '$lib/server/odoo.js';
-import { ROOM, requireHost, appendEvent, parseState, writeState, jsonError, httpError } from '$lib/server/room.js';
-import { initGame } from '$lib/server/gamelogic.js';
+import { requireHost, appendEvent, parseState, writeState, jsonError, httpError } from '$lib/server/room.js';
+import { initGame, stateView } from '$lib/server/gamelogic.js';
 
 export const prerender = false;
 
@@ -17,10 +16,9 @@ export async function POST({ params, cookies }) {
 
 		const state = parseState(room) || { v: 0, voice: [], game: null };
 		state.game = initGame(room.x_studio_game_type, playerUids, room);
-		await writeState(params.id, state);
-		await adminExecute(ROOM, 'write', [[Number(params.id)], { x_studio_status: 'playing' }]);
+		await writeState(params.id, state, { x_studio_status: 'playing' });
 		await appendEvent(params.id, 'system', { kind: 'game-started', players: playerUids }, uid);
-		return json({ ok: true });
+		return json({ ok: true, state: stateView(state, uid) });
 	} catch (e) {
 		const { body, status } = jsonError(e);
 		return json(body, { status });

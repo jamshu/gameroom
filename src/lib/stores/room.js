@@ -1,11 +1,28 @@
 // Room poll loop: one consolidated GET drives chat, presence, voice roster,
-// game state and WebRTC signaling. 2s when visible, 10s hidden; an immediate
-// extra poll fires after any of our own POSTs so the room feels snappy.
+// game state and WebRTC signaling.
+//
+// Cadence is three-tier. The remaining latency in the room is *discovery* — you
+// only learn about someone else's move on your next poll — so the tiers are
+// tuned around that. Note the idle tier deliberately needs 30s of total silence:
+// the changes you most want promptly tend to FOLLOW a lull (the police thinks,
+// then guesses), so backing off after a few quiet seconds would slow down
+// exactly the moments that matter.
 import { writable, get } from 'svelte/store';
 import { api } from '$lib/api.js';
 
-const POLL_MS = 2000;
+// Budget, not preference: Odoo Online rate-limits per IP at roughly 1 req/s, and
+// every poll costs 3 Odoo calls shared across the whole room. A 4-player room at
+// 2.5s already runs ~5 req/s, so these are the slowest values that still feel
+// like a game — pushing ACTIVE down to 800ms earned a hard HTTP 429.
+const ACTIVE_MS = 1500; // something changed just now — more probably will
+const BASE_MS = 2500; // normal play
+const IDLE_MS = 10000; // nothing at all for 30s — empty lobby, abandoned game
+const ACTIVE_WINDOW_MS = 5000;
+const IDLE_AFTER_MS = 30000;
 const FAST_MS = 1000; // while WebRTC signaling is in flight
+// Capped by presence, not by load: `online` is a 15s window (room.js) and the
+// heartbeat only writes when last_seen is >6s old, so anything past ~10s here
+// would render idle players permanently offline.
 const HIDDEN_MS = 10000;
 
 export function createRoomStore(roomId) {
@@ -27,6 +44,10 @@ export function createRoomStore(roomId) {
 	let inFlight = false;
 	let pendingImmediate = false; // an immediate poll was asked for mid-flight
 	let fast = false;
+	// A timestamp, never a boolean: a stuck "is active" flag is the classic
+	// never-turns-off bug, whereas elapsed time is self-healing by construction.
+	// Seeded to now so entering a room starts responsive.
+	let lastActivityAt = Date.now();
 	let tempSeq = 0;
 	let signalHandler = null; // webrtc manager subscribes here
 	let systemHandler = null;
@@ -36,6 +57,29 @@ export function createRoomStore(roomId) {
 	}
 	function onSystem(fn) {
 		systemHandler = fn;
+	}
+
+	/**
+	 * Apply a `state` envelope onto a store snapshot, newest-wins.
+	 *
+	 * Write endpoints echo the caller's state back so an action doesn't cost an
+	 * extra round trip — but a poll that STARTED before that POST can land after
+	 * it carrying older state. The version gate is what stops the view flicking
+	 * backwards; both paths must go through here.
+	 */
+	function mergeState(s, state) {
+		if (!state || state.v <= s.gv) return s;
+		return {
+			...s,
+			voice: state.voice,
+			game: state.game ? { ...state.game, v: state.v } : null,
+			gv: state.v
+		};
+	}
+
+	/** Merge a state envelope returned by a POST straight into the store. */
+	function applyState(state) {
+		if (state) store.update((s) => mergeState(s, state));
 	}
 
 	async function poll() {
@@ -51,6 +95,12 @@ export function createRoomStore(roomId) {
 			const gv = get(store).gv;
 			const d = await api(`/api/rooms/${roomId}/poll?since=${cursor}&gv=${gv}`);
 			cursor = d.cursor || cursor;
+			// Strictly: a real event row, or a state version that actually advanced.
+			// NEVER diff members/room — `online` flips purely with elapsed time, so
+			// that would pin every client at ACTIVE_MS forever and silently double
+			// the Odoo load. (The presence heartbeat writes no event row, and
+			// d.state only arrives when state.v > gv, so neither can self-re-arm.)
+			if ((d.events?.length ?? 0) > 0 || d.state) markActive();
 			store.update((s) => {
 				const chat = [...s.chat];
 				const events = [...s.events];
@@ -77,12 +127,7 @@ export function createRoomStore(roomId) {
 					events: events.slice(-50),
 					error: null
 				};
-				if (d.state) {
-					next.voice = d.state.voice;
-					next.game = d.state.game ? { ...d.state.game, v: d.state.v } : null;
-					next.gv = d.state.v;
-				}
-				return next;
+				return mergeState(next, d.state);
 			});
 		} catch (e) {
 			store.update((s) => ({ ...s, error: e.message }));
@@ -94,15 +139,36 @@ export function createRoomStore(roomId) {
 		}
 	}
 
+	/** Something genuinely changed — stay responsive for a while. */
+	function markActive() {
+		lastActivityAt = Date.now();
+	}
+
+	function cadence() {
+		if (document.hidden) return HIDDEN_MS;
+		if (fast) return FAST_MS; // must outrank ACTIVE — never slow WebRTC negotiation
+		const quietFor = Date.now() - lastActivityAt;
+		if (quietFor < ACTIVE_WINDOW_MS) return ACTIVE_MS;
+		if (quietFor < IDLE_AFTER_MS) return BASE_MS;
+		return IDLE_MS;
+	}
+
 	function schedule(ms) {
 		if (stopped) return;
 		clearTimeout(timer);
-		const base = ms ?? (document.hidden ? HIDDEN_MS : fast ? FAST_MS : POLL_MS);
-		timer = setTimeout(poll, base + Math.random() * 300);
+		// re-evaluated every cycle (schedule runs in poll's `finally`), so the tier
+		// decays on its own once things go quiet
+		const base = ms ?? cadence();
+		// jitter de-synchronises the steady state between clients; an explicit
+		// "poll now" should not pay ~150ms of it for nothing
+		timer = setTimeout(poll, base === 0 ? 0 : base + Math.random() * 300);
 	}
 
 	function onVisibility() {
-		if (!document.hidden) schedule(0);
+		if (!document.hidden) {
+			markActive(); // user is back and looking — be responsive for a bit
+			schedule(0);
+		}
 	}
 
 	function open() {
@@ -150,10 +216,21 @@ export function createRoomStore(roomId) {
 		store.update((s) => ({ ...s, chat: s.chat.filter((c) => c.id !== tempId) }));
 	}
 
-	/** POST to a room sub-route, then poll immediately for the echo. */
+	// `chat` inserts optimistically, so its echo poll would fetch a message we
+	// already have. `signal` keeps its echo on purpose: it's how the sender picks
+	// up the peer's reply, and voice negotiation is worth the extra request.
+	const NO_ECHO_POLL = new Set(['chat']);
+
+	/**
+	 * POST to a room sub-route. If the response carried our new state we apply it
+	 * directly and leave the poll timer alone — that saves a whole round trip on
+	 * the acting player's own move, which is the latency they notice most.
+	 */
 	async function post(path, body) {
 		const d = await api(`/api/rooms/${roomId}/${path}`, { method: 'POST', body });
-		schedule(0);
+		markActive(); // we just did something; others are likely to respond
+		if (d?.state) applyState(d.state);
+		else if (!NO_ECHO_POLL.has(path)) schedule(0);
 		return d;
 	}
 

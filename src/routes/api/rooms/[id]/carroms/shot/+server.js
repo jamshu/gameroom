@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import { requireMember, parseState, writeState, appendEvent, finishRoom, jsonError, httpError } from '$lib/server/room.js';
-import { carromsApplyShot, carromTeamOf } from '$lib/server/gamelogic.js';
+import { carromsApplyShot, carromTeamOf, stateView } from '$lib/server/gamelogic.js';
 
 export const prerender = false;
 
@@ -32,7 +32,7 @@ export async function POST({ params, request, cookies }) {
 			await finishRoom(params.id, members, scores);
 			await appendEvent(params.id, 'system', { kind: 'game-over', result: game.result }, uid);
 		}
-		return json({ ok: true, ...outcome, result: game.result });
+		return json({ ok: true, ...outcome, result: game.result, state: stateView(state, uid) });
 	} catch (e) {
 		const { body, status } = jsonError(e);
 		return json(body, { status });

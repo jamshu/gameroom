@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import { requireHost, parseState, writeState, appendEvent, jsonError, httpError } from '$lib/server/room.js';
-import { thiefDeal } from '$lib/server/gamelogic.js';
+import { thiefDeal, stateView } from '$lib/server/gamelogic.js';
 
 export const prerender = false;
 
@@ -19,7 +19,8 @@ export async function POST({ params, cookies }) {
 			draw: game.draw,
 			policeUid: game.policeUid
 		}, uid);
-		return json({ ok: true, draw: game.draw });
+		// echo the caller's filtered view so they don't pay an extra poll for it
+		return json({ ok: true, draw: game.draw, state: stateView(state, uid) });
 	} catch (e) {
 		const { body, status } = jsonError(e);
 		return json(body, { status });
