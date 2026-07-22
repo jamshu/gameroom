@@ -7,8 +7,9 @@
 	const GAME_LABELS = { chess: '♟️ Chess', carroms: '🎯 Carroms', thief_finder: '🕵️ Thief Finder' };
 
 	let myRooms = $state([]);
-	let results = $state(null);
 	let q = $state('');
+	let typeFilter = $state('');
+	let statusFilter = $state('');
 	let error = $state('');
 	let creating = $state(false);
 
@@ -28,14 +29,81 @@
 		}
 	}
 
+	/* ---- browse ------------------------------------------------------------
+	   Odoo Online rate-limits per IP and the whole app shares that budget, so
+	   search-as-you-type must NOT be one request per keystroke. We cache a page
+	   of recent rooms on load and filter it in memory; the server is only asked
+	   when the local set can't answer (the room is older than the cached page).
+	*/
+	const PAGE = 30; // cached for local filtering
+	const SHOWN = 10; // rendered before "Show more"
+
+	let cached = $state([]); // the last server page
+	let serverHits = $state(null); // set only when we fall back to the server
+	let showAll = $state(false);
+	let searching = $state(false);
+	let debounce = null;
+	let seq = 0; // guards against out-of-order responses
+
+	const filterLocal = (rooms) => {
+		const needle = q.trim().toLowerCase();
+		return rooms.filter(
+			(r) =>
+				(!needle ||
+					r.name?.toLowerCase().includes(needle) ||
+					r.hostName?.toLowerCase().includes(needle)) &&
+				(!typeFilter || r.gameType === typeFilter) &&
+				(!statusFilter || r.status === statusFilter)
+		);
+	};
+
+	// server hits are already filtered; local ones still need it applied
+	const visible = $derived(serverHits ? serverHits : filterLocal(cached));
+	const shown = $derived(showAll ? visible : visible.slice(0, SHOWN));
+
+	async function loadRooms(params = '') {
+		const mine = ++seq;
+		try {
+			const d = await api(`/api/rooms?limit=${PAGE}${params}`);
+			if (mine !== seq) return null; // a newer request already answered
+			return d.rooms;
+		} catch (e2) {
+			if (mine === seq) error = e2.message;
+			return null;
+		}
+	}
+
+	/** Only called when in-memory filtering came up empty. */
+	async function serverSearch() {
+		searching = true;
+		const params =
+			`&q=${encodeURIComponent(q.trim())}` +
+			(typeFilter ? `&type=${typeFilter}` : '') +
+			(statusFilter ? `&status=${statusFilter}` : '');
+		const rooms = await loadRooms(params);
+		if (rooms) serverHits = rooms;
+		searching = false;
+	}
+
+	/** Typing filters locally for free; the server is a last resort. */
+	function onQueryInput() {
+		serverHits = null; // back to the local view
+		showAll = false;
+		clearTimeout(debounce);
+		const needle = q.trim();
+		if (needle.length < 2) return;
+		if (filterLocal(cached).length > 0) return; // local set answered it
+		debounce = setTimeout(serverSearch, 400);
+	}
+
 	async function search(e) {
 		e?.preventDefault();
-		try {
-			const d = await api(`/api/rooms?q=${encodeURIComponent(q)}`);
-			results = d.rooms;
-		} catch (e2) {
-			error = e2.message;
+		clearTimeout(debounce);
+		if (!q.trim()) {
+			serverHits = null;
+			return;
 		}
+		await serverSearch();
 	}
 
 	async function createRoom(e) {
@@ -63,20 +131,64 @@
 		}
 	}
 
-	onMount(() => {
+	// set when a room ejected us (removed by the host, or the room is gone)
+	let notice = $state('');
+
+	onMount(async () => {
 		if ($user !== null) loadMine();
+		// one call; everything typed after this filters against it in memory
+		const rooms = await loadRooms();
+		if (rooms) cached = rooms;
+		const left = new URLSearchParams(location.search).get('left');
+		if (left) {
+			notice = left;
+			history.replaceState(null, '', location.pathname); // don't survive a refresh
+		}
 	});
 </script>
 
 <div class="fade-in">
 	<section class="card" style="padding:20px; margin-bottom:20px;">
 		<form onsubmit={search} class="search-row">
-			<input class="input" type="search" placeholder="Search gamerooms by name…" bind:value={q} />
-			<button class="btn btn--primary">Search</button>
+			<input
+				class="input"
+				type="search"
+				placeholder="Search gamerooms by name or host…"
+				bind:value={q}
+				oninput={onQueryInput}
+			/>
+			<button class="btn btn--primary" disabled={searching}>{searching ? '…' : 'Search'}</button>
 			<button type="button" class="btn btn--ghost" onclick={() => (showCreate = !showCreate)}>
 				{showCreate ? 'Cancel' : '+ New room'}
 			</button>
 		</form>
+
+		<div class="filter-row">
+			<select class="select" bind:value={typeFilter} onchange={() => (serverHits = null)}>
+				<option value="">All games</option>
+				<option value="thief_finder">🕵️ Thief Finder</option>
+				<option value="chess">♟️ Chess</option>
+				<option value="carroms">🎯 Carroms</option>
+			</select>
+			<select class="select" bind:value={statusFilter} onchange={() => (serverHits = null)}>
+				<option value="">Any status</option>
+				<option value="lobby">Open lobby</option>
+				<option value="playing">In progress</option>
+			</select>
+			{#if q || typeFilter || statusFilter}
+				<button
+					type="button"
+					class="btn btn--ghost btn--sm"
+					onclick={() => {
+						q = '';
+						typeFilter = '';
+						statusFilter = '';
+						serverHits = null;
+						showAll = false;
+					}}>Clear</button
+				>
+			{/if}
+		</div>
 
 		{#if showCreate}
 			<form class="create-form" onsubmit={createRoom}>
@@ -104,21 +216,33 @@
 		{/if}
 	</section>
 
+	{#if notice}<p class="chip chip--amber notice">{notice}</p>{/if}
 	{#if error}<p class="error-text">{error}</p>{/if}
 
-	{#if results}
-		<h2 class="section-title">Search results</h2>
-		{#if results.length === 0}<p class="muted">No rooms match “{q}”.</p>{/if}
-		{#each results as r (r.id)}
-			<div class="card card--interactive room-row">
-				<div>
-					<strong>{r.name}</strong>
-					<span class="chip chip--accent">{GAME_LABELS[r.gameType]}</span>
-					<span class="muted">host: {r.hostName} · {r.status}</span>
-				</div>
-				<button class="btn btn--sm btn--primary" onclick={() => joinRoom(r.id)}>Join</button>
+	<h2 class="section-title">
+		{q || typeFilter || statusFilter ? 'Matching gamerooms' : 'Latest gamerooms'}
+	</h2>
+	{#if visible.length === 0}
+		<p class="muted">
+			{#if searching}Searching…
+			{:else if q || typeFilter || statusFilter}No rooms match that — try a different search.
+			{:else}No open rooms yet — create the first one.{/if}
+		</p>
+	{/if}
+	{#each shown as r (r.id)}
+		<div class="card card--interactive room-row">
+			<div>
+				<strong>{r.name}</strong>
+				<span class="chip chip--accent">{GAME_LABELS[r.gameType]}</span>
+				<span class="muted">host: {r.hostName} · {r.status}</span>
 			</div>
-		{/each}
+			<button class="btn btn--sm btn--primary" onclick={() => joinRoom(r.id)}>Join</button>
+		</div>
+	{/each}
+	{#if !showAll && visible.length > SHOWN}
+		<button class="btn btn--ghost show-more" onclick={() => (showAll = true)}>
+			Show {visible.length - SHOWN} more
+		</button>
 	{/if}
 
 	<h2 class="section-title">My rooms</h2>
@@ -138,12 +262,27 @@
 </div>
 
 <style>
+	.notice {
+		display: inline-block;
+		margin-bottom: 14px;
+	}
 	.search-row {
 		display: flex;
 		gap: 10px;
 	}
 	.search-row .input {
 		flex: 1;
+	}
+	.filter-row {
+		display: flex;
+		gap: 10px;
+		align-items: center;
+		margin-top: 10px;
+		flex-wrap: wrap;
+	}
+	.show-more {
+		width: 100%;
+		margin-bottom: 10px;
 	}
 	.create-form {
 		margin-top: 18px;

@@ -142,6 +142,15 @@
 		return { key: showing ? `final-${g.draw}` : null, ms: FINAL_REVEAL_MS };
 	});
 
+	// The poll gave up because we're no longer in this room (removed, or the room
+	// is gone). Tear down voice and get out rather than sitting on a dead board.
+	$effect(() => {
+		if ($store.closed) {
+			mesh?.leave();
+			goto(`/?left=${encodeURIComponent($store.error || 'You left this room')}`);
+		}
+	});
+
 	const room = $derived(accepted ? $store.room : detail?.room);
 	const members = $derived(accepted ? $store.members : detail?.members || []);
 	const isHost = $derived(room?.hostUid === myUid);
@@ -164,6 +173,10 @@
 		</header>
 
 		{#if error}<p class="error-text">{error}</p>{/if}
+		<!-- connection trouble was previously invisible: the board just silently froze -->
+		{#if accepted && $store.error}
+			<p class="error-text">⚠️ {$store.error} — retrying…</p>
+		{/if}
 
 		{#if !accepted}
 			<div class="card" style="padding:22px; text-align:center;">

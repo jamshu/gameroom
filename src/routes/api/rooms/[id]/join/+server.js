@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import { adminExecute } from '$lib/server/odoo.js';
 import { requireUser } from '$lib/server/auth.js';
-import { MEMBER, getRoom, getMembers, appendEvent, jsonError, httpError } from '$lib/server/room.js';
+import { MEMBER, getRoom, getMembers, parseState, appendEvent, jsonError, httpError } from '$lib/server/room.js';
 
 export const prerender = false;
 
@@ -11,6 +11,11 @@ export async function POST({ params, cookies }) {
 		const { uid } = await requireUser(cookies);
 		const room = await getRoom(params.id);
 		if (room.x_studio_status === 'finished') throw httpError(409, 'Room is finished');
+		// removed by the host — otherwise the rejoin branch below would flip their
+		// 'left' row straight back to 'pending'. Free: `room` is already in hand.
+		if ((parseState(room)?.banned || []).includes(uid)) {
+			throw httpError(403, 'The host removed you from this room', 'removed');
+		}
 		const members = await getMembers(params.id);
 		const mine = members.find((m) => m.x_studio_user_id?.[0] === uid);
 		if (mine?.x_studio_status === 'accepted') return json({ ok: true, status: 'accepted' });

@@ -41,17 +41,32 @@ export async function POST({ request, cookies }) {
 	}
 }
 
-/** Search open rooms by name. */
+const BROWSE_STATUSES = ['lobby', 'playing'];
+
+/**
+ * Browse open rooms. Newest first; `q` is an optional name search.
+ *
+ * The client caches a page of these and filters in memory as you type, so this
+ * is hit once on load rather than once per keystroke — Odoo Online's rate limit
+ * is per-IP and shared by every player in every room.
+ */
 export async function GET({ url, cookies }) {
 	try {
 		await requireUser(cookies);
 		await sweepAbandonedRooms();
 		const q = url.searchParams.get('q')?.trim() || '';
+		const type = url.searchParams.get('type') || '';
+		const status = url.searchParams.get('status') || '';
+		const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 30, 1), 50);
+
 		const domain = [['x_studio_status', '!=', 'finished']];
 		if (q) domain.push(['x_name', 'ilike', q]);
+		if (GAME_TYPES.includes(type)) domain.push(['x_studio_game_type', '=', type]);
+		if (BROWSE_STATUSES.includes(status)) domain.push(['x_studio_status', '=', status]);
+
 		const rooms = await adminExecute(ROOM, 'search_read', [domain,
 			['x_name', 'x_studio_game_type', 'x_studio_status', 'x_studio_host_id', 'x_studio_max_players']
-		], { order: 'id desc', limit: 30 });
+		], { order: 'id desc', limit });
 		return json({
 			ok: true,
 			rooms: rooms.map((r) => ({
@@ -59,7 +74,9 @@ export async function GET({ url, cookies }) {
 				name: r.x_name,
 				gameType: r.x_studio_game_type,
 				status: r.x_studio_status,
-				hostName: r.x_studio_host_id?.[1] || ''
+				hostName: r.x_studio_host_id?.[1] || '',
+				// already fetched from Odoo and previously discarded — free to expose
+				maxPlayers: r.x_studio_max_players || 0
 			}))
 		});
 	} catch (e) {

@@ -15,7 +15,11 @@ export async function api(path, { method = 'GET', body, redirectOn401 = true } =
 		throw new Error('Not authenticated');
 	}
 	if (!res.ok || data.ok === false) {
-		throw new Error(data.error || `Request failed (${res.status})`);
+		// carry status + server code so callers can tell terminal from transient
+		const err = new Error(data.error || `Request failed (${res.status})`);
+		err.status = res.status;
+		if (data.code) err.code = data.code;
+		throw err;
 	}
 	return data;
 }

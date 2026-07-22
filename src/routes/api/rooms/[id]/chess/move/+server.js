@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import { Chess } from 'chess.js';
 import { requireMember, parseState, writeState, appendEvent, finishRoom, jsonError, httpError } from '$lib/server/room.js';
-import { stateView } from '$lib/server/gamelogic.js';
+import { stateView, chessClockCommit, chessScores } from '$lib/server/gamelogic.js';
 
 export const prerender = false;
 
@@ -20,6 +20,18 @@ export async function POST({ params, request, cookies }) {
 		if (chess.turn() !== myColor) throw httpError(409, 'Not your turn');
 
 		const { from, to, promotion } = await request.json();
+
+		// Charge the mover for their thinking time BEFORE applying the move — if
+		// that runs them out, the move doesn't count and they lost on time.
+		if (chessClockCommit(game)) {
+			game.result = myColor === 'w' ? 'b' : 'w';
+			game.clock.turnStartedAt = null;
+			await writeState(params.id, state);
+			await finishRoom(params.id, members, chessScores(game));
+			await appendEvent(params.id, 'system', { kind: 'game-over', result: game.result, by: 'timeout' }, uid);
+			return json({ ok: true, result: game.result, flagged: true, state: stateView(state, uid) });
+		}
+
 		let move;
 		try {
 			move = chess.move({ from, to, promotion: promotion || 'q' });
@@ -31,16 +43,15 @@ export async function POST({ params, request, cookies }) {
 		game.moves.push(move.san);
 		if (chess.isCheckmate()) game.result = myColor;
 		else if (chess.isDraw() || chess.isStalemate()) game.result = 'draw';
+		// freeze the clock on a finished game, or every client keeps ticking it
+		// down and eventually fires a bogus flag claim
+		if (game.result && game.clock) game.clock.turnStartedAt = null;
 
 		await writeState(params.id, state);
 		await appendEvent(params.id, 'move', { san: move.san, fen: game.fen, v: state.v }, uid);
 
 		if (game.result) {
-			// win 2, draw 1 each (integer scores)
-			const scores = {};
-			scores[game.players.w] = game.result === 'w' ? 2 : game.result === 'draw' ? 1 : 0;
-			scores[game.players.b] = game.result === 'b' ? 2 : game.result === 'draw' ? 1 : 0;
-			await finishRoom(params.id, members, scores);
+			await finishRoom(params.id, members, chessScores(game));
 			await appendEvent(params.id, 'system', { kind: 'game-over', result: game.result }, uid);
 		}
 		return json({ ok: true, san: move.san, fen: game.fen, result: game.result, state: stateView(state, uid) });

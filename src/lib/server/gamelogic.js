@@ -13,7 +13,8 @@ export function initGame(gameType, playerUids, room) {
 			players: { w: playerUids[0], b: playerUids[1] },
 			fen: new Chess().fen(),
 			moves: [],
-			result: null
+			result: null,
+			clock: { w: CHESS_START_MS, b: CHESS_START_MS, turnStartedAt: Date.now() }
 		};
 	}
 	if (gameType === 'carroms') {
@@ -148,6 +149,52 @@ export function thiefView(game, uid) {
 	};
 }
 
+/* --------------------------------- chess ---------------------------------- */
+
+export const CHESS_START_MS = 600000; // 10 minutes each
+
+/**
+ * THE CLOCK INVARIANT — stated once, because two code paths depend on it:
+ *
+ *   stored `clock[c]` is the remaining ms for colour `c` AS OF `turnStartedAt`.
+ *   Only the side to move differs from stored, by `now - turnStartedAt`.
+ *
+ * `chessClockNow` reports; `chessClockCommit` folds elapsed time into the mover.
+ * If these ever compute differently, time gets double-deducted.
+ */
+
+/** Side to move, straight from the FEN (field 1) — cheaper than parsing the board. */
+function fenTurn(fen) {
+	return fen?.split(' ')[1] === 'b' ? 'b' : 'w';
+}
+
+/** Live remaining ms for both sides. PURE — never mutates `game`. */
+export function chessClockNow(game, now = Date.now()) {
+	const c = game?.clock;
+	if (!c) return null; // game started before clocks shipped
+	if (game.result) return { w: c.w, b: c.b, ticking: null }; // finished: frozen
+	const ticking = fenTurn(game.fen);
+	const elapsed = Math.max(0, now - (c.turnStartedAt ?? now));
+	return { w: c.w, b: c.b, ticking, [ticking]: Math.max(0, c[ticking] - elapsed) };
+}
+
+/** Fold elapsed time into the mover's budget. Returns true if they ran out. */
+export function chessClockCommit(game, now = Date.now()) {
+	const live = chessClockNow(game, now);
+	if (!live?.ticking) return false;
+	game.clock[live.ticking] = live[live.ticking];
+	game.clock.turnStartedAt = now;
+	return live[live.ticking] <= 0;
+}
+
+/** Win 2, draw 1 each. Shared by the move and flag routes so they can't drift. */
+export function chessScores(game) {
+	return {
+		[game.players.w]: game.result === 'w' ? 2 : game.result === 'draw' ? 1 : 0,
+		[game.players.b]: game.result === 'b' ? 2 : game.result === 'draw' ? 1 : 0
+	};
+}
+
 /* ------------------------------ client views ------------------------------ */
 
 /**
@@ -162,6 +209,16 @@ export function thiefView(game, uid) {
 export function gameView(game, uid) {
 	if (!game) return null;
 	if (game.type === 'thief_finder') return thiefView(game, uid);
+	if (game.type === 'chess') {
+		const live = chessClockNow(game);
+		if (!live) return game; // pre-clock game, nothing to project
+		// MUST copy: returning `game` by reference and writing a computed clock
+		// into it would corrupt the object writeState is about to serialize.
+		// `turnStartedAt` is deliberately dropped — shipping an absolute server
+		// timestamp would reintroduce exactly the clock skew that sending
+		// remaining-ms exists to avoid.
+		return { ...game, clock: { w: live.w, b: live.b, ticking: live.ticking } };
+	}
 	return game;
 }
 

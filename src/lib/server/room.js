@@ -9,9 +9,15 @@ export const ROOM = 'x_gameroom';
 export const MEMBER = 'x_room_member';
 export const EVENT = 'x_room_event';
 
-export function httpError(status, message) {
+/**
+ * `code` is a stable machine-readable reason the client can branch on. A bare
+ * 403 tells a client nothing — it can't distinguish "the host removed you"
+ * (stop polling, go home) from a transient failure (keep trying).
+ */
+export function httpError(status, message, code) {
 	const e = new Error(message);
 	e.status = status;
+	if (code) e.code = code;
 	return e;
 }
 
@@ -42,11 +48,19 @@ export async function getMembers(roomId) {
 export async function requireMember(cookies, roomId) {
 	const { uid } = await requireUser(cookies);
 	const [room, members] = await Promise.all([getRoom(roomId), getMembers(roomId)]);
-	const member = members.find(
-		(m) => m.x_studio_user_id?.[0] === uid && m.x_studio_status === 'accepted'
-	);
-	if (!member) throw httpError(403, 'You are not a member of this room');
-	return { uid, room, member, members };
+	const mine = members.find((m) => m.x_studio_user_id?.[0] === uid);
+	if (!mine || mine.x_studio_status !== 'accepted') {
+		// Distinguish the reasons: only some of them mean "stop polling forever".
+		// `members` and `room` are already in hand, so this costs no extra Odoo call.
+		if ((parseState(room)?.banned || []).includes(uid)) {
+			throw httpError(403, 'The host removed you from this room', 'removed');
+		}
+		if (mine?.x_studio_status === 'pending') {
+			throw httpError(403, 'Your join request is still pending', 'pending');
+		}
+		throw httpError(403, 'You are not a member of this room', 'not_member');
+	}
+	return { uid, room, member: mine, members };
 }
 
 /** Auth + host of the room. */
@@ -184,5 +198,7 @@ export async function finishRoom(roomId, members, scoresByUid = {}) {
 }
 
 export function jsonError(e) {
-	return { body: { ok: false, error: e?.message || 'Request failed' }, status: e?.status || 500 };
+	const body = { ok: false, error: e?.message || 'Request failed' };
+	if (e?.code) body.code = e.code; // let the client tell terminal from transient
+	return { body, status: e?.status || 500 };
 }

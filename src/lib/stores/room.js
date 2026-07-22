@@ -20,6 +20,9 @@ const IDLE_MS = 10000; // nothing at all for 30s — empty lobby, abandoned game
 const ACTIVE_WINDOW_MS = 5000;
 const IDLE_AFTER_MS = 30000;
 const FAST_MS = 1000; // while WebRTC signaling is in flight
+// Reasons the poll must give up rather than retry. Anything else is transient.
+const TERMINAL_CODES = new Set(['removed', 'not_member']);
+const MAX_ERROR_BACKOFF = 8; // cap the multiplier so recovery stays reasonable
 // Capped by presence, not by load: `online` is a 15s window (room.js) and the
 // heartbeat only writes when last_seen is >6s old, so anything past ~10s here
 // would render idle players permanently offline.
@@ -48,6 +51,7 @@ export function createRoomStore(roomId) {
 	// never-turns-off bug, whereas elapsed time is self-healing by construction.
 	// Seeded to now so entering a room starts responsive.
 	let lastActivityAt = Date.now();
+	let errorStreak = 0; // consecutive failed polls — drives the backoff below
 	let tempSeq = 0;
 	let signalHandler = null; // webrtc manager subscribes here
 	let systemHandler = null;
@@ -129,13 +133,26 @@ export function createRoomStore(roomId) {
 				};
 				return mergeState(next, d.state);
 			});
+			errorStreak = 0;
 		} catch (e) {
-			store.update((s) => ({ ...s, error: e.message }));
+			if (TERMINAL_CODES.has(e?.code)) {
+				// We are not in this room any more. Without this the client polls
+				// forever at full cadence — sustained Odoo load from someone who
+				// isn't even here, against a rate limit the whole room shares.
+				// `schedule()` early-returns on `stopped`, so the finally is a no-op.
+				stopped = true;
+				store.update((s) => ({ ...s, error: e.message, closed: true }));
+			} else {
+				errorStreak++;
+				store.update((s) => ({ ...s, error: e.message }));
+			}
 		} finally {
 			inFlight = false;
 			const immediate = pendingImmediate;
 			pendingImmediate = false;
-			schedule(immediate ? 0 : undefined);
+			// an immediate re-poll must not bypass the error backoff, or a failing
+			// room would still hammer whenever a POST had queued one
+			schedule(immediate && !errorStreak ? 0 : undefined);
 		}
 	}
 
@@ -145,12 +162,15 @@ export function createRoomStore(roomId) {
 	}
 
 	function cadence() {
-		if (document.hidden) return HIDDEN_MS;
-		if (fast) return FAST_MS; // must outrank ACTIVE — never slow WebRTC negotiation
+		// A failing room used to keep hammering at full speed, which is itself a
+		// 429 amplifier. Back off while it's broken; reset the moment it recovers.
+		const penalty = errorStreak ? Math.min(2 ** errorStreak, MAX_ERROR_BACKOFF) : 1;
+		if (document.hidden) return HIDDEN_MS * penalty;
+		if (fast) return FAST_MS * penalty; // FAST outranks ACTIVE — never slow WebRTC
 		const quietFor = Date.now() - lastActivityAt;
-		if (quietFor < ACTIVE_WINDOW_MS) return ACTIVE_MS;
-		if (quietFor < IDLE_AFTER_MS) return BASE_MS;
-		return IDLE_MS;
+		if (quietFor < ACTIVE_WINDOW_MS) return ACTIVE_MS * penalty;
+		if (quietFor < IDLE_AFTER_MS) return BASE_MS * penalty;
+		return IDLE_MS * penalty;
 	}
 
 	function schedule(ms) {

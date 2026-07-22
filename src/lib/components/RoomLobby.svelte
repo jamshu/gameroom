@@ -4,6 +4,7 @@
 	let { store, members, room, isHost } = $props();
 	let error = $state('');
 	let starting = $state(false);
+	let removing = $state(null); // member id being removed
 
 	const accepted = $derived(members.filter((m) => m.status === 'accepted'));
 	const pending = $derived(members.filter((m) => m.status === 'pending'));
@@ -19,6 +20,19 @@
 			await store.post('requests', { memberId, action });
 		} catch (e) {
 			error = e.message;
+		}
+	}
+
+	async function remove(m) {
+		error = '';
+		if (!confirm(`Remove ${m.name} from this room?`)) return;
+		removing = m.id;
+		try {
+			await store.post('members', { memberId: m.id, action: 'remove' });
+		} catch (e) {
+			error = e.message;
+		} finally {
+			removing = null;
 		}
 	}
 
@@ -60,6 +74,16 @@
 			{#if m.uid === room.hostUid}<span class="chip chip--amber">host</span>{/if}
 			<span class="chip {m.role === 'player' ? 'chip--green' : ''}">{m.role}</span>
 			<span class="dot {m.online ? 'dot--on' : ''}" title={m.online ? 'online' : 'offline'}></span>
+			{#if isHost && m.uid !== room.hostUid}
+				<button
+					class="btn btn--ghost btn--sm remove-btn"
+					onclick={() => remove(m)}
+					disabled={removing === m.id}
+					title="Remove {m.name} from this room"
+				>
+					{removing === m.id ? '…' : 'Remove'}
+				</button>
+			{/if}
 		</div>
 	{/each}
 
@@ -90,6 +114,9 @@
 	}
 	.member-name {
 		font-weight: 500;
+	}
+	.remove-btn {
+		margin-left: auto;
 	}
 	.dot {
 		width: 9px;
