@@ -1,20 +1,9 @@
 // WebRTC mesh voice manager. Signaling rides the room poll (offer/answer/ice
 // events targeted per-user server-side). Glare avoidance: for any pair, the
 // LOWER uid is always the offerer — deterministic, no perfect-negotiation dance.
-// ponytail: Open Relay public TURN (no signup); swap to metered.ca account
-// credentials here if the shared relay proves flaky.
-const ICE = [
-	{ urls: 'stun:stun.l.google.com:19302' },
-	{
-		urls: [
-			'turn:openrelay.metered.ca:80',
-			'turn:openrelay.metered.ca:443',
-			'turns:openrelay.metered.ca:443?transport=tcp'
-		],
-		username: 'openrelayproject',
-		credential: 'openrelayproject'
-	}
-];
+// ICE servers come from /api/turn: Cloudflare TURN credentials minted
+// server-side (short-lived), STUN-only fallback when TURN isn't configured.
+const FALLBACK_ICE = [{ urls: 'stun:stun.l.google.com:19302' }];
 
 const ICE_FLUSH_MS = 300; // batch outgoing candidates into one POST per tick
 
@@ -22,6 +11,7 @@ export function createVoiceMesh({ myUid, sendSignal, onPeersChange }) {
 	const peers = new Map(); // uid -> { pc, audioEl, pendingIce, outIce, flushTimer }
 	let localStream = null;
 	let joined = false;
+	let iceServers = FALLBACK_ICE;
 
 	/** [{uid, state}] — VoiceBar derives "connecting…" from real pc states. */
 	function notify() {
@@ -68,7 +58,7 @@ export function createVoiceMesh({ myUid, sendSignal, onPeersChange }) {
 	}
 
 	function newPeer(uid) {
-		const pc = new RTCPeerConnection({ iceServers: ICE });
+		const pc = new RTCPeerConnection({ iceServers });
 		const entry = { pc, audioEl: null, pendingIce: [], outIce: [], flushTimer: null };
 		for (const track of localStream.getTracks()) pc.addTrack(track, localStream);
 		pc.onicecandidate = (e) => {
@@ -149,6 +139,13 @@ export function createVoiceMesh({ myUid, sendSignal, onPeersChange }) {
 
 	async function join() {
 		await ensureMic();
+		try {
+			const res = await fetch('/api/turn');
+			const d = await res.json();
+			if (d?.iceServers?.length) iceServers = d.iceServers;
+		} catch {
+			iceServers = FALLBACK_ICE;
+		}
 		joined = true;
 	}
 

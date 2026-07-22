@@ -12,7 +12,7 @@
 // with Amplify access. That is the documented AWS tradeoff for SSR runtime env.
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 
-const KEYS = ['ODOO_URL', 'ODOO_DB', 'ODOO_USERNAME', 'ODOO_API_KEY'];
+const KEYS = ['ODOO_URL', 'ODOO_DB', 'ODOO_USERNAME', 'ODOO_API_KEY', 'CF_TURN_KEY_ID', 'CF_TURN_API_TOKEN'];
 
 const file = 'build/compute/default/shims.js';
 if (!existsSync(file)) throw new Error(`${file} not found — run after \`npm run build\``);
