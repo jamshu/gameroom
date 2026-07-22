@@ -1,0 +1,20 @@
+version: 1
+frontend:
+  phases:
+    preBuild:
+      commands:
+        - nvm install 22 && nvm use 22
+        - npm install --cache .npm --prefer-offline
+    build:
+      commands:
+        - npm run build
+        - node scripts/bake-amplify-env.mjs
+        - cd build/compute/default/
+        - npm i --production
+  artifacts:
+    baseDirectory: build
+    files:
+      - '**/*'
+  cache:
+    paths:
+      - .npm/**/*

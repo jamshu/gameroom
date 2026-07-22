@@ -1,0 +1,402 @@
+:root {
+	/* Base palette = `midnight` theme. Every component styles ONLY against these
+	   variables — a new theme is just another :root[data-theme='<id>'] block. */
+	--bg: #0b1120;
+	--bg-soft: #0f172a;
+	--surface: #111c33;
+	--surface-2: #16243f;
+	--border: #243149;
+	--text: #e6edf6;
+	--text-dim: #93a4bd;
+	--text-faint: #64748b;
+
+	/* --accent is the primary accent (buttons, slider thumbs, focus states). */
+	--accent: #14b8a6;
+	--accent-deep: #0f766e;
+	--gold: #d6a64a;
+	--green: #34d399;
+	--red: #f87171;
+	--amber: #f59e0b;
+
+	/* Background ambience glow (top-right, bottom-left). Per-theme. */
+	--bg-glow-a: rgba(20, 184, 166, 0.12);
+	--bg-glow-b: rgba(214, 166, 74, 0.08);
+
+	--radius: 18px;
+	--radius-sm: 12px;
+	--radius-lg: 24px;
+	--shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+	--shadow-sm: 0 2px 10px rgba(0, 0, 0, 0.25);
+	--shadow-lg: 0 24px 60px -18px rgba(0, 0, 0, 0.55);
+	--maxw: 760px;
+
+	/* Typography — a variable serif for display gives character; a clean
+	   sans for body/controls. Install: @fontsource-variable/fraunces + inter. */
+	--font-display: 'Fraunces Variable', Georgia, 'Times New Roman', serif;
+	--font-body: 'Inter Variable', system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial,
+		sans-serif;
+
+	/* Ceremonial accent for hairline rules / ornaments. */
+	--ornament: var(--gold);
+
+	/* On-colors — text/icon color when sitting on a solid accent fill. Per-theme
+	   so light accents get dark text and dark accents get light text. */
+	--on-accent: #042f2a;
+	--on-green: #04261c;
+	--on-gold: #2a1e05;
+	--on-amber: #3a2600;
+	--on-red: #fff;
+}
+
+/* ── Themes ─────────────────────────────────────────────────────────────
+   Each block overrides only palette + glow vars; structural vars
+   (radius/maxw/fonts) stay global. Add more themes as new blocks. */
+
+/* Anthropic Claude — warm ivory, clay/coral accent. */
+:root[data-theme='claude'] {
+	--bg: #faf9f5;
+	--bg-soft: #f0eee6;
+	--surface: #ffffff;
+	--surface-2: #f5f4ee;
+	--border: #e3e1d9;
+	--text: #141413;
+	--text-dim: #6b6a63;
+	--text-faint: #97958d;
+	--accent: #c15f3c;
+	--accent-deep: #a84a2c;
+	--gold: #b8860b;
+	--green: #2f7a4f;
+	--red: #bc4040;
+	--bg-glow-a: rgba(193, 95, 60, 0.07);
+	--bg-glow-b: rgba(184, 134, 11, 0.05);
+	--shadow: 0 8px 24px rgba(20, 20, 19, 0.08);
+	--shadow-sm: 0 2px 8px rgba(20, 20, 19, 0.06);
+	--shadow-lg: 0 20px 50px -18px rgba(20, 20, 19, 0.16);
+	--on-accent: #fff;
+	--on-green: #fff;
+	--on-gold: #fff;
+	--amber: #b45309;
+	--on-amber: #fff;
+}
+
+/* Catppuccin Latte — cool porcelain white, vibrant mauve accent. */
+:root[data-theme='catppuccin-latte'] {
+	--bg: #eff1f5;
+	--bg-soft: #e6e9ef;
+	--surface: #ffffff;
+	--surface-2: #e6e9ef;
+	--border: #ccd0da;
+	--text: #4c4f69;
+	--text-dim: #6c6f85;
+	--text-faint: #8c8fa1;
+	--accent: #8839ef;
+	--accent-deep: #7326d3;
+	--gold: #df8e1d;
+	--green: #40a02b;
+	--red: #d20f39;
+	--bg-glow-a: rgba(136, 57, 239, 0.07);
+	--bg-glow-b: rgba(254, 100, 11, 0.05);
+	--shadow: 0 8px 24px rgba(76, 79, 105, 0.1);
+	--shadow-sm: 0 2px 8px rgba(76, 79, 105, 0.07);
+	--shadow-lg: 0 20px 50px -18px rgba(76, 79, 105, 0.18);
+	--on-accent: #fff;
+	--on-green: #fff;
+	--on-gold: #fff;
+	--amber: #fe640b;
+	--on-amber: #fff;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+html,
+body {
+	margin: 0;
+	padding: 0;
+}
+
+body {
+	background:
+		radial-gradient(1200px 600px at 80% -10%, var(--bg-glow-a), transparent 60%),
+		radial-gradient(900px 500px at -10% 0%, var(--bg-glow-b), transparent 55%),
+		var(--bg);
+	color: var(--text);
+	font-family: var(--font-body);
+	-webkit-font-smoothing: antialiased;
+	min-height: 100dvh;
+}
+
+/* Fine grain overlay — adds tactile, paper-like depth over the gradient glows.
+   Fixed full-viewport, sits behind content, theme-agnostic (blends both ways). */
+body::before {
+	content: '';
+	position: fixed;
+	inset: 0;
+	z-index: -1;
+	pointer-events: none;
+	opacity: 0.035;
+	mix-blend-mode: overlay;
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+button {
+	font-family: inherit;
+	cursor: pointer;
+	border: none;
+	background: none;
+	color: inherit;
+}
+
+h1,
+h2,
+h3 {
+	margin: 0;
+	font-family: var(--font-display);
+	font-weight: 700;
+	font-optical-sizing: auto;
+	font-variation-settings: 'SOFT' 30, 'WONK' 0;
+	letter-spacing: -0.015em;
+}
+
+.app--wide {
+	--maxw: none;
+}
+.app {
+	max-width: var(--maxw);
+	margin: 0 auto;
+	/* Respect iOS safe areas (notch / status bar / home indicator) so the
+	   top-right controls aren't hidden under the status bar and stay tappable. */
+	padding: calc(20px + env(safe-area-inset-top, 0px)) calc(16px + env(safe-area-inset-right, 0px))
+		calc(64px + env(safe-area-inset-bottom, 0px)) calc(16px + env(safe-area-inset-left, 0px));
+}
+
+/* Editorial section divider — serif label with a hairline gold rule trailing off.
+   Reads like a printed almanac heading. */
+.section-title {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	font-family: var(--font-display);
+	font-size: 1.06rem;
+	font-weight: 600;
+	font-variation-settings: 'SOFT' 40, 'WONK' 0;
+	letter-spacing: -0.01em;
+	color: var(--text);
+	margin: 30px 4px 14px;
+}
+.section-title .emo {
+	font-size: 0.92em;
+	opacity: 0.9;
+}
+.section-title::after {
+	content: '';
+	flex: 1;
+	height: 1px;
+	background: linear-gradient(
+		90deg,
+		color-mix(in srgb, var(--ornament) 55%, transparent),
+		transparent
+	);
+}
+
+.card {
+	position: relative;
+	background: linear-gradient(180deg, var(--surface-2), var(--surface));
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	/* outer depth + a 1px inner top highlight for a lit, dimensional edge */
+	box-shadow:
+		inset 0 1px 0 color-mix(in srgb, var(--text) 7%, transparent),
+		var(--shadow-lg);
+}
+
+.card--interactive {
+	transition:
+		transform 0.18s ease,
+		box-shadow 0.18s ease,
+		border-color 0.18s ease;
+}
+.card--interactive:hover {
+	transform: translateY(-2px);
+	border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+}
+.card--interactive:active {
+	transform: scale(0.995);
+}
+
+/* Gentle accent tint on any card under a real pointer — keeps touch untouched. */
+@media (hover: hover) {
+	.card {
+		transition:
+			border-color 0.15s ease,
+			box-shadow 0.2s ease;
+	}
+	.card:hover {
+		border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+	}
+}
+
+/* Emoji glyphs — force the color-emoji font stack and neutral style so serif
+   font-variation-settings on surrounding headings never distort them. */
+.emo {
+	font-family: 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
+	font-style: normal;
+	font-weight: 400;
+	font-variation-settings: normal;
+	line-height: 1;
+	flex-shrink: 0;
+}
+
+/* ── Controls ─────────────────────────────────────────────────────────── */
+
+.btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 8px;
+	padding: 10px 18px;
+	border-radius: var(--radius-sm);
+	border: 1px solid var(--border);
+	background: var(--surface);
+	color: var(--text);
+	font-family: var(--font-body);
+	font-size: 0.92rem;
+	font-weight: 600;
+	transition: border-color 0.15s ease, background 0.15s ease, opacity 0.15s ease;
+}
+.btn:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+.btn--primary {
+	background: var(--accent);
+	border-color: var(--accent);
+	color: var(--on-accent);
+}
+.btn--primary:not(:disabled):hover {
+	background: var(--accent-deep);
+}
+.btn--ghost {
+	background: transparent;
+}
+.btn--danger {
+	color: var(--red);
+	border-color: color-mix(in srgb, var(--red) 40%, var(--border));
+}
+.btn--sm {
+	padding: 6px 12px;
+	font-size: 0.84rem;
+}
+
+.input,
+.select,
+textarea.input {
+	width: 100%;
+	padding: 11px 14px;
+	border-radius: var(--radius-sm);
+	border: 1px solid var(--border);
+	background: var(--bg-soft);
+	color: var(--text);
+	font-family: var(--font-body);
+	font-size: 0.95rem;
+}
+.input:focus,
+.select:focus,
+.richtext:focus {
+	outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+	outline-offset: 1px;
+}
+
+.label {
+	display: block;
+	font-size: 0.8rem;
+	font-weight: 600;
+	color: var(--text-dim);
+	margin: 14px 2px 6px;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+}
+
+.chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 4px 12px;
+	border-radius: 999px;
+	font-size: 0.8rem;
+	font-weight: 600;
+	background: var(--surface-2);
+	border: 1px solid var(--border);
+	color: var(--text-dim);
+}
+.chip--accent {
+	background: var(--accent);
+	border-color: var(--accent);
+	color: var(--on-accent);
+}
+.chip--green {
+	background: var(--green);
+	border-color: var(--green);
+	color: var(--on-green);
+}
+.chip--amber {
+	background: var(--amber);
+	border-color: var(--amber);
+	color: var(--on-amber);
+}
+
+.richtext {
+	min-height: 180px;
+	padding: 14px 16px;
+	border-radius: var(--radius-sm);
+	border: 1px solid var(--border);
+	background: var(--bg-soft);
+	line-height: 1.6;
+}
+.richtext:empty::before {
+	content: attr(data-placeholder);
+	color: var(--text-faint);
+	pointer-events: none;
+}
+.richtext img {
+	max-width: 100%;
+}
+
+.error-text {
+	color: var(--red);
+	font-size: 0.88rem;
+	margin: 10px 0 0;
+}
+.muted {
+	color: var(--text-dim);
+	font-size: 0.88rem;
+}
+
+.fade-in {
+	animation: fade 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+	animation-delay: var(--fade-delay, 0s);
+}
+
+@keyframes fade {
+	from {
+		opacity: 0;
+		transform: translateY(10px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.fade-in {
+		animation: none;
+		opacity: 1;
+	}
+	.card--interactive,
+	.card--interactive:hover,
+	.card--interactive:active {
+		transform: none;
+	}
+}
