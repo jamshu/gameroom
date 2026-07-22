@@ -13,6 +13,7 @@
 	import ChessBoard from '$lib/components/ChessBoard.svelte';
 	import CarromBoard from '$lib/components/CarromBoard.svelte';
 	import Leaderboard from '$lib/components/Leaderboard.svelte';
+	import { createHold } from '$lib/holdclock.svelte.js';
 
 	const roomId = $page.params.id;
 	const store = createRoomStore(roomId);
@@ -126,6 +127,21 @@
 		store.close();
 	});
 
+	// The deciding guess flips the room to `finished` immediately, which would
+	// swap in the leaderboard before anyone saw (or heard) the final reveal.
+	// Keep the table up for the server's hold window first.
+	// Deliberately a fixed local duration, NOT the server's remaining-ms. The
+	// mid-round hold is a shared deadline because it gates the host's next deal,
+	// but nothing coordinates this one — so anchoring it to the guess time would
+	// give a player who polled late only the leftover slice of it. Counting from
+	// when *this* client received the result gives everyone the full window.
+	const FINAL_REVEAL_MS = 5000;
+	const finalReveal = createHold(() => {
+		const g = $store.game;
+		const showing = g?.type === 'thief_finder' && g.phase === 'finished';
+		return { key: showing ? `final-${g.draw}` : null, ms: FINAL_REVEAL_MS };
+	});
+
 	const room = $derived(accepted ? $store.room : detail?.room);
 	const members = $derived(accepted ? $store.members : detail?.members || []);
 	const isHost = $derived(room?.hostUid === myUid);
@@ -161,7 +177,7 @@
 		{:else}
 			<div class="room-grid">
 				<main class="room-main">
-					{#if room.status === 'finished'}
+					{#if room.status === 'finished' && !finalReveal.holding}
 						<Leaderboard {members} game={$store.game} {store} {isHost} />
 					{:else if room.status === 'lobby'}
 						<RoomLobby {store} {members} {room} {isHost} />

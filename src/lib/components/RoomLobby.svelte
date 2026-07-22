@@ -67,7 +67,13 @@
 
 	{#if isHost}
 		<button class="btn btn--primary" style="margin-top:18px;" onclick={start} disabled={starting}>
-			{starting ? 'Starting…' : `Start ${room.gameType === 'thief_finder' ? `(${room.drawsTotal} draws)` : ''}`}
+			<!-- thief finder has a second, in-game "Start game" button, so this one
+			     opens the table rather than claiming to start the game twice -->
+			{starting
+				? 'Starting…'
+				: room.gameType === 'thief_finder'
+					? `Open table (${room.drawsTotal} draws)`
+					: 'Start'}
 		</button>
 		<p class="muted" style="margin-top:8px;">Needs {needed}. {players.length} player{players.length === 1 ? '' : 's'} ready.</p>
 	{:else}

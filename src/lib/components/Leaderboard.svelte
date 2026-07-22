@@ -28,9 +28,10 @@
 <div class="card" style="padding:24px; text-align:center;">
 	<h2 class="section-title" style="margin-top:0;">🏆 Final leaderboard</h2>
 	{#each ranked as m, i (m.uid)}
-		<div class="lb-row {m.score === topScore && topScore > 0 ? 'lb-row--winner' : ''}">
+		{@const winner = m.score === topScore && topScore > 0}
+		<div class="lb-row {winner ? 'lb-row--winner' : ''}">
 			<span class="lb-rank">{i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : i + 1}</span>
-			<Avatar uid={m.uid} name={m.name} size={34} />
+			<Avatar uid={m.uid} name={m.name} size={38} ring={winner ? 'gold' : 'none'} glow={winner} />
 			<span class="lb-name">{m.name}</span>
 			<span class="lb-score">{m.score}</span>
 		</div>

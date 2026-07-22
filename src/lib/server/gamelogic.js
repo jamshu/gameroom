@@ -54,6 +54,12 @@ export function initGame(gameType, playerUids, room) {
 /* ------------------------------ thief-finder ------------------------------ */
 
 const POLICE_POINTS = 800;
+// Clients see state through a ~2s poll, so re-dealing instantly would skip the
+// reveal entirely for everyone else. The host's client auto-deals once this
+// window elapses; the guard below is what actually enforces it. 3s > the 2s
+// poll + 300ms jitter, so every visible client lands at least one poll inside
+// the reveal window.
+export const REVEAL_HOLD_MS = 3000;
 // Graded roles beyond Thief/Police, highest first; sliced to player count - 2.
 const ROLE_LADDER = [
 	['King', 1000], ['Queen', 900], ['Minister', 700], ['Soldier', 600],
@@ -81,6 +87,9 @@ function shuffled(arr) {
 export function thiefDeal(game) {
 	if (game.phase !== 'idle' && game.phase !== 'reveal') throw httpError(409, 'Draw already in progress');
 	if (game.draw >= game.drawsTotal) throw httpError(409, 'All draws are done');
+	if (game.phase === 'reveal' && Date.now() - (game.revealedAt || 0) < REVEAL_HOLD_MS) {
+		throw httpError(409, 'Let everyone see the reveal first');
+	}
 	const roles = ['Thief', 'Police', ...ROLE_LADDER.slice(0, game.players.length - 2).map(([n]) => n)];
 	const dealt = shuffled(roles);
 	game.secret = {};
@@ -108,6 +117,7 @@ export function thiefGuess(game, guesserUid, accusedUid) {
 		game.totals[uid] = (game.totals[uid] || 0) + points[uid];
 	}
 	game.lastResult = { draw: game.draw, roles: { ...game.secret }, accusedUid, thiefUid, correct, points };
+	game.revealedAt = Date.now();
 	game.secret = null;
 	game.policeUid = null;
 	game.phase = game.draw >= game.drawsTotal ? 'finished' : 'reveal';
@@ -125,6 +135,15 @@ export function thiefView(game, uid) {
 		policeUid: game.policeUid,
 		myRole: game.phase === 'guessing' && game.secret ? game.secret[uid] || null : null,
 		lastResult: game.phase === 'reveal' || game.phase === 'finished' ? game.lastResult : null,
+		// remaining ms, not an absolute timestamp — the client anchors it on
+		// receipt, so a skewed client clock can't break the countdown. Also set
+		// while `finished`: the deciding guess flips the room to finished at
+		// once, and the room page uses this to hold the final reveal on screen
+		// before swapping in the leaderboard.
+		revealHoldMs:
+			game.phase === 'reveal' || game.phase === 'finished'
+				? Math.max(0, (game.revealedAt || 0) + REVEAL_HOLD_MS - Date.now())
+				: 0,
 		totals: game.totals
 	};
 }
