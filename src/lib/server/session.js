@@ -56,3 +56,39 @@ export function getContext(cookies) {
 		return null;
 	}
 }
+
+// Display identity ({ uid, name, login }). Kept so /me can answer without a live
+// Odoo session — Odoo expires its own web sessions long before our 30 days, and
+// that expiry used to bounce people to /login mid-game.
+export const USER_COOKIE = 'app_user';
+
+export function setUserCookie(cookies, user) {
+	if (!user?.uid) return;
+	cookies.set(USER_COOKIE, JSON.stringify({ uid: user.uid, name: user.name, login: user.login }), {
+		path: '/',
+		httpOnly: true,
+		sameSite: 'lax',
+		maxAge: MAX_AGE
+	});
+}
+
+export function clearUserCookie(cookies) {
+	cookies.delete(USER_COOKIE, { path: '/' });
+}
+
+export function getUserCookie(cookies) {
+	const raw = cookies.get(USER_COOKIE);
+	if (!raw) return null;
+	try {
+		const u = JSON.parse(raw);
+		return u?.uid ? u : null;
+	} catch {
+		return null;
+	}
+}
+
+/** Re-set both identity cookies so the 30-day window slides forward on activity. */
+export function slideIdentityCookies(cookies, ctx, user) {
+	if (ctx?.uid) setContextCookie(cookies, ctx);
+	if (user?.uid) setUserCookie(cookies, user);
+}
