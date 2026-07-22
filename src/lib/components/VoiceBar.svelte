@@ -6,7 +6,12 @@
 	let busy = $state(false);
 
 	const inVoiceMembers = $derived(members.filter((m) => voice.includes(m.uid)));
-	const connectedCount = $derived(voicePeers.length);
+	// still negotiating if a roster peer has no pc yet, or its pc isn't connected
+	const connecting = $derived(
+		inVoice &&
+			(voice.filter((u) => u !== myUid).length > voicePeers.length ||
+				voicePeers.some((p) => p.state !== 'connected'))
+	);
 
 	async function toggle() {
 		busy = true;
@@ -36,7 +41,7 @@
 			</button>
 		</div>
 	</div>
-	{#if inVoice && connectedCount < inVoiceMembers.length - 1}
+	{#if connecting}
 		<p class="muted" style="margin:6px 0 0; font-size:0.8rem;">Connecting voice…</p>
 	{/if}
 	{#if inVoiceMembers.length}

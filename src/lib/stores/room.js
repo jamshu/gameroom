@@ -5,6 +5,7 @@ import { writable, get } from 'svelte/store';
 import { api } from '$lib/api.js';
 
 const POLL_MS = 2000;
+const FAST_MS = 1000; // while WebRTC signaling is in flight
 const HIDDEN_MS = 10000;
 
 export function createRoomStore(roomId) {
@@ -24,6 +25,7 @@ export function createRoomStore(roomId) {
 	let timer = null;
 	let stopped = false;
 	let inFlight = false;
+	let fast = false;
 	let signalHandler = null; // webrtc manager subscribes here
 	let systemHandler = null;
 
@@ -78,7 +80,7 @@ export function createRoomStore(roomId) {
 	function schedule(ms) {
 		if (stopped) return;
 		clearTimeout(timer);
-		const base = ms ?? (document.hidden ? HIDDEN_MS : POLL_MS);
+		const base = ms ?? (document.hidden ? HIDDEN_MS : fast ? FAST_MS : POLL_MS);
 		timer = setTimeout(poll, base + Math.random() * 300);
 	}
 
@@ -105,5 +107,12 @@ export function createRoomStore(roomId) {
 		return d;
 	}
 
-	return { subscribe: store.subscribe, open, close, post, onSignal, onSystem, pollNow: () => schedule(0) };
+	/** 1s polling while voice connections are being negotiated. */
+	function setFast(v) {
+		if (fast === !!v) return;
+		fast = !!v;
+		schedule();
+	}
+
+	return { subscribe: store.subscribe, open, close, post, onSignal, onSystem, setFast, pollNow: () => schedule(0) };
 }

@@ -21,7 +21,7 @@
 	let accepted = $state(false);
 	let error = $state('');
 	let mesh = null;
-	let voicePeers = $state([]);
+	let voicePeers = $state([]); // [{uid, state}] from the mesh
 	let inVoice = $state(false);
 	let detailTimer = null;
 
@@ -73,6 +73,8 @@
 
 	async function leaveVoice() {
 		inVoice = false;
+		voicePeers = [];
+		store.setFast(false);
 		mesh?.leave();
 		await store.post('voice', { action: 'leave' }).catch(() => {});
 	}
@@ -80,6 +82,16 @@
 	// keep the mesh reconciled with the server's voice roster
 	$effect(() => {
 		if (inVoice && mesh) mesh.sync($store.voice);
+	});
+
+	// 1s polling while any voice pair is still negotiating — signaling rides the
+	// poll, so this roughly halves connect time; back to 2s once settled
+	$effect(() => {
+		const negotiating =
+			inVoice &&
+			($store.voice.filter((u) => u !== myUid).length > voicePeers.length ||
+				voicePeers.some((p) => p.state !== 'connected'));
+		store.setFast(negotiating);
 	});
 
 	async function leaveRoom() {

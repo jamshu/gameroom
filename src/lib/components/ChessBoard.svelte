@@ -5,16 +5,20 @@
 	let { store, game, members, myUid } = $props();
 	let selected = $state(null); // square like 'e2'
 	let error = $state('');
+	// own move applied locally before the server confirms — kills the POST+poll lag
+	let optimisticFen = $state(null);
 
-	const chess = $derived(new Chess(game.fen));
+	// server state invalidates any optimistic view as soon as it arrives
+	$effect(() => {
+		game.fen;
+		optimisticFen = null;
+	});
+
+	const fen = $derived(optimisticFen ?? game.fen);
+	const chess = $derived(new Chess(fen));
 	const myColor = $derived(game.players.w === myUid ? 'w' : game.players.b === myUid ? 'b' : null);
-	const myTurn = $derived(myColor && chess.turn() === myColor && !game.result);
+	const myTurn = $derived(myColor && chess.turn() === myColor && !game.result && !optimisticFen);
 	const nameOf = $derived((uid) => members.find((m) => m.uid === uid)?.name || `#${uid}`);
-
-	const PIECES = {
-		wp: '♙', wn: '♘', wb: '♗', wr: '♖', wq: '♕', wk: '♔',
-		bp: '♟', bn: '♞', bb: '♝', br: '♜', bq: '♛', bk: '♚'
-	};
 
 	const FILES = 'abcdefgh';
 	// black player sees the board flipped
@@ -28,7 +32,8 @@
 				const piece = board[rr][ff];
 				out.push({
 					sq: FILES[ff] + (8 - rr),
-					piece: piece ? PIECES[piece.color + piece.type] : '',
+					img: piece ? `/pieces/${piece.color}${piece.type.toUpperCase()}.svg` : null,
+					label: piece ? `${piece.color === 'w' ? 'white' : 'black'} ${piece.type}` : '',
 					dark: (rr + ff) % 2 === 1
 				});
 			}
@@ -46,9 +51,18 @@
 		if (selected && legalTargets.includes(sq)) {
 			const from = selected;
 			selected = null;
+			// optimistic: move renders instantly, server confirms via poll
+			const local = new Chess(fen);
+			try {
+				local.move({ from, to: sq, promotion: 'q' });
+				optimisticFen = local.fen();
+			} catch {
+				return;
+			}
 			try {
 				await store.post('chess/move', { from, to: sq });
 			} catch (e) {
+				optimisticFen = null; // rollback — server rejected
 				error = e.message;
 			}
 			return;
@@ -60,9 +74,9 @@
 
 <div class="card" style="padding:20px;">
 	<div class="chess-head">
-		<span><Avatar uid={game.players.w} name={nameOf(game.players.w)} size={24} /> {nameOf(game.players.w)} ♔</span>
+		<span><Avatar uid={game.players.w} name={nameOf(game.players.w)} size={24} /> {nameOf(game.players.w)} <img class="mini" src="/pieces/wK.svg" alt="white" /></span>
 		<span class="muted">vs</span>
-		<span>♚ {nameOf(game.players.b)} <Avatar uid={game.players.b} name={nameOf(game.players.b)} size={24} /></span>
+		<span><img class="mini" src="/pieces/bK.svg" alt="black" /> {nameOf(game.players.b)} <Avatar uid={game.players.b} name={nameOf(game.players.b)} size={24} /></span>
 	</div>
 
 	{#if game.result}
@@ -74,7 +88,9 @@
 			{myColor
 				? myTurn
 					? 'Your move'
-					: `Waiting for ${nameOf(chess.turn() === 'w' ? game.players.w : game.players.b)}…`
+					: optimisticFen
+						? 'Sending…'
+						: `Waiting for ${nameOf(chess.turn() === 'w' ? game.players.w : game.players.b)}…`
 				: `Spectating — ${nameOf(chess.turn() === 'w' ? game.players.w : game.players.b)} to move`}
 		</p>
 	{/if}
@@ -85,7 +101,9 @@
 			<button
 				class="sq {s.dark ? 'sq--dark' : ''} {selected === s.sq ? 'sq--sel' : ''} {legalTargets.includes(s.sq) ? 'sq--hint' : ''}"
 				onclick={() => tap(s.sq)}
-			>{s.piece}</button>
+			>
+				{#if s.img}<img class="piece" src={s.img} alt={s.label} draggable="false" />{/if}
+			</button>
 		{/each}
 	</div>
 
@@ -106,11 +124,15 @@
 		align-items: center;
 		gap: 6px;
 	}
+	.mini {
+		width: 22px;
+		height: 22px;
+	}
 	.board {
 		display: grid;
 		grid-template-columns: repeat(8, 1fr);
 		aspect-ratio: 1;
-		max-width: 480px;
+		max-width: 520px;
 		border: 2px solid var(--border);
 		border-radius: var(--radius-sm);
 		overflow: hidden;
@@ -120,22 +142,35 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		font-size: clamp(20px, 5.5vw, 34px);
-		background: #e8d5b0;
+		background: #ebecd0;
 		border: none;
 		cursor: pointer;
 		padding: 0;
-		line-height: 1;
 	}
 	.sq--dark {
-		background: #a06c3c;
+		background: #779556;
+	}
+	.piece {
+		width: 88%;
+		height: 88%;
+		pointer-events: none;
+		user-select: none;
 	}
 	.sq--sel {
-		outline: 3px solid var(--accent);
-		outline-offset: -3px;
+		background: #f5f682;
+	}
+	.sq--dark.sq--sel {
+		background: #b9ca43;
 	}
 	.sq--hint {
-		box-shadow: inset 0 0 0 100px rgba(124, 58, 237, 0.28);
+		box-shadow: inset 0 0 0 100px rgba(0, 0, 0, 0.14);
+	}
+	.sq--hint:not(:has(.piece))::after {
+		content: '';
+		width: 30%;
+		height: 30%;
+		border-radius: 50%;
+		background: rgba(0, 0, 0, 0.22);
 	}
 	.moves {
 		margin-top: 10px;
