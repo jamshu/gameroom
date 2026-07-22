@@ -92,10 +92,23 @@ export async function adminExecute(model, method, args = [], kwargs = {}) {
 	return service('object', 'execute_kw', [env.ODOO_DB, uid, env.ODOO_API_KEY, model, method, args, kwargs]);
 }
 
+/**
+ * Odoo (19 SaaS) requires email-format logins. Mobile signups get a synthetic
+ * internal email derived from the digits; the real number is kept in `phone`.
+ * Login input is normalized the same way, so users keep typing their mobile.
+ */
+export function normalizeLogin(login) {
+	const trimmed = String(login || '').trim();
+	if (/@/.test(trimmed)) return { login: trimmed.toLowerCase(), phone: null };
+	const digits = trimmed.replace(/[^0-9]/g, '');
+	return { login: `m${digits}@mobile.gamerooms.local`, phone: trimmed };
+}
+
 /** Create a res.users record in the shared/default company. login = email or mobile. */
 export async function createUser({ name, login, password }) {
-	const vals = { name: name || login, login, password };
-	if (/@/.test(login)) vals.email = login;
+	const norm = normalizeLogin(login);
+	const vals = { name: name || login, login: norm.login, email: norm.login, password };
+	if (norm.phone) vals.phone = norm.phone;
 	try {
 		const gid = await adminExecute('ir.model.data', 'xmlid_to_res_id', ['base.group_user', false]);
 		if (gid) vals.groups_id = [[6, 0, [gid]]];

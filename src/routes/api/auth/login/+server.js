@@ -1,5 +1,5 @@
 import { json } from '@sveltejs/kit';
-import { assertConfigured, authenticateUser, buildSessionContext } from '$lib/server/odoo.js';
+import { assertConfigured, authenticateUser, buildSessionContext, normalizeLogin } from '$lib/server/odoo.js';
 import { setSessionCookie, setContextCookie } from '$lib/server/session.js';
 
 export const prerender = false;
@@ -12,7 +12,7 @@ export async function POST({ request, cookies }) {
 			return json({ ok: false, error: 'Login and password are required' }, { status: 400 });
 		}
 
-		const { sessionId, info } = await authenticateUser(String(login).trim(), password);
+		const { sessionId, info } = await authenticateUser(normalizeLogin(login).login, password);
 		setSessionCookie(cookies, sessionId);
 		setContextCookie(cookies, buildSessionContext(info));
 

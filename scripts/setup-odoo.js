@@ -91,38 +91,50 @@ async function detectAccessModel() {
 	return hasIrAccess;
 }
 
-// mode: 'read' (players) | 'crud' (admin group)
-async function ensureAccess(modelId, model, groupId, mode) {
+async function ensureAdminAccess(modelId, model, groupId) {
 	if (await detectAccessModel()) {
 		const found = await x('ir.access', 'search', [
 			[['model_id', '=', modelId], ['group_id', '=', groupId]]
 		]);
 		if (found.length) return found[0];
 		const id = await x('ir.access', 'create', [{
-			name: `${model} ${mode} access`,
+			name: `${model} admin access`,
 			model_id: modelId,
 			group_id: groupId,
-			operation: mode === 'read' ? 'read' : 'crud'
+			operation: 'crud'
 		}]);
-		console.log(`  + access ${model} (${mode})`);
+		console.log(`  + access ${model} (admin crud)`);
 		return id;
 	}
 	const found = await x('ir.model.access', 'search', [
 		[['model_id', '=', modelId], ['group_id', '=', groupId]]
 	]);
 	if (found.length) return found[0];
-	const rw = mode !== 'read';
 	const id = await x('ir.model.access', 'create', [{
-		name: `${model} ${mode} access`,
+		name: `${model} admin access`,
 		model_id: modelId,
 		group_id: groupId,
 		perm_read: true,
-		perm_write: rw,
-		perm_create: rw,
-		perm_unlink: rw
+		perm_write: true,
+		perm_create: true,
+		perm_unlink: true
 	}]);
-	console.log(`  + access ${model} (${mode})`);
+	console.log(`  + access ${model} (admin crud)`);
 	return id;
+}
+
+// Players must have NO direct Odoo access at all — the proxy (admin key) is the
+// only data path. Odoo 19 does not enforce field-level `groups` on direct RPC
+// reads of manual fields, so a read grant would leak thief-finder secret roles.
+async function removeAccess(modelId, model, groupId) {
+	const accessModel = (await detectAccessModel()) ? 'ir.access' : 'ir.model.access';
+	const found = await x(accessModel, 'search', [
+		[['model_id', '=', modelId], ['group_id', '=', groupId]]
+	]);
+	if (found.length) {
+		await x(accessModel, 'unlink', [found]);
+		console.log(`  - removed ${model} access for internal users`);
+	}
 }
 
 async function main() {
@@ -168,12 +180,12 @@ async function main() {
 	]) await ensureField(eventModel, 'x_room_event', f);
 
 	/* --------------------------- access rights ----------------------------- */
-	// Players (internal users): READ-ONLY on everything. All writes go through
-	// the app proxy with the admin key after app-level authorization.
+	// Players (internal users): NO direct access. All reads AND writes go
+	// through the app proxy with the admin key after app-level authorization.
 	console.log('Access rights:');
 	for (const [mid, m] of [[roomModel, 'x_gameroom'], [memberModel, 'x_room_member'], [eventModel, 'x_room_event']]) {
-		await ensureAccess(mid, m, internalGid, 'read');
-		await ensureAccess(mid, m, adminGid, 'crud');
+		await removeAccess(mid, m, internalGid);
+		await ensureAdminAccess(mid, m, adminGid);
 	}
 
 	console.log('Done.');
