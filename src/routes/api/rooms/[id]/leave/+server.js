@@ -1,14 +1,23 @@
 import { json } from '@sveltejs/kit';
 import { adminExecute } from '$lib/server/odoo.js';
-import { MEMBER, ROOM, requireMember, appendEvent, parseState, writeState, jsonError } from '$lib/server/room.js';
+import { MEMBER, ROOM, requireMember, appendEvent, parseState, writeState, deleteRoom, jsonError } from '$lib/server/room.js';
 
 export const prerender = false;
 
-/** Leave a room. Host leaving finishes the room (no host transfer v1). */
+/** Leave a room. Last member out → room deleted; host leaving → room finished. */
 export async function POST({ params, cookies }) {
 	try {
-		const { uid, room, member } = await requireMember(cookies, params.id);
+		const { uid, room, member, members } = await requireMember(cookies, params.id);
 		await adminExecute(MEMBER, 'write', [[member.id], { x_studio_status: 'left' }]);
+
+		// nobody active left → delete the whole room (abandoned)
+		const activeRemain = members.some(
+			(m) => m.id !== member.id && ['accepted', 'pending'].includes(m.x_studio_status)
+		);
+		if (!activeRemain) {
+			await deleteRoom(params.id);
+			return json({ ok: true, deleted: true });
+		}
 
 		// drop from voice roster if present
 		const state = parseState(room);

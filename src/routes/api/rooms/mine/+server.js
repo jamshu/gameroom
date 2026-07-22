@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import { adminExecute } from '$lib/server/odoo.js';
 import { requireUser } from '$lib/server/auth.js';
-import { MEMBER, ROOM, jsonError } from '$lib/server/room.js';
+import { MEMBER, ROOM, sweepAbandonedRooms, jsonError } from '$lib/server/room.js';
 
 export const prerender = false;
 
@@ -9,6 +9,7 @@ export const prerender = false;
 export async function GET({ cookies }) {
 	try {
 		const { uid } = await requireUser(cookies);
+		await sweepAbandonedRooms();
 		const memberships = await adminExecute(MEMBER, 'search_read', [
 			[['x_studio_user_id', '=', uid], ['x_studio_status', 'in', ['pending', 'accepted']]],
 			['x_studio_room_id', 'x_studio_status', 'x_studio_role']

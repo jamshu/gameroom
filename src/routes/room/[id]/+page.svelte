@@ -162,7 +162,7 @@
 			<div class="room-grid">
 				<main class="room-main">
 					{#if room.status === 'finished'}
-						<Leaderboard {members} game={$store.game} />
+						<Leaderboard {members} game={$store.game} {store} {isHost} />
 					{:else if room.status === 'lobby'}
 						<RoomLobby {store} {members} {room} {isHost} />
 					{:else if $store.game?.type === 'thief_finder'}

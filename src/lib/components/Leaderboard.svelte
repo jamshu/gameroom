@@ -1,7 +1,9 @@
 <script>
 	import Avatar from './Avatar.svelte';
 
-	let { members, game = null } = $props();
+	let { members, game = null, store = null, isHost = false } = $props();
+	let busy = $state(false);
+	let error = $state('');
 
 	const ranked = $derived(
 		members
@@ -9,6 +11,18 @@
 			.sort((a, b) => b.score - a.score)
 	);
 	const topScore = $derived(ranked[0]?.score ?? 0);
+
+	async function playAgain() {
+		error = '';
+		busy = true;
+		try {
+			await store.post('rematch', {});
+		} catch (e) {
+			error = e.message;
+		} finally {
+			busy = false;
+		}
+	}
 </script>
 
 <div class="card" style="padding:24px; text-align:center;">
@@ -23,7 +37,19 @@
 	{:else}
 		<p class="muted">No scores recorded.</p>
 	{/each}
-	<a class="btn btn--primary" style="margin-top:18px;" href="/">Back to rooms</a>
+
+	{#if error}<p class="error-text">{error}</p>{/if}
+
+	<div class="lb-actions">
+		{#if isHost && store}
+			<button class="btn btn--primary" onclick={playAgain} disabled={busy}>
+				{busy ? 'Resetting…' : '🔄 Play again'}
+			</button>
+		{:else}
+			<p class="muted" style="margin:0;">Waiting for host to start a new round…</p>
+		{/if}
+		<a class="btn btn--ghost" href="/">Back to rooms</a>
+	</div>
 </div>
 
 <style>
@@ -51,5 +77,13 @@
 		font-weight: 700;
 		color: var(--gold);
 		font-size: 1.1rem;
+	}
+	.lb-actions {
+		display: flex;
+		gap: 10px;
+		align-items: center;
+		justify-content: center;
+		flex-wrap: wrap;
+		margin-top: 18px;
 	}
 </style>

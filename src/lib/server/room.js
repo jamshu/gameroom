@@ -108,6 +108,49 @@ export function publicRoom(room) {
 	};
 }
 
+/** Delete a room and all its rows (FK-safe order: events → members → room). */
+export async function deleteRoom(roomId) {
+	const id = Number(roomId);
+	const events = await adminExecute(EVENT, 'search', [[['x_studio_room_id', '=', id]]]);
+	if (events.length) await adminExecute(EVENT, 'unlink', [events]);
+	const members = await adminExecute(MEMBER, 'search', [[['x_studio_room_id', '=', id]]]);
+	if (members.length) await adminExecute(MEMBER, 'unlink', [members]);
+	await adminExecute(ROOM, 'unlink', [[id]]);
+}
+
+// Lazy GC: run at most once per 60s per Lambda instance (no cron needed).
+let _lastSweep = 0;
+const SWEEP_THROTTLE_MS = 60000;
+const ABANDON_MIN = 10; // minutes with every member offline → abandoned
+
+/** Best-effort deletion of rooms whose every member has been offline > 10min. */
+export async function sweepAbandonedRooms() {
+	if (Date.now() - _lastSweep < SWEEP_THROTTLE_MS) return;
+	_lastSweep = Date.now();
+	try {
+		const cutoff = new Date(Date.now() - ABANDON_MIN * 60000)
+			.toISOString()
+			.slice(0, 19)
+			.replace('T', ' ');
+		// rooms with a recently-seen active member are alive
+		const live = await adminExecute(MEMBER, 'search_read', [
+			[['x_studio_last_seen', '>', cutoff], ['x_studio_status', 'in', ['accepted', 'pending']]],
+			['x_studio_room_id']
+		]);
+		const liveRoomIds = new Set(live.map((m) => m.x_studio_room_id?.[0]).filter(Boolean));
+		// candidates: created before the cutoff (protects fresh rooms nobody polled yet)
+		const rooms = await adminExecute(ROOM, 'search_read', [
+			[['create_date', '<', cutoff]],
+			['id']
+		]);
+		for (const r of rooms) {
+			if (!liveRoomIds.has(r.id)) await deleteRoom(r.id);
+		}
+	} catch (e) {
+		console.error('sweepAbandonedRooms failed:', e.message);
+	}
+}
+
 /** Mark the room finished and persist per-user scores onto member rows. */
 export async function finishRoom(roomId, members, scoresByUid = {}) {
 	for (const m of members) {

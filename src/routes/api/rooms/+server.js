@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import { adminExecute } from '$lib/server/odoo.js';
 import { requireUser } from '$lib/server/auth.js';
-import { ROOM, MEMBER, jsonError } from '$lib/server/room.js';
+import { ROOM, MEMBER, sweepAbandonedRooms, jsonError } from '$lib/server/room.js';
 
 export const prerender = false;
 
@@ -45,6 +45,7 @@ export async function POST({ request, cookies }) {
 export async function GET({ url, cookies }) {
 	try {
 		await requireUser(cookies);
+		await sweepAbandonedRooms();
 		const q = url.searchParams.get('q')?.trim() || '';
 		const domain = [['x_studio_status', '!=', 'finished']];
 		if (q) domain.push(['x_name', 'ilike', q]);
