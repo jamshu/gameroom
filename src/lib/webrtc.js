@@ -8,10 +8,13 @@ const FALLBACK_ICE = [{ urls: 'stun:stun.l.google.com:19302' }];
 const ICE_FLUSH_MS = 300; // batch outgoing candidates into one POST per tick
 
 export function createVoiceMesh({ myUid, sendSignal, onPeersChange }) {
-	const peers = new Map(); // uid -> { pc, audioEl, pendingIce, outIce, flushTimer }
+	const peers = new Map(); // uid -> { pc, audioEl, pendingIce, outIce, flushTimer, createdAt }
 	let localStream = null;
 	let joined = false;
 	let iceServers = FALLBACK_ICE;
+	// signals arriving while getUserMedia/permission prompt is still up would
+	// otherwise be lost forever (the offerer never re-sends) — buffer them
+	let preJoinSignals = [];
 
 	/** [{uid, state}] — VoiceBar derives "connecting…" from real pc states. */
 	function notify() {
@@ -59,7 +62,7 @@ export function createVoiceMesh({ myUid, sendSignal, onPeersChange }) {
 
 	function newPeer(uid) {
 		const pc = new RTCPeerConnection({ iceServers });
-		const entry = { pc, audioEl: null, pendingIce: [], outIce: [], flushTimer: null };
+		const entry = { pc, audioEl: null, pendingIce: [], outIce: [], flushTimer: null, createdAt: Date.now() };
 		for (const track of localStream.getTracks()) pc.addTrack(track, localStream);
 		pc.onicecandidate = (e) => {
 			if (e.candidate) queueIce(uid, entry, e.candidate);
@@ -95,10 +98,20 @@ export function createVoiceMesh({ myUid, sendSignal, onPeersChange }) {
 		notify();
 	}
 
+	const STALE_MS = 15000;
+
 	/** Reconcile connections with the server's voice roster. */
 	async function sync(voiceUids) {
 		if (!joined) return;
 		const others = voiceUids.filter((u) => u !== myUid);
+		// watchdog: a pair stuck negotiating (lost signal, failed relay path)
+		// gets torn down; the offerer immediately re-offers below
+		for (const [uid, entry] of peers) {
+			const stuck =
+				['new', 'connecting'].includes(entry.pc.connectionState) &&
+				Date.now() - entry.createdAt > STALE_MS;
+			if (stuck) drop(uid);
+		}
 		for (const uid of others) {
 			// lower uid offers; the higher side waits for the offer to arrive
 			if (!peers.has(uid) && myUid < uid) await offerTo(uid);
@@ -118,7 +131,11 @@ export function createVoiceMesh({ myUid, sendSignal, onPeersChange }) {
 	}
 
 	async function handleSignal(fromUid, { kind, data }) {
-		if (!joined) return;
+		if (!joined) {
+			// mic permission prompt still up — keep for processing after join
+			preJoinSignals.push([fromUid, { kind, data }]);
+			return;
+		}
 		if (kind === 'bye') return drop(fromUid);
 		let entry = peers.get(fromUid);
 		if (kind === 'offer') {
@@ -147,10 +164,14 @@ export function createVoiceMesh({ myUid, sendSignal, onPeersChange }) {
 			iceServers = FALLBACK_ICE;
 		}
 		joined = true;
+		// replay anything that arrived during the permission prompt
+		const buffered = preJoinSignals.splice(0);
+		for (const [uid, sig] of buffered) await handleSignal(uid, sig);
 	}
 
 	function leave() {
 		joined = false;
+		preJoinSignals = [];
 		for (const uid of [...peers.keys()]) {
 			try {
 				sendSignal(uid, 'bye', {});

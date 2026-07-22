@@ -52,7 +52,6 @@
 
 	async function joinVoice() {
 		try {
-			await store.post('voice', { action: 'join' });
 			if (!mesh) {
 				mesh = createVoiceMesh({
 					myUid,
@@ -62,7 +61,15 @@
 				});
 				store.onSignal((from, payload) => mesh.handleSignal(from, payload));
 			}
+			// mic permission + TURN credentials FIRST — only then enter the
+			// roster, so peers never offer to someone who can't answer yet
 			await mesh.join();
+			try {
+				await store.post('voice', { action: 'join' });
+			} catch (e) {
+				mesh.leave(); // voice full — release the mic
+				throw e;
+			}
 			inVoice = true;
 			mesh.sync($store.voice);
 		} catch (e) {
