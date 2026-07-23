@@ -4,6 +4,7 @@
 // admin-group-only, so the proxy is the single write path by construction.
 import { adminExecute } from './odoo.js';
 import { requireUser } from './auth.js';
+import { createSnapshotCache } from './roomcache.js';
 
 export const ROOM = 'x_gameroom';
 export const MEMBER = 'x_room_member';
@@ -48,10 +49,17 @@ export async function getMembers(roomId) {
 export async function requireMember(cookies, roomId) {
 	const { uid } = await requireUser(cookies);
 	const [room, members] = await Promise.all([getRoom(roomId), getMembers(roomId)]);
+	return { uid, room, member: judgeMembership(uid, room, members), members };
+}
+
+/**
+ * Accepted-membership verdict, shared by the fresh and cached auth paths so they
+ * can't drift. Returns the caller's member row or throws a coded 403 — only some
+ * of the codes mean "stop polling forever".
+ */
+function judgeMembership(uid, room, members) {
 	const mine = members.find((m) => m.x_studio_user_id?.[0] === uid);
 	if (!mine || mine.x_studio_status !== 'accepted') {
-		// Distinguish the reasons: only some of them mean "stop polling forever".
-		// `members` and `room` are already in hand, so this costs no extra Odoo call.
 		if ((parseState(room)?.banned || []).includes(uid)) {
 			throw httpError(403, 'The host removed you from this room', 'removed');
 		}
@@ -60,7 +68,38 @@ export async function requireMember(cookies, roomId) {
 		}
 		throw httpError(403, 'You are not a member of this room', 'not_member');
 	}
-	return { uid, room, member: mine, members };
+	return mine;
+}
+
+// Per-room (room+members) snapshot cache: every client's poll reads the SAME
+// two rows, so collapse them to one Odoo fetch per room per short window.
+const ROOM_SNAPSHOT_TTL_MS = 750;
+const roomCache = createSnapshotCache(
+	(id) => Promise.all([getRoom(id), getMembers(id)]),
+	ROOM_SNAPSHOT_TTL_MS
+);
+
+/** Cached [room, members]. `fresh` bypasses the cache (used for 403 re-judge). */
+export function roomSnapshot(roomId, opts) {
+	return roomCache.get(Number(roomId), opts);
+}
+
+/**
+ * Read-only poll variant of requireMember, served from the room snapshot cache.
+ * A stale cache could wrongly reject a just-joined/removed player, and the store
+ * treats `not_member` as terminal — so any 403 is re-judged against a FRESH
+ * snapshot before it's thrown. The happy path (accepted member) never re-fetches.
+ */
+export async function requireMemberCached(cookies, roomId) {
+	const { uid } = await requireUser(cookies);
+	let [room, members] = await roomSnapshot(roomId);
+	try {
+		return { uid, room, member: judgeMembership(uid, room, members), members };
+	} catch (e) {
+		if (e.status !== 403) throw e;
+		[room, members] = await roomSnapshot(roomId, { fresh: true });
+		return { uid, room, member: judgeMembership(uid, room, members), members };
+	}
 }
 
 /** Auth + host of the room. */

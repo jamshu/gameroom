@@ -10,7 +10,8 @@
 		"prepare": "svelte-kit sync || echo ''",
 		"setup:odoo": "node --env-file=.env scripts/setup-odoo.js",
 		"check:sim": "node src/lib/games/carroms-sim-check.js",
-		"check:thief": "node src/lib/server/thief-claims-check.js"
+		"check:thief": "node src/lib/server/thief-claims-check.js",
+		"check:cache": "node src/lib/server/snapshot-cache-check.js"
 	},
 	"devDependencies": {
 		"@sveltejs/kit": "^2.63.0",

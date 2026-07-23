@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import { adminExecute } from '$lib/server/odoo.js';
-import { EVENT, MEMBER, requireMember, parseState, publicRoom, publicMembers, writeState, jsonError } from '$lib/server/room.js';
+import { EVENT, MEMBER, requireMemberCached, parseState, publicRoom, publicMembers, writeState, jsonError } from '$lib/server/room.js';
 import { resolveClaims, stateView } from '$lib/server/gamelogic.js';
 
 export const prerender = false;
@@ -17,7 +17,7 @@ function odooNow() {
  */
 export async function GET({ params, url, cookies }) {
 	try {
-		const { uid, room, member, members } = await requireMember(cookies, params.id);
+		const { uid, room, member, members } = await requireMemberCached(cookies, params.id);
 		const since = Number(url.searchParams.get('since')) || 0;
 		const gv = Number(url.searchParams.get('gv')) || 0;
 
