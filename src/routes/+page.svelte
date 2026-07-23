@@ -6,6 +6,11 @@
 
 	const GAME_LABELS = { chess: '♟️ Chess', carroms: '🎯 Carroms', thief_finder: '🕵️ Thief Finder' };
 
+	/** Focus the node on mount — fires each time the create form opens. */
+	function autofocus(node) {
+		node.focus();
+	}
+
 	let myRooms = $state([]);
 	let q = $state('');
 	let typeFilter = $state('');
@@ -190,10 +195,14 @@
 			{/if}
 		</div>
 
-		{#if showCreate}
+	</section>
+
+	{#if showCreate}
+		<section class="card" style="padding:20px; margin-bottom:20px;">
+			<h2 class="section-title" style="margin-top:0;">+ New room</h2>
 			<form class="create-form" onsubmit={createRoom}>
 				<label class="label" for="rname">Room name</label>
-				<input id="rname" class="input" bind:value={name} required maxlength="60" />
+				<input id="rname" class="input" bind:value={name} required maxlength="60" use:autofocus />
 				<label class="label" for="rgame">Game</label>
 				<select id="rgame" class="select" bind:value={gameType}>
 					<option value="thief_finder">🕵️ Thief Finder</option>
@@ -213,8 +222,8 @@
 					{creating ? 'Creating…' : 'Create room'}
 				</button>
 			</form>
-		{/if}
-	</section>
+		</section>
+	{/if}
 
 	{#if notice}<p class="chip chip--amber notice">{notice}</p>{/if}
 	{#if error}<p class="error-text">{error}</p>{/if}
@@ -285,9 +294,7 @@
 		margin-bottom: 10px;
 	}
 	.create-form {
-		margin-top: 18px;
-		border-top: 1px solid var(--border);
-		padding-top: 14px;
+		margin-top: 4px;
 	}
 	.room-row {
 		display: flex;
