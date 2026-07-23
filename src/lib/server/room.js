@@ -5,6 +5,12 @@
 import { adminExecute } from './odoo.js';
 import { requireUser } from './auth.js';
 import { createSnapshotCache } from './roomcache.js';
+import { publishState, publishEvent } from './realtime.js';
+
+// Latest known member uids per room, refreshed on every member read (getMembers).
+// Lets writeState address per-uid push channels without an extra Odoo lookup; a
+// just-joined player missing here for one poll cycle is fine (safety poll covers).
+const roomUids = new Map();
 
 export const ROOM = 'x_gameroom';
 export const MEMBER = 'x_room_member';
@@ -32,10 +38,12 @@ export async function getRoom(roomId) {
 }
 
 export async function getMembers(roomId) {
-	return adminExecute(MEMBER, 'search_read', [
+	const members = await adminExecute(MEMBER, 'search_read', [
 		[['x_studio_room_id', '=', Number(roomId)]],
 		['x_name', 'x_studio_user_id', 'x_studio_status', 'x_studio_role', 'x_studio_score', 'x_studio_last_seen']
 	], { order: 'id asc' });
+	roomUids.set(Number(roomId), members.map((m) => m.x_studio_user_id?.[0]).filter(Boolean));
+	return members;
 }
 
 /**
@@ -128,6 +136,8 @@ export async function writeState(roomId, state, extraVals = {}) {
 		[Number(roomId)],
 		{ ...extraVals, x_studio_state: JSON.stringify(state) }
 	]);
+	// push the filtered new state straight to each member — no client poll needed
+	await publishState(roomId, state, roomUids.get(Number(roomId)) || []);
 	return state;
 }
 
@@ -140,7 +150,10 @@ export async function appendEvent(roomId, type, payload, senderUid, targetUid = 
 		x_studio_sender_uid: senderUid || 0
 	};
 	if (targetUid) vals.x_studio_target_uid = targetUid;
-	return adminExecute(EVENT, 'create', [vals]);
+	const id = await adminExecute(EVENT, 'create', [vals]);
+	// push the event itself — public on the room channel, targeted to one user
+	await publishEvent(roomId, { id, type, senderUid: senderUid || 0, payload: payload ?? {} }, targetUid);
+	return id;
 }
 
 /** Members serialized for clients (uid-keyed, presence derived). */

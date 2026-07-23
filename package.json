@@ -11,7 +11,8 @@
 		"setup:odoo": "node --env-file=.env scripts/setup-odoo.js",
 		"check:sim": "node src/lib/games/carroms-sim-check.js",
 		"check:thief": "node src/lib/server/thief-claims-check.js",
-		"check:cache": "node src/lib/server/snapshot-cache-check.js"
+		"check:cache": "node src/lib/server/snapshot-cache-check.js",
+		"check:realtime": "node src/lib/server/realtime-check.js"
 	},
 	"devDependencies": {
 		"@sveltejs/kit": "^2.63.0",
@@ -26,6 +27,7 @@
 	"dependencies": {
 		"@fontsource-variable/fraunces": "^5.2.9",
 		"@fontsource-variable/inter": "^5.2.8",
+		"ably": "^2.25.0",
 		"chess.js": "^1.4.0"
 	}
 }

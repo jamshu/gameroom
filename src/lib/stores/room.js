@@ -20,6 +20,10 @@ const IDLE_MS = 10000; // nothing at all for 30s — empty lobby, abandoned game
 const ACTIVE_WINDOW_MS = 5000;
 const IDLE_AFTER_MS = 30000;
 const FAST_MS = 1000; // while WebRTC signaling is in flight
+// When Ably push is connected the wake-bell drives responsiveness, so the poll
+// only runs as a safety net — kept ≤ the presence window so `last_seen` (written
+// on poll when >6s stale) still refreshes and nobody flips falsely offline.
+const PUSH_SAFETY_MS = 8000;
 // Reasons the poll must give up rather than retry. Anything else is transient.
 const TERMINAL_CODES = new Set(['removed', 'not_member']);
 const MAX_ERROR_BACKOFF = 8; // cap the multiplier so recovery stays reasonable
@@ -55,6 +59,9 @@ export function createRoomStore(roomId) {
 	let tempSeq = 0;
 	let signalHandler = null; // webrtc manager subscribes here
 	let systemHandler = null;
+	let ably = null; // Ably Realtime client (null until/unless push is enabled)
+	let channel = null;
+	let pushConnected = false; // true while the wake-bell is live → poll backs off
 
 	function onSignal(fn) {
 		signalHandler = fn;
@@ -86,6 +93,50 @@ export function createRoomStore(roomId) {
 		if (state) store.update((s) => mergeState(s, state));
 	}
 
+	// Event ids already applied — one guard shared by the poll and the Ably push,
+	// so an event delivered by both (a poll in flight when the push lands) isn't
+	// processed twice. Bounded so it can't grow without limit.
+	const appliedEventIds = new Set();
+	function rememberApplied(id) {
+		appliedEventIds.add(id);
+		if (appliedEventIds.size > 500) {
+			const it = appliedEventIds.values();
+			for (let i = 0; i < 100; i++) appliedEventIds.delete(it.next().value);
+		}
+	}
+
+	/**
+	 * The single apply path for BOTH the poll and the Ably push. Events dedupe by
+	 * id; `state` merges version-gated; `room`/`members` update only when present
+	 * (the push carries neither — presence still rides the poll).
+	 */
+	function ingest({ events = [], state, room, members }) {
+		for (const ev of events) if (ev?.id > cursor) cursor = ev.id;
+		const fresh = events.filter((ev) => ev && !appliedEventIds.has(ev.id));
+		if (!fresh.length && !state && !room && !members) return;
+		store.update((s) => {
+			const chat = [...s.chat];
+			const evs = [...s.events];
+			const seenChat = new Set(chat.map((c) => c.id));
+			for (const ev of fresh) {
+				rememberApplied(ev.id);
+				if (ev.type === 'chat') {
+					if (seenChat.has(ev.id)) continue; // our own optimistic copy
+					seenChat.add(ev.id);
+					chat.push({ id: ev.id, senderUid: ev.senderUid, text: ev.payload.text });
+				} else if (ev.type === 'signal') signalHandler?.(ev.senderUid, ev.payload);
+				else if (ev.type === 'system') {
+					evs.push(ev);
+					systemHandler?.(ev);
+				}
+			}
+			const next = { ...s, chat: chat.slice(-200), events: evs.slice(-50), error: null };
+			if (room) next.room = room;
+			if (members) next.members = members;
+			return mergeState(next, state);
+		});
+	}
+
 	async function poll() {
 		if (stopped) return;
 		// A poll is already running — remember that someone wanted an immediate
@@ -105,34 +156,7 @@ export function createRoomStore(roomId) {
 			// the Odoo load. (The presence heartbeat writes no event row, and
 			// d.state only arrives when state.v > gv, so neither can self-re-arm.)
 			if ((d.events?.length ?? 0) > 0 || d.state) markActive();
-			store.update((s) => {
-				const chat = [...s.chat];
-				const events = [...s.events];
-				// our own messages are inserted optimistically and reconciled to
-				// the server id, so the poll echo must not add them a second time
-				// ({#each … (msg.id)} throws on duplicate keys)
-				const seenChat = new Set(chat.map((c) => c.id));
-				for (const ev of d.events || []) {
-					if (ev.type === 'chat') {
-						if (seenChat.has(ev.id)) continue;
-						seenChat.add(ev.id);
-						chat.push({ id: ev.id, senderUid: ev.senderUid, text: ev.payload.text });
-					} else if (ev.type === 'signal') signalHandler?.(ev.senderUid, ev.payload);
-					else if (ev.type === 'system') {
-						events.push(ev);
-						systemHandler?.(ev);
-					}
-				}
-				const next = {
-					...s,
-					room: d.room,
-					members: d.members,
-					chat: chat.slice(-200),
-					events: events.slice(-50),
-					error: null
-				};
-				return mergeState(next, d.state);
-			});
+			ingest({ events: d.events, state: d.state, room: d.room, members: d.members });
 			errorStreak = 0;
 		} catch (e) {
 			if (TERMINAL_CODES.has(e?.code)) {
@@ -166,7 +190,11 @@ export function createRoomStore(roomId) {
 		// 429 amplifier. Back off while it's broken; reset the moment it recovers.
 		const penalty = errorStreak ? Math.min(2 ** errorStreak, MAX_ERROR_BACKOFF) : 1;
 		if (document.hidden) return HIDDEN_MS * penalty;
-		if (fast) return FAST_MS * penalty; // FAST outranks ACTIVE — never slow WebRTC
+		if (fast) return FAST_MS * penalty; // FAST outranks all — never slow WebRTC
+		// Push connected: real changes arrive as wake-bells (schedule(0)), so the
+		// timer is ONLY a safety net — back off fully even right after activity.
+		// This must outrank the active/base tiers or push saves nothing during play.
+		if (pushConnected) return PUSH_SAFETY_MS * penalty;
 		const quietFor = Date.now() - lastActivityAt;
 		if (quietFor < ACTIVE_WINDOW_MS) return ACTIVE_MS * penalty;
 		if (quietFor < IDLE_AFTER_MS) return BASE_MS * penalty;
@@ -191,9 +219,64 @@ export function createRoomStore(roomId) {
 		}
 	}
 
+	/* ---- realtime wake-bell (Ably) ----------------------------------------
+	   An Ably message on this room's channel just means "something changed" —
+	   we respond with the normal immediate poll, so all secret filtering and
+	   merge logic is unchanged. Best-effort: if realtime is disabled (token
+	   endpoint 501s) or anything throws, we never init Ably and the tuned
+	   polling tiers carry the room as before. The preflight fetch avoids Ably's
+	   retry loop (which would re-hit the token endpoint) when it's off. */
+	let userChannel = null;
+	async function connectRealtime() {
+		try {
+			const res = await fetch(`/api/realtime/token?room=${roomId}`);
+			if (!res.ok) {
+				console.warn('[realtime] off — token endpoint returned', res.status, '(staying on polling)');
+				return; // disabled, or not a member — stay on polling
+			}
+			const AblyLib = await import('ably');
+			const Realtime = AblyLib.Realtime || AblyLib.default?.Realtime;
+			if (!Realtime || stopped) return;
+			ably = new Realtime({ authUrl: `/api/realtime/token?room=${roomId}` });
+
+			// public channel: chat + system events for the whole room
+			channel = ably.channels.get(`room:${roomId}`);
+			channel.subscribe('event', (msg) => {
+				markActive();
+				ingest({ events: [msg.data] });
+			});
+
+			ably.connection.on((sc) => {
+				pushConnected = ably?.connection.state === 'connected';
+				console.log('[realtime]', ably?.connection.state, pushConnected ? '(push ON)' : '');
+				if (sc?.reason) console.warn('[realtime] reason:', sc.reason.message);
+				if (pushConnected && !userChannel) {
+					// clientId == our uid — subscribe our private channel for filtered
+					// state + targeted (signal) events. A catch-up poll re-syncs
+					// anything published while we were connecting/reconnecting.
+					const uid = ably.auth.clientId;
+					userChannel = ably.channels.get(`room:${roomId}:u:${uid}`);
+					userChannel.subscribe('state', (msg) => {
+						markActive();
+						ingest({ state: msg.data });
+					});
+					userChannel.subscribe('event', (msg) => {
+						markActive();
+						ingest({ events: [msg.data] });
+					});
+					schedule(0);
+				}
+			});
+		} catch (e) {
+			pushConnected = false;
+			console.warn('[realtime] connect failed:', e?.message);
+		}
+	}
+
 	function open() {
 		stopped = false;
 		document.addEventListener('visibilitychange', onVisibility);
+		connectRealtime();
 		poll();
 	}
 
@@ -201,6 +284,17 @@ export function createRoomStore(roomId) {
 		stopped = true;
 		clearTimeout(timer);
 		document.removeEventListener('visibilitychange', onVisibility);
+		try {
+			channel?.unsubscribe();
+			userChannel?.unsubscribe();
+			ably?.close();
+		} catch {
+			/* ignore teardown errors */
+		}
+		ably = null;
+		channel = null;
+		userChannel = null;
+		pushConnected = false;
 	}
 
 	/* ---- optimistic chat --------------------------------------------------
