@@ -18,7 +18,7 @@ export async function POST({ params, cookies }) {
 		if (memberIds.length) await adminExecute(MEMBER, 'write', [memberIds, { x_studio_score: 0 }]);
 
 		const state = parseState(room) || { v: 0, voice: [], game: null };
-		state.voice = [];
+		// keep state.voice intact — a rematch resets the game, not the live call
 		state.game = null;
 		await writeState(params.id, state, { x_studio_status: 'lobby' });
 		await appendEvent(params.id, 'system', { kind: 'rematch' }, uid);
