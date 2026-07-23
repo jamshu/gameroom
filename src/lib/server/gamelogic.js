@@ -39,6 +39,12 @@ export function initGame(gameType, playerUids, room) {
 		for (const u of playerUids) totals[u] = 0;
 		return {
 			type: 'thief_finder',
+			// Unique per game instance. Pick events carry it so the append-only log
+			// stays game-scoped: a rematch resets `draw` to 1, which would otherwise
+			// collide with the PREVIOUS game's draw-1 picks (same room, still in the
+			// log) and auto-claim cards nobody opened. The epoch is what keeps each
+			// game's picks apart. See filterPickRows.
+			epoch: crypto.randomUUID(),
 			players: playerUids,
 			draw: 0,
 			drawsTotal,
@@ -141,6 +147,20 @@ function safePayload(row) {
 	} catch {
 		return {};
 	}
+}
+
+/**
+ * Narrow the room's whole pick log to just THIS game's current draw. The log is
+ * append-only and never cleared on rematch, so it can hold picks from earlier
+ * games in the same room; matching on `epoch` (per game) AND `draw` (per round)
+ * is what stops a previous game's picks being replayed into a fresh one.
+ * PURE — the Odoo query stays in the routes; this is the shared, testable filter.
+ */
+export function filterPickRows(rows, game) {
+	return rows.filter((r) => {
+		const p = safePayload(r);
+		return p.epoch === game.epoch && p.draw === game.draw;
+	});
 }
 
 export function thiefGuess(game, guesserUid, accusedUid) {

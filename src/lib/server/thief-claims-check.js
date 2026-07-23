@@ -3,18 +3,21 @@
 import assert from 'node:assert';
 import { register } from 'node:module';
 register('./thief-env-stub-loader.mjs', import.meta.url);
-const { thiefDeal, resolveClaims } = await import('./gamelogic.js');
+const { thiefDeal, resolveClaims, filterPickRows } = await import('./gamelogic.js');
 
-const pick = (uid, envelope, id) => ({
+const EPOCH = 'game-A';
+// `epoch` defaults to the current game so existing cases keep matching; pass a
+// different one to model a pick row left over from a PREVIOUS game in the room.
+const pick = (uid, envelope, id, epoch = EPOCH) => ({
 	id,
 	x_studio_sender_uid: uid,
-	x_studio_payload: JSON.stringify({ draw: 1, envelope })
+	x_studio_payload: JSON.stringify({ epoch, draw: 1, envelope })
 });
 
 // draw 1, phase picking, then force a known envelope layout for deterministic asserts.
 function laid(nPlayers, roles) {
 	const players = Array.from({ length: nPlayers }, (_, i) => 100 + i);
-	const g = { type: 'thief_finder', players, draw: 0, drawsTotal: 5, phase: 'idle', totals: {} };
+	const g = { type: 'thief_finder', epoch: EPOCH, players, draw: 0, drawsTotal: 5, phase: 'idle', totals: {} };
 	thiefDeal(g);
 	g.envelopes = roles;
 	g.claims = {};
@@ -65,6 +68,37 @@ const LAYOUT = ['Thief', 'Police', 'King']; // envelope idx -> role
 	const b = laid(3, LAYOUT);
 	resolveClaims(b, rows);
 	assert.deepEqual(a.claims, b.claims);
+}
+
+// 6. Cross-game isolation: a previous game's pick rows (a DIFFERENT epoch, same
+//    draw:1) share the room's append-only log after a rematch. filterPickRows
+//    must drop them so the fresh game claims nothing until players actually pick.
+{
+	const g = laid(3, LAYOUT); // g.epoch === EPOCH ('game-A'), draw 1
+	const log = [
+		pick(100, 0, 1, 'game-OLD'), // leftover from the previous game — must be ignored
+		pick(101, 1, 2, 'game-OLD'),
+		pick(102, 2, 3, 'game-OLD')
+	];
+	const rows = filterPickRows(log, g);
+	assert.equal(rows.length, 0, 'stale previous-game picks are filtered out');
+	resolveClaims(g, rows);
+	assert.deepEqual(g.claims, {}, 'no card is auto-assigned in the fresh game');
+	assert.equal(g.phase, 'picking', 'fresh game stays in picking until real picks land');
+}
+
+// 7. Same log, but the current game's own picks (matching epoch) still resolve,
+//    while the stale ones alongside them are ignored.
+{
+	const g = laid(3, LAYOUT);
+	const rows = filterPickRows(
+		[pick(999, 0, 1, 'game-OLD'), pick(100, 0, 2), pick(101, 1, 3), pick(102, 2, 4)],
+		g
+	);
+	resolveClaims(g, rows);
+	assert.equal(g.phase, 'guessing', 'this game’s picks complete the set');
+	assert.deepEqual(g.secret, { 100: 'Thief', 101: 'Police', 102: 'King' });
+	assert.ok(!Object.values(g.claims).includes(999), 'the stale picker never claims');
 }
 
 console.log('thief-claims-check: all assertions passed');

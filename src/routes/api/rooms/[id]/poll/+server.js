@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import { adminExecute } from '$lib/server/odoo.js';
 import { EVENT, MEMBER, requireMemberCached, parseState, publicRoom, publicMembers, writeState, jsonError } from '$lib/server/room.js';
-import { resolveClaims, stateView } from '$lib/server/gamelogic.js';
+import { resolveClaims, filterPickRows, stateView } from '$lib/server/gamelogic.js';
 
 export const prerender = false;
 
@@ -68,10 +68,7 @@ export async function GET({ params, url, cookies }) {
 				[['x_studio_room_id', '=', Number(params.id)], ['x_studio_type', '=', 'pick']],
 				['x_studio_sender_uid', 'x_studio_payload']
 			], { order: 'id asc' });
-			const draw = state.game.draw;
-			const rows = picks.filter((r) => {
-				try { return JSON.parse(r.x_studio_payload || '{}').draw === draw; } catch { return false; }
-			});
+			const rows = filterPickRows(picks, state.game);
 			if (resolveClaims(state.game, rows)) await writeState(params.id, state);
 		}
 		if (state && state.v > gv) out.state = stateView(state, uid);
