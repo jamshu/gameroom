@@ -15,7 +15,7 @@ import { api } from '$lib/api.js';
 // 2.5s already runs ~5 req/s, so these are the slowest values that still feel
 // like a game — pushing ACTIVE down to 800ms earned a hard HTTP 429.
 const ACTIVE_MS = 1050; // something changed just now — more probably will
-const BASE_MS = 2500; // normal play
+const BASE_MS = 1500; // normal play
 const IDLE_MS = 10000; // nothing at all for 30s — empty lobby, abandoned game
 const ACTIVE_WINDOW_MS = 5000;
 const IDLE_AFTER_MS = 30000;
