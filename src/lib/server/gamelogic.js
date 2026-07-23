@@ -85,6 +85,7 @@ function shuffled(arr) {
 	return a;
 }
 
+/** Host lays the envelopes: roles shuffled onto envelope slots, none claimed yet. */
 export function thiefDeal(game) {
 	if (game.phase !== 'idle' && game.phase !== 'reveal') throw httpError(409, 'Draw already in progress');
 	if (game.draw >= game.drawsTotal) throw httpError(409, 'All draws are done');
@@ -92,13 +93,54 @@ export function thiefDeal(game) {
 		throw httpError(409, 'Let everyone see the reveal first');
 	}
 	const roles = ['Thief', 'Police', ...ROLE_LADDER.slice(0, game.players.length - 2).map(([n]) => n)];
-	const dealt = shuffled(roles);
-	game.secret = {};
-	game.players.forEach((uid, i) => (game.secret[uid] = dealt[i]));
-	game.policeUid = Number(Object.keys(game.secret).find((u) => game.secret[u] === 'Police'));
+	// index = envelope slot, value = role. SECRET — filtered out of every client view.
+	game.envelopes = shuffled(roles);
+	game.claims = {}; // envelopeIdx -> uid, filled as players open envelopes
+	game.secret = null; // full {uid: role} set only once every envelope is claimed
+	game.policeUid = null; // revealed the moment the police envelope is opened
 	game.draw += 1;
-	game.phase = 'guessing';
+	game.phase = 'picking';
 	game.lastResult = null;
+}
+
+/**
+ * Rebuild the claim map from the append-only pick log (source of truth). Pure
+ * except for mutating `game`. `pickRows` MUST be sorted by Odoo id asc — that
+ * order IS the first-come tiebreak. Returns true if anything changed.
+ *
+ * A pick is honoured only if its envelope is still free AND the picker holds no
+ * envelope yet; everything else (a collision loser, a double-pick) is ignored.
+ * Rebuilding from the whole log every time makes a lost blob write self-healing.
+ */
+export function resolveClaims(game, pickRows) {
+	const before = JSON.stringify([game.claims, game.policeUid, game.phase]);
+	const claims = {};
+	const held = new Set();
+	for (const row of pickRows) {
+		const uid = Number(row.x_studio_sender_uid);
+		const k = safePayload(row).envelope;
+		if (k == null || claims[k] != null || held.has(uid)) continue;
+		if (k < 0 || k >= game.envelopes.length) continue;
+		claims[k] = uid;
+		held.add(uid);
+	}
+	game.claims = claims;
+	const policeK = game.envelopes.findIndex((r) => r === 'Police');
+	game.policeUid = claims[policeK] ?? null;
+	if (Object.keys(claims).length === game.players.length) {
+		game.secret = {};
+		for (const [k, uid] of Object.entries(claims)) game.secret[uid] = game.envelopes[k];
+		game.phase = 'guessing';
+	}
+	return JSON.stringify([game.claims, game.policeUid, game.phase]) !== before;
+}
+
+function safePayload(row) {
+	try {
+		return JSON.parse(row.x_studio_payload || '{}');
+	} catch {
+		return {};
+	}
 }
 
 export function thiefGuess(game, guesserUid, accusedUid) {
@@ -127,6 +169,11 @@ export function thiefGuess(game, guesserUid, accusedUid) {
 
 /** Per-session view — the only thief-finder shape clients ever receive. */
 export function thiefView(game, uid) {
+	// picking: expose the public claim map + the caller's OWN card only. The
+	// `envelopes` role array and the full `secret` map never leave the server.
+	const picking = game.phase === 'picking';
+	const myKey = picking ? Object.keys(game.claims || {}).find((k) => game.claims[k] === uid) : null;
+	const myEnvIdx = myKey != null ? Number(myKey) : null;
 	return {
 		type: game.type,
 		players: game.players,
@@ -134,7 +181,15 @@ export function thiefView(game, uid) {
 		drawsTotal: game.drawsTotal,
 		phase: game.phase,
 		policeUid: game.policeUid,
-		myRole: game.phase === 'guessing' && game.secret ? game.secret[uid] || null : null,
+		envelopeCount: picking ? game.envelopes.length : 0,
+		claims: picking ? game.claims : null,
+		myEnvelope: myEnvIdx,
+		myRole:
+			picking && myEnvIdx != null
+				? game.envelopes[myEnvIdx]
+				: game.phase === 'guessing' && game.secret
+					? game.secret[uid] || null
+					: null,
 		lastResult: game.phase === 'reveal' || game.phase === 'finished' ? game.lastResult : null,
 		// remaining ms, not an absolute timestamp — the client anchors it on
 		// receipt, so a skewed client clock can't break the countdown. Also set
@@ -187,11 +242,11 @@ export function chessClockCommit(game, now = Date.now()) {
 	return live[live.ticking] <= 0;
 }
 
-/** Win 2, draw 1 each. Shared by the move and flag routes so they can't drift. */
+/** Win 1, draw 1 each. Shared by the move and flag routes so they can't drift. */
 export function chessScores(game) {
 	return {
-		[game.players.w]: game.result === 'w' ? 2 : game.result === 'draw' ? 1 : 0,
-		[game.players.b]: game.result === 'b' ? 2 : game.result === 'draw' ? 1 : 0
+		[game.players.w]: game.result === 'w' ? 1 : game.result === 'draw' ? 1 : 0,
+		[game.players.b]: game.result === 'b' ? 1 : game.result === 'draw' ? 1 : 0
 	};
 }
 

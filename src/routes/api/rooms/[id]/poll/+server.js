@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import { adminExecute } from '$lib/server/odoo.js';
-import { EVENT, MEMBER, requireMember, parseState, publicRoom, publicMembers, jsonError } from '$lib/server/room.js';
-import { stateView } from '$lib/server/gamelogic.js';
+import { EVENT, MEMBER, requireMember, parseState, publicRoom, publicMembers, writeState, jsonError } from '$lib/server/room.js';
+import { resolveClaims, stateView } from '$lib/server/gamelogic.js';
 
 export const prerender = false;
 
@@ -61,6 +61,19 @@ export async function GET({ params, url, cookies }) {
 		};
 
 		const state = parseState(room);
+		// Self-heal: rebuild claims from the pick log so a lost blob write recovers
+		// and the picking→guessing flip still fires if the final picks raced.
+		if (state?.game?.type === 'thief_finder' && state.game.phase === 'picking') {
+			const picks = await adminExecute(EVENT, 'search_read', [
+				[['x_studio_room_id', '=', Number(params.id)], ['x_studio_type', '=', 'pick']],
+				['x_studio_sender_uid', 'x_studio_payload']
+			], { order: 'id asc' });
+			const draw = state.game.draw;
+			const rows = picks.filter((r) => {
+				try { return JSON.parse(r.x_studio_payload || '{}').draw === draw; } catch { return false; }
+			});
+			if (resolveClaims(state.game, rows)) await writeState(params.id, state);
+		}
 		if (state && state.v > gv) out.state = stateView(state, uid);
 		return json(out);
 	} catch (e) {

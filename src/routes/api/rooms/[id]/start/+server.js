@@ -15,6 +15,12 @@ export async function POST({ params, cookies }) {
 			.map((m) => m.x_studio_user_id?.[0]);
 
 		const state = parseState(room) || { v: 0, voice: [], game: null };
+		// chess colour swap: initGame makes playerUids[0] white, so put last
+		// round's black player first. Consume the flag so it applies once.
+		if (room.x_studio_game_type === 'chess' && state.nextWhiteUid && playerUids.includes(state.nextWhiteUid)) {
+			playerUids.sort((a, b) => (a === state.nextWhiteUid ? -1 : b === state.nextWhiteUid ? 1 : 0));
+		}
+		delete state.nextWhiteUid;
 		state.game = initGame(room.x_studio_game_type, playerUids, room);
 		await writeState(params.id, state, { x_studio_status: 'playing' });
 		await appendEvent(params.id, 'system', { kind: 'game-started', players: playerUids }, uid);

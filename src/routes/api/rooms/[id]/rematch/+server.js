@@ -19,6 +19,8 @@ export async function POST({ params, cookies }) {
 
 		const state = parseState(room) || { v: 0, voice: [], game: null };
 		// keep state.voice intact — a rematch resets the game, not the live call
+		// chess: swap colours next round — last game's black plays white next.
+		if (state.game?.type === 'chess') state.nextWhiteUid = state.game.players.b;
 		state.game = null;
 		await writeState(params.id, state, { x_studio_status: 'lobby' });
 		await appendEvent(params.id, 'system', { kind: 'rematch' }, uid);

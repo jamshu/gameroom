@@ -4,7 +4,7 @@ import { thiefDeal, stateView } from '$lib/server/gamelogic.js';
 
 export const prerender = false;
 
-/** Host starts the next draw: roles shuffled server-side, police revealed publicly. */
+/** Host lays the envelopes for the next draw; players open them to get their cards. */
 export async function POST({ params, cookies }) {
 	try {
 		const { uid, room } = await requireHost(cookies, params.id);
@@ -17,7 +17,7 @@ export async function POST({ params, cookies }) {
 		await appendEvent(params.id, 'system', {
 			kind: 'draw-dealt',
 			draw: game.draw,
-			policeUid: game.policeUid
+			envelopeCount: game.envelopes.length
 		}, uid);
 		// echo the caller's filtered view so they don't pay an extra poll for it
 		return json({ ok: true, draw: game.draw, state: stateView(state, uid) });

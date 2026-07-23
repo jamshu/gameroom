@@ -145,6 +145,60 @@
 		{:else}
 			<p class="muted">Waiting for the host to start…</p>
 		{/if}
+	{:else if game.phase === 'picking'}
+		{#if game.policeUid}
+			<div class="police-banner">
+				<Avatar uid={game.policeUid} name={nameOf(game.policeUid)} size={44} ring="gold" glow />
+				<div class="police-text">
+					<span class="police-badge">👮 Police</span>
+					<strong class="player-name">{nameOf(game.policeUid)}</strong>
+				</div>
+				<span class="muted police-hint">{isPolice ? 'That’s you!' : 'opened the police envelope'}</span>
+			</div>
+		{:else}
+			<p class="muted">Someone holds the 👮 police card — open an envelope to find your role.</p>
+		{/if}
+
+		{#if amPlayer && game.myEnvelope != null && game.myRole}
+			<div class="my-card fade-in">
+				<span class="my-card-emoji">{ROLE_EMOJI[game.myRole]}</span>
+				<div>
+					<p class="label" style="margin:0;">Your card (secret)</p>
+					<strong style="font-size:1.3rem;">{game.myRole}</strong>
+				</div>
+			</div>
+		{/if}
+
+		<div class="envelopes">
+			{#each Array(game.envelopeCount) as _, k (k)}
+				{@const holder = game.claims?.[k]}
+				{@const mine = k === game.myEnvelope}
+				<button
+					class="envelope"
+					class:envelope--mine={mine}
+					class:envelope--taken={holder != null && !mine}
+					disabled={busy || !amPlayer || holder != null || game.myEnvelope != null}
+					onclick={() => act('thief/pick', { envelope: k })}
+				>
+					{#if mine}
+						<span class="env-emoji">{ROLE_EMOJI[game.myRole]}</span>
+						<span class="env-label">{game.myRole}</span>
+					{:else if holder != null}
+						<Avatar uid={Number(holder)} name={nameOf(holder)} size={40} />
+						<span class="env-label">{nameOf(holder)}</span>
+					{:else}
+						<span class="env-emoji">✉️</span>
+						<span class="env-label">#{k + 1}</span>
+					{/if}
+				</button>
+			{/each}
+		</div>
+
+		{#if amPlayer && game.myEnvelope == null}
+			<p class="muted pick-note">Tap an envelope to open it.</p>
+		{:else if amPlayer}
+			<p class="muted pick-note">Waiting for everyone to open an envelope…</p>
+		{/if}
 	{:else if game.phase === 'guessing'}
 		{#if amPlayer && game.myRole}
 			<div class="my-card fade-in">
@@ -320,6 +374,61 @@
 	.police-hint {
 		margin-left: auto;
 		font-size: 0.85rem;
+	}
+
+	.envelopes {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+		gap: 12px;
+		margin: 8px 0 4px;
+	}
+	.envelope {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 6px;
+		min-height: 96px;
+		padding: 12px;
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		color: var(--text);
+		cursor: pointer;
+		transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+	}
+	.envelope:hover:not(:disabled) {
+		transform: translateY(-2px);
+		border-color: var(--accent);
+		box-shadow: var(--shadow-sm);
+	}
+	.envelope:active:not(:disabled) {
+		transform: scale(0.97);
+	}
+	.envelope:disabled {
+		cursor: default;
+	}
+	.envelope--taken {
+		opacity: 0.7;
+		border-style: dashed;
+	}
+	.envelope--mine {
+		border-color: var(--accent);
+		background: color-mix(in srgb, var(--accent) 12%, transparent);
+		opacity: 1;
+	}
+	.env-emoji {
+		font-size: 1.9rem;
+		line-height: 1;
+	}
+	.env-label {
+		font-size: 0.82rem;
+		font-weight: 600;
+		color: var(--text-dim);
+	}
+	.pick-note {
+		margin-top: 8px;
+		font-size: 0.88rem;
 	}
 
 	.suspects {
