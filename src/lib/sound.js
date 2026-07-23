@@ -105,3 +105,30 @@ export function playWrong() {
 	tone(ac, { freq: 220, endFreq: 155, dur: 0.4, type: 'sawtooth', gain: 0.55 });
 	tone(ac, { at: 0.06, freq: 146.83, endFreq: 110, dur: 0.36, type: 'square', gain: 0.3 });
 }
+
+/** Ludo dice roll — a short dry rattle of clipped blips. */
+export function playDice() {
+	if (isMuted()) return;
+	const ac = audio();
+	if (!ac) return;
+	for (let i = 0; i < 4; i++) {
+		tone(ac, { at: i * 0.05, freq: 320 + Math.random() * 240, dur: 0.05, type: 'square', gain: 0.4 });
+	}
+}
+
+/** Captured an opponent token — a punchy downward thwack. */
+export function playCapture() {
+	if (isMuted()) return;
+	const ac = audio();
+	if (!ac) return;
+	tone(ac, { freq: 440, endFreq: 120, dur: 0.22, type: 'sawtooth', gain: 0.6 });
+}
+
+/** Brought a token home — bright two-note chime (C6 → G6). */
+export function playHome() {
+	if (isMuted()) return;
+	const ac = audio();
+	if (!ac) return;
+	tone(ac, { at: 0.0, freq: 1046.5, dur: 0.16 });
+	tone(ac, { at: 0.12, freq: 1568.0, dur: 0.28, gain: 0.9 });
+}

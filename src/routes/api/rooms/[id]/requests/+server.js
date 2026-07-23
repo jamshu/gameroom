@@ -8,6 +8,7 @@ export const prerender = false;
 function playerCapacity(room) {
 	if (room.x_studio_game_type === 'chess') return 2;
 	if (room.x_studio_game_type === 'carroms') return 4;
+	if (room.x_studio_game_type === 'ludo') return 4;
 	return room.x_studio_max_players || 10;
 }
 

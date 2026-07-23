@@ -55,6 +55,30 @@ export function initGame(gameType, playerUids, room) {
 			totals
 		};
 	}
+	if (gameType === 'ludo') {
+		if (playerUids.length < 2 || playerUids.length > 4) throw httpError(400, 'Ludo needs 2 to 4 players');
+		// 2 players sit opposite (red vs yellow); 3-4 fill the ring in board order.
+		const seq = playerUids.length === 2 ? ['red', 'yellow'] : LUDO_COLORS.slice(0, playerUids.length);
+		const colors = {};
+		const tokens = {};
+		playerUids.forEach((uid, i) => {
+			colors[uid] = seq[i];
+			tokens[uid] = [-1, -1, -1, -1]; // all four start in the yard
+		});
+		return {
+			type: 'ludo',
+			players: playerUids, // seat/turn order
+			colors, // { uid: 'red'|'green'|'yellow'|'blue' }
+			turnIdx: 0,
+			dice: null, // last roll 1-6, null until the current player rolls
+			rolled: false, // rolled and now owes a move
+			sixStreak: 0, // consecutive 6s this turn (three forfeits it)
+			tokens, // { uid: [pos,pos,pos,pos] } — see ludo section for the pos encoding
+			lastEvent: null, // {kind,...} drives client sound/animation, read off game.v
+			finished: [], // uids in the order they brought all four home
+			result: null // winner uid once the game ends
+		};
+	}
 	throw httpError(400, 'Unknown game type');
 }
 
@@ -222,6 +246,153 @@ export function thiefView(game, uid) {
 				: 0,
 		totals: game.totals
 	};
+}
+
+/* ---------------------------------- ludo ---------------------------------- */
+
+/**
+ * Token position encoding (per token, per player):
+ *   -1        in the yard (not yet entered)
+ *   0..50     on the shared main track, RELATIVE to the player's own start cell
+ *             (0 = start). Absolute board cell = (LUDO_START_OFFSET[color] + pos) % 52.
+ *   51..56    the player's private 6-cell home column; 56 is the final home (exact).
+ * A token needs a 6 to leave the yard, and an exact roll to land on 56.
+ */
+const LUDO_COLORS = ['red', 'green', 'yellow', 'blue'];
+const LUDO_START_OFFSET = { red: 0, green: 13, yellow: 26, blue: 39 };
+const LUDO_TRACK = 52; // shared ring length
+const LUDO_HOME = 56; // final (exact) position
+// The 8 star safe cells (absolute): the four coloured start cells + four mid-arm
+// stars. A token sitting on one of these can't be captured.
+const LUDO_SAFE = new Set([0, 8, 13, 21, 26, 34, 39, 47]);
+
+/** Absolute ring cell for a main-track token, or null if it's in yard/home column. */
+function ludoAbsCell(color, pos) {
+	if (pos < 0 || pos > 50) return null;
+	return (LUDO_START_OFFSET[color] + pos) % LUDO_TRACK;
+}
+
+/** Advance to the next player and clear the per-turn roll state. */
+function advanceLudoTurn(game) {
+	game.turnIdx = (game.turnIdx + 1) % game.players.length;
+	game.sixStreak = 0;
+	game.dice = null;
+	game.rolled = false;
+}
+
+/**
+ * Legal moves for `uid` given `dice`, as [{ token, target }]. PURE. Yard tokens
+ * move only on a 6; a board token moves only if it lands exactly on or before
+ * home (pos+dice <= 56 — overshoots are illegal). Own-stacking is allowed.
+ */
+export function ludoLegalMoves(game, uid, dice) {
+	const toks = game.tokens[uid] || [];
+	const moves = [];
+	for (let i = 0; i < toks.length; i++) {
+		const pos = toks[i];
+		if (pos === LUDO_HOME) continue; // already finished
+		if (pos === -1) {
+			if (dice === 6) moves.push({ token: i, target: 0 });
+			continue;
+		}
+		const target = pos + dice;
+		if (target <= LUDO_HOME) moves.push({ token: i, target });
+	}
+	return moves;
+}
+
+/**
+ * Record a die roll for the current player. `die` (1-6) is generated in the
+ * route so this stays pure/testable. Three 6s in a row, or a roll with no legal
+ * move, forfeits the turn. Otherwise the player now owes a move (`rolled`).
+ */
+export function ludoRoll(game, uid, die) {
+	if (game.result) throw httpError(409, 'Game is finished');
+	if (uid !== game.players[game.turnIdx]) throw httpError(403, 'Not your turn');
+	if (game.rolled) throw httpError(409, 'Move your token before rolling again');
+
+	game.dice = die;
+	game.sixStreak = die === 6 ? (game.sixStreak || 0) + 1 : 0;
+
+	if (game.sixStreak >= 3) {
+		game.lastEvent = { kind: 'pass', uid, reason: 'three-sixes' };
+		advanceLudoTurn(game);
+		return;
+	}
+	if (ludoLegalMoves(game, uid, die).length === 0) {
+		game.lastEvent = { kind: 'pass', uid, die };
+		advanceLudoTurn(game);
+		return;
+	}
+	game.rolled = true;
+	game.lastEvent = { kind: 'roll', uid, die };
+}
+
+/**
+ * Move token `tokenIdx` by the pending dice. Resolves capture (a lone opponent
+ * token on a non-safe cell goes back to the yard) and home. Rolling a 6,
+ * capturing, or bringing a token home grants another roll; otherwise the turn
+ * passes. Sets `result` when the mover brings all four home. PURE (no I/O).
+ */
+export function ludoMove(game, uid, tokenIdx) {
+	if (game.result) throw httpError(409, 'Game is finished');
+	if (uid !== game.players[game.turnIdx]) throw httpError(403, 'Not your turn');
+	if (!game.rolled || game.dice == null) throw httpError(409, 'Roll the dice first');
+
+	const t = Number(tokenIdx);
+	const dice = game.dice;
+	const mv = ludoLegalMoves(game, uid, dice).find((m) => m.token === t);
+	if (!mv) throw httpError(400, 'That token cannot move');
+
+	const color = game.colors[uid];
+	game.tokens[uid][t] = mv.target;
+
+	// capture: only on the shared ring, only off a safe cell, only a lone token
+	let captured = false;
+	const absT = ludoAbsCell(color, mv.target);
+	if (absT != null && !LUDO_SAFE.has(absT)) {
+		for (const other of game.players) {
+			if (other === uid) continue;
+			const oColor = game.colors[other];
+			const otoks = game.tokens[other];
+			const onCell = [];
+			for (let j = 0; j < otoks.length; j++) {
+				if (ludoAbsCell(oColor, otoks[j]) === absT) onCell.push(j);
+			}
+			if (onCell.length === 1) {
+				otoks[onCell[0]] = -1; // sent home; a 2+ stack is a blockade and is immune
+				captured = true;
+			}
+		}
+	}
+
+	const reachedHome = mv.target === LUDO_HOME;
+	game.lastEvent = { kind: captured ? 'capture' : reachedHome ? 'home' : 'move', uid, token: t, die: dice };
+
+	if (game.tokens[uid].every((p) => p === LUDO_HOME)) {
+		game.finished.push(uid);
+		game.result = uid;
+		game.rolled = false;
+		game.dice = null;
+		return;
+	}
+
+	if (dice === 6 || captured || reachedHome) {
+		// extra roll — same player, keep sixStreak for the three-6s rule
+		game.rolled = false;
+		game.dice = null;
+	} else {
+		advanceLudoTurn(game);
+	}
+}
+
+/** Per-uid score for finishRoom: total token progress (yard 0 … home 57). */
+export function ludoScores(game) {
+	const scores = {};
+	for (const uid of game.players) {
+		scores[uid] = (game.tokens[uid] || []).reduce((sum, p) => sum + (p < 0 ? 0 : p + 1), 0);
+	}
+	return scores;
 }
 
 /* --------------------------------- chess ---------------------------------- */

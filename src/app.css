@@ -46,6 +46,13 @@
 	--on-gold: #2a1e05;
 	--on-amber: #3a2600;
 	--on-red: #fff;
+
+	/* Ludo player colours — vivid and constant across themes (like a chess/carrom
+	   board surface, the Ludo board commits to these four hues). */
+	--ludo-red: #e5484d;
+	--ludo-green: #30a46c;
+	--ludo-yellow: #f5c518;
+	--ludo-blue: #3b82f6;
 }
 
 /* ── Themes ─────────────────────────────────────────────────────────────

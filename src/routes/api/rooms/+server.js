@@ -5,7 +5,7 @@ import { ROOM, MEMBER, sweepAbandonedRooms, jsonError } from '$lib/server/room.j
 
 export const prerender = false;
 
-const GAME_TYPES = ['chess', 'carroms', 'thief_finder'];
+const GAME_TYPES = ['chess', 'carroms', 'thief_finder', 'ludo'];
 
 /** Create a room; creator becomes host + accepted player. */
 export async function POST({ request, cookies }) {

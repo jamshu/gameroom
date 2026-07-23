@@ -12,6 +12,7 @@
 	import ThiefFinderTable from '$lib/components/ThiefFinderTable.svelte';
 	import ChessBoard from '$lib/components/ChessBoard.svelte';
 	import CarromBoard from '$lib/components/CarromBoard.svelte';
+	import LudoBoard from '$lib/components/LudoBoard.svelte';
 	import Leaderboard from '$lib/components/Leaderboard.svelte';
 	import { createHold } from '$lib/holdclock.svelte.js';
 
@@ -165,7 +166,7 @@
 			<div>
 				<h1 class="room-title">{room.name}</h1>
 				<span class="chip chip--accent">
-					{room.gameType === 'chess' ? '♟️ Chess' : room.gameType === 'carroms' ? '🎯 Carroms' : '🕵️ Thief Finder'}
+					{room.gameType === 'chess' ? '♟️ Chess' : room.gameType === 'carroms' ? '🎯 Carroms' : room.gameType === 'ludo' ? '🎲 Ludo' : '🕵️ Thief Finder'}
 				</span>
 				<span class="chip">{room.status}</span>
 			</div>
@@ -200,6 +201,8 @@
 						<ChessBoard {store} game={$store.game} {members} {myUid} />
 					{:else if $store.game?.type === 'carroms'}
 						<CarromBoard {store} game={$store.game} {members} {myUid} />
+					{:else if $store.game?.type === 'ludo'}
+						<LudoBoard {store} game={$store.game} {members} {myUid} />
 					{:else}
 						<p class="muted">Loading game…</p>
 					{/if}

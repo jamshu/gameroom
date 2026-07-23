@@ -11,7 +11,13 @@
 	const players = $derived(accepted.filter((m) => m.role === 'player'));
 
 	const needed = $derived(
-		room.gameType === 'chess' ? 'exactly 2 players' : room.gameType === 'carroms' ? '2 or 4 players' : 'at least 3 players'
+		room.gameType === 'chess'
+			? 'exactly 2 players'
+			: room.gameType === 'carroms'
+				? '2 or 4 players'
+				: room.gameType === 'ludo'
+					? '2 to 4 players'
+					: 'at least 3 players'
 	);
 
 	async function handle(memberId, action) {

@@ -161,7 +161,7 @@ async function main() {
 	console.log('Models & fields:');
 	const roomModel = await ensureModel('x_gameroom', 'Game Room');
 	for (const f of [
-		{ name: 'x_studio_game_type', ttype: 'selection', selection: [['chess', 'Chess'], ['carroms', 'Carroms'], ['thief_finder', 'Thief Finder']] },
+		{ name: 'x_studio_game_type', ttype: 'selection', selection: [['chess', 'Chess'], ['carroms', 'Carroms'], ['thief_finder', 'Thief Finder'], ['ludo', 'Ludo']] },
 		{ name: 'x_studio_status', ttype: 'selection', selection: [['lobby', 'Lobby'], ['playing', 'Playing'], ['finished', 'Finished']] },
 		{ name: 'x_studio_host_id', ttype: 'many2one', relation: 'res.users' },
 		{ name: 'x_studio_max_players', ttype: 'integer' },

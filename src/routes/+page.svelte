@@ -4,7 +4,7 @@
 	import { user } from '$lib/stores/auth.js';
 	import { api } from '$lib/api.js';
 
-	const GAME_LABELS = { chess: '♟️ Chess', carroms: '🎯 Carroms', thief_finder: '🕵️ Thief Finder' };
+	const GAME_LABELS = { chess: '♟️ Chess', carroms: '🎯 Carroms', thief_finder: '🕵️ Thief Finder', ludo: '🎲 Ludo' };
 
 	/** Focus the node on mount — fires each time the create form opens. */
 	function autofocus(node) {
@@ -174,6 +174,7 @@
 				<option value="thief_finder">🕵️ Thief Finder</option>
 				<option value="chess">♟️ Chess</option>
 				<option value="carroms">🎯 Carroms</option>
+				<option value="ludo">🎲 Ludo</option>
 			</select>
 			<select class="select" bind:value={statusFilter} onchange={() => (serverHits = null)}>
 				<option value="">Any status</option>
@@ -208,6 +209,7 @@
 					<option value="thief_finder">🕵️ Thief Finder</option>
 					<option value="chess">♟️ Chess</option>
 					<option value="carroms">🎯 Carroms</option>
+					<option value="ludo">🎲 Ludo</option>
 				</select>
 				{#if gameType === 'thief_finder'}
 					<label class="label" for="rdraws">Number of draws</label>
