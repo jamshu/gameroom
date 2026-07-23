@@ -53,7 +53,18 @@ async function ensureField(modelId, model, vals) {
 	const found = await x('ir.model.fields', 'search', [
 		[['model_id', '=', modelId], ['name', '=', vals.name]]
 	]);
-	if (found.length) return found[0]; // leave existing field/selection values as-is
+	if (found.length) {
+		// leave existing field/selection values as-is, but enforce on_delete so a
+		// re-run patches already-provisioned FKs (default 'set null' → orphans).
+		if (vals.on_delete) {
+			const [cur] = await x('ir.model.fields', 'read', [found, ['on_delete']]);
+			if (cur.on_delete !== vals.on_delete) {
+				await x('ir.model.fields', 'write', [found, { on_delete: vals.on_delete }]);
+				console.log(`  ~ field ${model}.${vals.name} on_delete → ${vals.on_delete}`);
+			}
+		}
+		return found[0];
+	}
 	const { selection, groupIds, ...rest } = vals;
 	const create = {
 		model_id: modelId,
@@ -162,7 +173,7 @@ async function main() {
 
 	const memberModel = await ensureModel('x_room_member', 'Room Member');
 	for (const f of [
-		{ name: 'x_studio_room_id', ttype: 'many2one', relation: 'x_gameroom' },
+		{ name: 'x_studio_room_id', ttype: 'many2one', relation: 'x_gameroom', on_delete: 'cascade' },
 		{ name: 'x_studio_user_id', ttype: 'many2one', relation: 'res.users' },
 		{ name: 'x_studio_status', ttype: 'selection', selection: [['pending', 'Pending'], ['accepted', 'Accepted'], ['rejected', 'Rejected'], ['left', 'Left']] },
 		{ name: 'x_studio_role', ttype: 'selection', selection: [['player', 'Player'], ['spectator', 'Spectator']] },
@@ -172,7 +183,7 @@ async function main() {
 
 	const eventModel = await ensureModel('x_room_event', 'Room Event');
 	for (const f of [
-		{ name: 'x_studio_room_id', ttype: 'many2one', relation: 'x_gameroom' },
+		{ name: 'x_studio_room_id', ttype: 'many2one', relation: 'x_gameroom', on_delete: 'cascade' },
 		{ name: 'x_studio_type', ttype: 'char' },
 		{ name: 'x_studio_payload', ttype: 'text' },
 		{ name: 'x_studio_sender_uid', ttype: 'integer' },
