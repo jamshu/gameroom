@@ -3,60 +3,37 @@
 	import '@fontsource-variable/inter';
 	import '../app.css';
 	import { onMount } from 'svelte';
-	import { page } from '$app/stores';
-	import { goto } from '$app/navigation';
-	import { user, checkSession, logout } from '$lib/stores/auth.js';
+	import { profile, initProfile } from '$lib/stores/profile.js';
 	import Avatar from '$lib/components/Avatar.svelte';
+	import ProfileModal from '$lib/components/ProfileModal.svelte';
 
 	let { children } = $props();
-
-	const PUBLIC_ROUTES = ['/login', '/signup'];
-	const isPublic = (path) => PUBLIC_ROUTES.some((p) => path.startsWith(p));
-
-	// Keepalive: re-sync the session every 10 min / on tab focus so the rotated
-	// session id and sliding 30-day cookie never drift into logout.
-	const KEEPALIVE_MS = 10 * 60 * 1000;
-	function pingIfVisible() {
-		if ($user && document.visibilityState === 'visible') checkSession();
-	}
+	let editing = $state(false);
 
 	onMount(() => {
-		checkSession();
+		initProfile();
 		if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
-		document.addEventListener('visibilitychange', pingIfVisible);
-		const t = setInterval(pingIfVisible, KEEPALIVE_MS);
-		return () => {
-			clearInterval(t);
-			document.removeEventListener('visibilitychange', pingIfVisible);
-		};
 	});
-
-	// auth gate: once the session check settles, route guests to /login
-	$effect(() => {
-		if ($user === null && !isPublic($page.url.pathname)) goto('/login');
-		if ($user && isPublic($page.url.pathname)) goto('/');
-	});
-
-	async function doLogout() {
-		await logout();
-		goto('/login');
-	}
 </script>
 
 <div class="app">
-	{#if $user}
+	{#if $profile}
 		<header class="topbar">
 			<a class="brand" href="/">🎲 Gamerooms</a>
 			<div class="topbar-right">
-				<a href="/profile" class="profile-link" title="Profile">
-					<Avatar uid={$user.uid} name={$user.name} size={30} />
-					<span class="profile-name">{$user.name}</span>
-				</a>
-				<button class="btn btn--ghost btn--sm" onclick={doLogout}>Sign out</button>
+				<button class="profile-link" onclick={() => (editing = true)} title="Edit profile">
+					<Avatar uid={$profile.uid} name={$profile.name} size={30} />
+					<span class="profile-name">{$profile.name}</span>
+				</button>
 			</div>
 		</header>
+		{@render children()}
 	{/if}
-	{@render children()}
+
+	<!-- first visit ($profile === null) or editing → capture name + avatar -->
+	{#if $profile === null || editing}
+		<ProfileModal initialName={$profile?.name || ''} onDone={() => (editing = false)} />
+	{/if}
 </div>
 
 <style>
@@ -82,7 +59,9 @@
 		display: flex;
 		align-items: center;
 		gap: 8px;
-		text-decoration: none;
+		background: none;
+		border: none;
+		cursor: pointer;
 		color: var(--text);
 	}
 	.profile-name {

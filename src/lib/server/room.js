@@ -30,11 +30,20 @@ export function httpError(status, message, code) {
 
 export async function getRoom(roomId) {
 	const [room] = await adminExecute(ROOM, 'read', [[Number(roomId)]], {
-		fields: ['x_name', 'x_studio_game_type', 'x_studio_status', 'x_studio_host_id',
+		fields: ['x_name', 'x_studio_game_type', 'x_studio_status', 'x_studio_host_id', 'x_studio_host_name',
 			'x_studio_max_players', 'x_studio_draws_total', 'x_studio_state']
 	});
 	if (!room) throw httpError(404, 'Room not found');
 	return room;
+}
+
+/** Display name for a client uuid, from the x_player profile table. */
+export async function getPlayerName(uid) {
+	const [p] = await adminExecute('x_player', 'search_read', [
+		[['x_studio_uid', '=', uid]],
+		['x_studio_name']
+	]);
+	return p?.x_studio_name || 'Player';
 }
 
 export async function getMembers(roomId) {
@@ -42,7 +51,7 @@ export async function getMembers(roomId) {
 		[['x_studio_room_id', '=', Number(roomId)]],
 		['x_name', 'x_studio_user_id', 'x_studio_status', 'x_studio_role', 'x_studio_score', 'x_studio_last_seen']
 	], { order: 'id asc' });
-	roomUids.set(Number(roomId), members.map((m) => m.x_studio_user_id?.[0]).filter(Boolean));
+	roomUids.set(Number(roomId), members.map((m) => m.x_studio_user_id).filter(Boolean));
 	return members;
 }
 
@@ -66,7 +75,7 @@ export async function requireMember(cookies, roomId) {
  * of the codes mean "stop polling forever".
  */
 function judgeMembership(uid, room, members) {
-	const mine = members.find((m) => m.x_studio_user_id?.[0] === uid);
+	const mine = members.find((m) => m.x_studio_user_id === uid);
 	if (!mine || mine.x_studio_status !== 'accepted') {
 		if ((parseState(room)?.banned || []).includes(uid)) {
 			throw httpError(403, 'The host removed you from this room', 'removed');
@@ -113,7 +122,7 @@ export async function requireMemberCached(cookies, roomId) {
 /** Auth + host of the room. */
 export async function requireHost(cookies, roomId) {
 	const ctx = await requireMember(cookies, roomId);
-	if (ctx.room.x_studio_host_id?.[0] !== ctx.uid) throw httpError(403, 'Host only');
+	if (ctx.room.x_studio_host_id !== ctx.uid) throw httpError(403, 'Host only');
 	return ctx;
 }
 
@@ -147,7 +156,7 @@ export async function appendEvent(roomId, type, payload, senderUid, targetUid = 
 		x_studio_room_id: Number(roomId),
 		x_studio_type: type,
 		x_studio_payload: JSON.stringify(payload ?? {}),
-		x_studio_sender_uid: senderUid || 0
+		x_studio_sender_uid: senderUid || ''
 	};
 	if (targetUid) vals.x_studio_target_uid = targetUid;
 	const id = await adminExecute(EVENT, 'create', [vals]);
@@ -163,8 +172,8 @@ export function publicMembers(members) {
 		.filter((m) => m.x_studio_status !== 'rejected')
 		.map((m) => ({
 			id: m.id,
-			uid: m.x_studio_user_id?.[0],
-			name: m.x_studio_user_id?.[1] || m.x_name,
+			uid: m.x_studio_user_id,
+			name: m.x_name,
 			status: m.x_studio_status,
 			role: m.x_studio_role,
 			score: m.x_studio_score || 0,
@@ -181,8 +190,8 @@ export function publicRoom(room) {
 		name: room.x_name,
 		gameType: room.x_studio_game_type,
 		status: room.x_studio_status,
-		hostUid: room.x_studio_host_id?.[0],
-		hostName: room.x_studio_host_id?.[1],
+		hostUid: room.x_studio_host_id,
+		hostName: room.x_studio_host_name,
 		maxPlayers: room.x_studio_max_players,
 		drawsTotal: room.x_studio_draws_total
 	};
@@ -239,9 +248,9 @@ export async function sweepAbandonedRooms() {
  */
 export async function finishRoom(roomId, members, scoresByUid = {}) {
 	const scoreWrites = members
-		.filter((m) => m.x_studio_user_id?.[0] != null && scoresByUid[m.x_studio_user_id[0]] != null)
+		.filter((m) => m.x_studio_user_id != null && scoresByUid[m.x_studio_user_id] != null)
 		.map((m) =>
-			adminExecute(MEMBER, 'write', [[m.id], { x_studio_score: scoresByUid[m.x_studio_user_id[0]] }])
+			adminExecute(MEMBER, 'write', [[m.id], { x_studio_score: scoresByUid[m.x_studio_user_id] }])
 		);
 	await Promise.all([
 		...scoreWrites,

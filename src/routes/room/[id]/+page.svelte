@@ -2,7 +2,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
-	import { user } from '$lib/stores/auth.js';
+	import { profile } from '$lib/stores/profile.js';
 	import { api } from '$lib/api.js';
 	import { createRoomStore } from '$lib/stores/room.js';
 	import { createVoiceMesh } from '$lib/webrtc.js';
@@ -26,7 +26,7 @@
 	let inVoice = $state(false);
 	let detailTimer = null;
 
-	const myUid = $derived($user?.uid);
+	const myUid = $derived($profile?.uid);
 
 	async function loadDetail() {
 		try {

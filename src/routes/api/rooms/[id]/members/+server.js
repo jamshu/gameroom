@@ -31,8 +31,8 @@ export async function POST({ params, request, cookies }) {
 		const target = members.find((m) => m.id === Number(memberId));
 		if (!target) throw httpError(404, 'Member not found');
 
-		const targetUid = target.x_studio_user_id?.[0];
-		if (targetUid === room.x_studio_host_id?.[0]) {
+		const targetUid = target.x_studio_user_id;
+		if (targetUid === room.x_studio_host_id) {
 			throw httpError(400, 'You cannot remove yourself — leave the room instead');
 		}
 		if (target.x_studio_status !== 'accepted') {

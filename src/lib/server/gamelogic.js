@@ -117,7 +117,7 @@ export function resolveClaims(game, pickRows) {
 	const claims = {};
 	const held = new Set();
 	for (const row of pickRows) {
-		const uid = Number(row.x_studio_sender_uid);
+		const uid = row.x_studio_sender_uid;
 		const k = safePayload(row).envelope;
 		if (k == null || claims[k] != null || held.has(uid)) continue;
 		if (k < 0 || k >= game.envelopes.length) continue;
@@ -149,7 +149,7 @@ export function thiefGuess(game, guesserUid, accusedUid) {
 	if (!game.players.includes(accusedUid)) throw httpError(400, 'Accused is not a player');
 	if (accusedUid === guesserUid) throw httpError(400, 'You cannot accuse yourself');
 
-	const thiefUid = Number(Object.keys(game.secret).find((u) => game.secret[u] === 'Thief'));
+	const thiefUid = Object.keys(game.secret).find((u) => game.secret[u] === 'Thief');
 	const correct = accusedUid === thiefUid;
 	const points = {};
 	for (const uid of game.players) {

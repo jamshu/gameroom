@@ -26,7 +26,7 @@ export async function POST({ params, cookies }) {
 			await writeState(params.id, state);
 		}
 
-		if (room.x_studio_host_id?.[0] === uid && room.x_studio_status !== 'finished') {
+		if (room.x_studio_host_id === uid && room.x_studio_status !== 'finished') {
 			await adminExecute(ROOM, 'write', [[Number(params.id)], { x_studio_status: 'finished' }]);
 			await appendEvent(params.id, 'system', { kind: 'room-closed' }, uid);
 		} else {

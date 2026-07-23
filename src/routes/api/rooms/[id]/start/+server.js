@@ -12,7 +12,7 @@ export async function POST({ params, cookies }) {
 
 		const playerUids = members
 			.filter((m) => m.x_studio_status === 'accepted' && m.x_studio_role === 'player')
-			.map((m) => m.x_studio_user_id?.[0]);
+			.map((m) => m.x_studio_user_id);
 
 		const state = parseState(room) || { v: 0, voice: [], game: null };
 		// chess colour swap: initGame makes playerUids[0] white, so put last

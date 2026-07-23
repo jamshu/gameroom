@@ -10,8 +10,8 @@ export async function GET({ params, cookies }) {
 		const { uid } = await requireUser(cookies);
 		const room = await getRoom(params.id);
 		const members = await getMembers(params.id);
-		const isHost = room.x_studio_host_id?.[0] === uid;
-		const mine = members.find((m) => m.x_studio_user_id?.[0] === uid);
+		const isHost = room.x_studio_host_id === uid;
+		const mine = members.find((m) => m.x_studio_user_id === uid);
 		return json({
 			ok: true,
 			room: publicRoom(room),

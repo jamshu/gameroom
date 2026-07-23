@@ -1,7 +1,7 @@
 <script>
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { user } from '$lib/stores/auth.js';
+	import { profile } from '$lib/stores/profile.js';
 	import { api } from '$lib/api.js';
 
 	const GAME_LABELS = { chess: '♟️ Chess', carroms: '🎯 Carroms', thief_finder: '🕵️ Thief Finder' };
@@ -140,7 +140,7 @@
 	let notice = $state('');
 
 	onMount(async () => {
-		if ($user !== null) loadMine();
+		if ($profile) loadMine();
 		// one call; everything typed after this filters against it in memory
 		const rooms = await loadRooms();
 		if (rooms) cached = rooms;

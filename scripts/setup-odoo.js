@@ -54,16 +54,21 @@ async function ensureField(modelId, model, vals) {
 		[['model_id', '=', modelId], ['name', '=', vals.name]]
 	]);
 	if (found.length) {
-		// leave existing field/selection values as-is, but enforce on_delete so a
-		// re-run patches already-provisioned FKs (default 'set null' → orphans).
-		if (vals.on_delete) {
-			const [cur] = await x('ir.model.fields', 'read', [found, ['on_delete']]);
-			if (cur.on_delete !== vals.on_delete) {
+		const [cur] = await x('ir.model.fields', 'read', [found, ['ttype', 'on_delete']]);
+		// A field can't change ttype in place. Room data is disposable, so on a
+		// mismatch (many2one/int → char) drop the old field and fall through to
+		// recreate it with the new type.
+		if (cur.ttype !== vals.ttype) {
+			await x('ir.model.fields', 'unlink', [found]);
+			console.log(`  - dropped ${model}.${vals.name} (${cur.ttype} → ${vals.ttype})`);
+		} else {
+			// same type: enforce on_delete so a re-run patches already-provisioned FKs.
+			if (vals.on_delete && cur.on_delete !== vals.on_delete) {
 				await x('ir.model.fields', 'write', [found, { on_delete: vals.on_delete }]);
 				console.log(`  ~ field ${model}.${vals.name} on_delete → ${vals.on_delete}`);
 			}
+			return found[0];
 		}
-		return found[0];
 	}
 	const { selection, groupIds, ...rest } = vals;
 	const create = {
@@ -163,7 +168,10 @@ async function main() {
 	for (const f of [
 		{ name: 'x_studio_game_type', ttype: 'selection', selection: [['chess', 'Chess'], ['carroms', 'Carroms'], ['thief_finder', 'Thief Finder']] },
 		{ name: 'x_studio_status', ttype: 'selection', selection: [['lobby', 'Lobby'], ['playing', 'Playing'], ['finished', 'Finished']] },
-		{ name: 'x_studio_host_id', ttype: 'many2one', relation: 'res.users' },
+		// identity is a client-generated uuid string (no res.users); host name is
+		// denormalised here so room listings don't need a per-row player lookup.
+		{ name: 'x_studio_host_id', ttype: 'char' },
+		{ name: 'x_studio_host_name', ttype: 'char' },
 		{ name: 'x_studio_max_players', ttype: 'integer' },
 		{ name: 'x_studio_draws_total', ttype: 'integer' },
 		// SECRET-BEARING: thief-finder roles live in this JSON. Field-level group
@@ -174,7 +182,7 @@ async function main() {
 	const memberModel = await ensureModel('x_room_member', 'Room Member');
 	for (const f of [
 		{ name: 'x_studio_room_id', ttype: 'many2one', relation: 'x_gameroom', on_delete: 'cascade' },
-		{ name: 'x_studio_user_id', ttype: 'many2one', relation: 'res.users' },
+		{ name: 'x_studio_user_id', ttype: 'char' }, // client uuid; x_name holds display name
 		{ name: 'x_studio_status', ttype: 'selection', selection: [['pending', 'Pending'], ['accepted', 'Accepted'], ['rejected', 'Rejected'], ['left', 'Left']] },
 		{ name: 'x_studio_role', ttype: 'selection', selection: [['player', 'Player'], ['spectator', 'Spectator']] },
 		{ name: 'x_studio_score', ttype: 'integer' },
@@ -186,15 +194,24 @@ async function main() {
 		{ name: 'x_studio_room_id', ttype: 'many2one', relation: 'x_gameroom', on_delete: 'cascade' },
 		{ name: 'x_studio_type', ttype: 'char' },
 		{ name: 'x_studio_payload', ttype: 'text' },
-		{ name: 'x_studio_sender_uid', ttype: 'integer' },
-		{ name: 'x_studio_target_uid', ttype: 'integer' }
+		{ name: 'x_studio_sender_uid', ttype: 'char' },
+		{ name: 'x_studio_target_uid', ttype: 'char' }
 	]) await ensureField(eventModel, 'x_room_event', f);
+
+	// Player profiles: no res.users, so name + avatar live here, keyed by the
+	// client uuid. Read by the avatar endpoint + upserted on profile save.
+	const playerModel = await ensureModel('x_player', 'Player Profile');
+	for (const f of [
+		{ name: 'x_studio_uid', ttype: 'char' },
+		{ name: 'x_studio_name', ttype: 'char' },
+		{ name: 'x_studio_avatar', ttype: 'text' }
+	]) await ensureField(playerModel, 'x_player', f);
 
 	/* --------------------------- access rights ----------------------------- */
 	// Players (internal users): NO direct access. All reads AND writes go
 	// through the app proxy with the admin key after app-level authorization.
 	console.log('Access rights:');
-	for (const [mid, m] of [[roomModel, 'x_gameroom'], [memberModel, 'x_room_member'], [eventModel, 'x_room_event']]) {
+	for (const [mid, m] of [[roomModel, 'x_gameroom'], [memberModel, 'x_room_member'], [eventModel, 'x_room_event'], [playerModel, 'x_player']]) {
 		await removeAccess(mid, m, internalGid);
 		await ensureAdminAccess(mid, m, adminGid);
 	}

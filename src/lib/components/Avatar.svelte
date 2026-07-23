@@ -7,7 +7,8 @@
 	let failed = $state(false);
 
 	const initial = $derived((name || '?').trim().charAt(0).toUpperCase());
-	const hue = $derived(((uid || 0) * 47) % 360);
+	// uid is a uuid string — hash it to a stable hue.
+	const hue = $derived([...String(uid || '')].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7));
 
 	// ring width scales with the avatar so small ones don't get swallowed
 	const rw = $derived(size >= 44 ? 3 : 2);

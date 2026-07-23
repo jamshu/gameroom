@@ -13,7 +13,7 @@ export async function POST({ params, request, cookies }) {
 		if (!game || game.type !== 'thief_finder') throw httpError(409, 'No thief-finder game in progress');
 
 		const { accusedUid } = await request.json();
-		const result = thiefGuess(game, uid, Number(accusedUid));
+		const result = thiefGuess(game, uid, accusedUid);
 
 		await writeState(params.id, state);
 		await appendEvent(params.id, 'system', {

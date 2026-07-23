@@ -14,7 +14,7 @@ export function roomChannel(roomId) {
 
 /** A member's private channel — carries their filtered state + targeted events. Pure. */
 export function userChannel(roomId, uid) {
-	return `room:${Number(roomId)}:u:${Number(uid)}`;
+	return `room:${Number(roomId)}:u:${uid}`;
 }
 
 /** Ably capability: subscribe to the room's public channel + this user's own. Pure. */

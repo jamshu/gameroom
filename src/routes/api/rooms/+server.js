@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import { adminExecute } from '$lib/server/odoo.js';
 import { requireUser } from '$lib/server/auth.js';
-import { ROOM, MEMBER, sweepAbandonedRooms, jsonError } from '$lib/server/room.js';
+import { ROOM, MEMBER, sweepAbandonedRooms, getPlayerName, jsonError } from '$lib/server/room.js';
 
 export const prerender = false;
 
@@ -18,17 +18,19 @@ export async function POST({ request, cookies }) {
 			return json({ ok: false, error: 'Choose 5 or 10 draws' }, { status: 400 });
 		}
 
+		const playerName = await getPlayerName(uid);
 		const roomId = await adminExecute(ROOM, 'create', [{
 			x_name: name.trim(),
 			x_studio_game_type: gameType,
 			x_studio_status: 'lobby',
 			x_studio_host_id: uid,
+			x_studio_host_name: playerName,
 			x_studio_max_players: Number(maxPlayers) || 8,
 			x_studio_draws_total: gameType === 'thief_finder' ? Number(drawsTotal) : 0,
 			x_studio_state: JSON.stringify({ v: 0, voice: [], game: null })
 		}]);
 		await adminExecute(MEMBER, 'create', [{
-			x_name: String(uid),
+			x_name: playerName,
 			x_studio_room_id: roomId,
 			x_studio_user_id: uid,
 			x_studio_status: 'accepted',
@@ -65,7 +67,7 @@ export async function GET({ url, cookies }) {
 		if (BROWSE_STATUSES.includes(status)) domain.push(['x_studio_status', '=', status]);
 
 		const rooms = await adminExecute(ROOM, 'search_read', [domain,
-			['x_name', 'x_studio_game_type', 'x_studio_status', 'x_studio_host_id', 'x_studio_max_players']
+			['x_name', 'x_studio_game_type', 'x_studio_status', 'x_studio_host_name', 'x_studio_max_players']
 		], { order: 'id desc', limit });
 		return json({
 			ok: true,
@@ -74,7 +76,7 @@ export async function GET({ url, cookies }) {
 				name: r.x_name,
 				gameType: r.x_studio_game_type,
 				status: r.x_studio_status,
-				hostName: r.x_studio_host_id?.[1] || '',
+				hostName: r.x_studio_host_name || '',
 				// already fetched from Odoo and previously discarded — free to expose
 				maxPlayers: r.x_studio_max_players || 0
 			}))

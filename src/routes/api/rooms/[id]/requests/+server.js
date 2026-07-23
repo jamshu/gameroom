@@ -31,7 +31,7 @@ export async function POST({ params, request, cookies }) {
 		).length;
 		const role = room.x_studio_status === 'lobby' && playersNow < playerCapacity(room) ? 'player' : 'spectator';
 		await adminExecute(MEMBER, 'write', [[target.id], { x_studio_status: 'accepted', x_studio_role: role }]);
-		await appendEvent(params.id, 'system', { kind: 'member-accepted', uid: target.x_studio_user_id?.[0], role }, uid);
+		await appendEvent(params.id, 'system', { kind: 'member-accepted', uid: target.x_studio_user_id, role }, uid);
 		return json({ ok: true, role });
 	} catch (e) {
 		const { body, status } = jsonError(e);
