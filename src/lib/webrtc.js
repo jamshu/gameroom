@@ -189,5 +189,16 @@ export function createVoiceMesh({ myUid, sendSignal, onPeersChange }) {
 		for (const t of localStream.getAudioTracks()) t.enabled = !muted;
 	}
 
-	return { join, leave, sync, handleSignal, setMuted, get joined() { return joined; } };
+	/**
+	 * The live capture, for anything else that needs the mic (chat voice
+	 * messages) — never opens one, so a caller can tell "already capturing" from
+	 * "not in voice". Muted means every track is disabled, and a recording off a
+	 * disabled track is silence, so that reads as no stream too: the borrower
+	 * opens its own instead.
+	 */
+	function micStream() {
+		return localStream?.getAudioTracks().some((t) => t.enabled) ? localStream : null;
+	}
+
+	return { join, leave, sync, handleSignal, setMuted, micStream, get joined() { return joined; } };
 }

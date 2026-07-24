@@ -121,14 +121,16 @@ export function createRoomStore(roomId) {
 				if (ev.type === 'chat') {
 					if (seenChat.has(ev.id)) continue; // our own optimistic copy
 					seenChat.add(ev.id);
-					chat.push({ id: ev.id, senderUid: ev.senderUid, text: ev.payload.text });
+					// the whole payload: text messages carry {text}, media ones
+					// {kind, attId, mime, …} and an optional caption
+					chat.push({ id: ev.id, senderUid: ev.senderUid, ...ev.payload });
 				} else if (ev.type === 'signal') signalHandler?.(ev.senderUid, ev.payload);
 				else if (ev.type === 'system') {
 					evs.push(ev);
 					systemHandler?.(ev);
 				}
 			}
-			const next = { ...s, chat: chat.slice(-200), events: evs.slice(-50), error: null };
+			const next = { ...s, chat: trimChat(chat), events: evs.slice(-50), error: null };
 			if (room) next.room = room;
 			if (members) next.members = members;
 			return mergeState(next, state);
@@ -304,6 +306,8 @@ export function createRoomStore(roomId) {
 		channel = null;
 		userChannel = null;
 		pushConnected = false;
+		// leaving the room ends the life of every blob URL we minted for it
+		for (const c of get(store).chat) revokeLocal(c);
 	}
 
 	/* ---- optimistic chat --------------------------------------------------
@@ -318,25 +322,59 @@ export function createRoomStore(roomId) {
 		return id;
 	}
 
+	/**
+	 * Same, for a photo or voice clip. The bubble renders straight off a local
+	 * blob URL, so what you just sent is visible before the upload finishes — and
+	 * stays on that URL afterwards rather than re-downloading its own upload.
+	 * `localUrl` is therefore owned by the store; every path that can drop the
+	 * message revokes it (see revokeLocal).
+	 */
+	function pushLocalMedia(senderUid, { blob, ...fields }) {
+		const id = `tmp-${++tempSeq}`;
+		const localUrl = blob ? URL.createObjectURL(blob) : null;
+		store.update((s) => ({
+			...s,
+			chat: [...s.chat, { id, senderUid, ...fields, localUrl, pending: true }]
+		}));
+		return id;
+	}
+
+	function revokeLocal(msg) {
+		if (msg?.localUrl) URL.revokeObjectURL(msg.localUrl);
+	}
+
+	/** Keep the last 200 messages, releasing the blob URLs of the ones evicted. */
+	function trimChat(chat) {
+		if (chat.length <= 200) return chat;
+		for (const c of chat.slice(0, chat.length - 200)) revokeLocal(c);
+		return chat.slice(-200);
+	}
+
 	/** Swap a temp id for the server id once the POST is acked. If a poll that was
 	 *  already in flight beat the POST response and delivered the message first,
 	 *  drop our copy instead — renaming onto an existing id would duplicate the
 	 *  key and blow up the keyed {#each}. */
-	function resolveLocalChat(tempId, realId) {
+	function resolveLocalChat(tempId, realId, patch) {
 		store.update((s) => {
 			if (realId != null && s.chat.some((c) => c.id === realId)) {
+				revokeLocal(s.chat.find((c) => c.id === tempId));
 				return { ...s, chat: s.chat.filter((c) => c.id !== tempId) };
 			}
 			return {
 				...s,
-				chat: s.chat.map((c) => (c.id === tempId ? { ...c, id: realId ?? c.id, pending: false } : c))
+				chat: s.chat.map((c) =>
+					c.id === tempId ? { ...c, ...patch, id: realId ?? c.id, pending: false } : c
+				)
 			};
 		});
 	}
 
 	/** Drop a local message whose POST failed. */
 	function dropLocalChat(tempId) {
-		store.update((s) => ({ ...s, chat: s.chat.filter((c) => c.id !== tempId) }));
+		store.update((s) => {
+			revokeLocal(s.chat.find((c) => c.id === tempId));
+			return { ...s, chat: s.chat.filter((c) => c.id !== tempId) };
+		});
 	}
 
 	// `chat` inserts optimistically, so its echo poll would fetch a message we
@@ -379,6 +417,7 @@ export function createRoomStore(roomId) {
 		onSystem,
 		setFast,
 		pushLocalChat,
+		pushLocalMedia,
 		resolveLocalChat,
 		dropLocalChat,
 		pollNow: () => schedule(0)

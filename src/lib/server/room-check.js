@@ -10,7 +10,7 @@
 import assert from 'node:assert';
 import { register } from 'node:module';
 register('./room-stub-loader.mjs', import.meta.url);
-const { reseatRoles, resetRound } = await import('./room.js');
+const { reseatRoles, resetRound, createRoomMedia, readRoomMedia, deleteRoom } = await import('./room.js');
 
 const member = (id, role, status = 'accepted') => ({
 	id,
@@ -102,6 +102,68 @@ const writesTo = (role) =>
 	await resetRound(state, [member(1, 'player')]);
 	assert.ok(!('nextWhiteUid' in state), 'no colour swap for non-chess');
 	assert.equal(state.game, null);
+}
+
+// 7. readRoomMedia is the ownership boundary for chat attachments: the id in the
+//    URL addresses every attachment the admin key can read, so anything not
+//    tagged with THIS room must come back as null (the route 404s on that).
+{
+	globalThis.__odooCalls.length = 0;
+	const att = (res_model, res_id) => [{ id: 7, res_model, res_id, mimetype: 'image/jpeg', raw: 'AA==' }];
+
+	globalThis.__odooResults = [att('x_gameroom', 42)];
+	assert.ok(await readRoomMedia(42, 7), 'own-room attachment is served');
+
+	globalThis.__odooResults = [att('x_gameroom', 43)];
+	assert.equal(await readRoomMedia(42, 7), null, 'another room’s attachment is refused');
+
+	globalThis.__odooResults = [att('res.partner', 42)];
+	assert.equal(await readRoomMedia(42, 7), null, 'a non-room attachment is refused');
+
+	globalThis.__odooResults = [[]];
+	assert.equal(await readRoomMedia(42, 999), null, 'a missing attachment is refused');
+
+	globalThis.__odooCalls.length = 0;
+	assert.equal(await readRoomMedia(42, 'abc'), null, 'a non-numeric id never reaches Odoo');
+	assert.equal(globalThis.__odooCalls.length, 0);
+}
+
+// 7b. Bytes go in `raw`. `datas` does NOT exist on this Odoo and writing it is
+//     accepted silently — you get an attachment with file_size 0 and no bytes,
+//     which only shows up as a broken image much later. Pin the field name.
+{
+	globalThis.__odooCalls.length = 0;
+	globalThis.__odooResults = [];
+	await createRoomMedia(42, { name: 'photo', mime: 'image/jpeg', dataBase64: 'AA==' });
+	const vals = globalThis.__odooCalls[0].args[0];
+	assert.equal(vals.raw, 'AA==', 'bytes written to raw');
+	assert.ok(!('datas' in vals), 'never datas');
+	assert.equal(vals.res_model, 'x_gameroom');
+	assert.equal(vals.res_id, 42, 'tagged with the room, which is what both guards key on');
+}
+
+// 8. deleteRoom unlinks the room's chat media too — this is the whole retention
+//    story (last member out, and the abandoned-room sweep, both route here).
+{
+	globalThis.__odooCalls.length = 0;
+	// one entry per call, in order: search+unlink for media, events, members, then
+	// the room unlink
+	globalThis.__odooResults = [[5, 6], true, [11], true, [21], true, true];
+	await deleteRoom(42);
+
+	const unlinks = globalThis.__odooCalls.filter((c) => c.method === 'unlink');
+	assert.deepEqual(
+		unlinks.map((c) => c.model),
+		['ir.attachment', 'x_room_event', 'x_room_member', 'x_gameroom'],
+		'media unlinked before the rows that reference the room'
+	);
+	assert.deepEqual(unlinks[0].args[0], [5, 6], 'the searched attachment ids are the ones unlinked');
+	const search = globalThis.__odooCalls.find((c) => c.model === 'ir.attachment' && c.method === 'search');
+	assert.deepEqual(
+		search.args[0],
+		[['res_model', '=', 'x_gameroom'], ['res_id', '=', 42]],
+		'scoped to this room only'
+	);
 }
 
 console.log('room-check: all assertions passed');

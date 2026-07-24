@@ -217,7 +217,13 @@
 						onleave={leaveVoice}
 						onmute={(m) => mesh?.setMuted(m)}
 					/>
-					<ChatPanel {store} {members} {myUid} />
+					<ChatPanel
+					{store}
+					{members}
+					{myUid}
+					{roomId}
+					borrowMic={() => mesh?.micStream() ?? null}
+				/>
 				</aside>
 			</div>
 		{/if}

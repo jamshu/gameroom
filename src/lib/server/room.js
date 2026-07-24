@@ -21,6 +21,10 @@ const roomUids = new Map();
 export const ROOM = 'x_gameroom';
 export const MEMBER = 'x_room_member';
 export const EVENT = 'x_room_event';
+// Chat media (photos, voice clips) lives in Odoo's own attachment model, tagged
+// with the room it belongs to. That tag is what makes both the ownership check
+// below and the cascade delete in deleteRoom possible.
+export const ATTACH = 'ir.attachment';
 
 /**
  * `code` is a stable machine-readable reason the client can branch on. A bare
@@ -147,6 +151,43 @@ export async function writeState(roomId, state, extraVals = {}) {
 	return state;
 }
 
+/**
+ * Store one chat attachment against a room. Returns its id — the chat event
+ * carries only that id, never the bytes (an Ably message caps at 64KiB and the
+ * poll refetches up to 200 payloads at a time).
+ */
+export async function createRoomMedia(roomId, { name, mime, dataBase64 }) {
+	return adminExecute(ATTACH, 'create', [{
+		name: name || 'chat-media',
+		mimetype: mime,
+		// `raw`, NOT `datas`: the latter doesn't exist on this Odoo, and writing it
+		// is accepted silently — you get an attachment with file_size 0 and no
+		// bytes. JSON-RPC carries binary fields base64-encoded, so the string goes
+		// in and comes back out unchanged.
+		raw: dataBase64,
+		res_model: ROOM,
+		res_id: Number(roomId)
+	}]);
+}
+
+/**
+ * Read one of a room's attachments, or null.
+ *
+ * The room check is the security boundary, NOT the caller's membership: the id
+ * space here is every attachment the admin key can read — other rooms' media
+ * and unrelated Odoo records — so an id that isn't tagged with THIS room must
+ * be indistinguishable from one that doesn't exist.
+ */
+export async function readRoomMedia(roomId, attId) {
+	const id = Number(attId);
+	if (!Number.isInteger(id) || id <= 0) return null;
+	const [att] = await adminExecute(ATTACH, 'read', [[id]], {
+		fields: ['res_model', 'res_id', 'mimetype', 'raw']
+	});
+	if (!att || att.res_model !== ROOM || att.res_id !== Number(roomId)) return null;
+	return att;
+}
+
 export async function appendEvent(roomId, type, payload, senderUid, targetUid = null) {
 	const vals = {
 		x_name: type,
@@ -242,9 +283,15 @@ export async function resetRound(state, members) {
 	state.game = null;
 }
 
-/** Delete a room and all its rows (FK-safe order: events → members → room). */
+/** Delete a room and all its rows (FK-safe order: media → events → members → room). */
 export async function deleteRoom(roomId) {
 	const id = Number(roomId);
+	// Chat media dies with the room. Unlinked explicitly rather than leaning on
+	// Odoo's implicit attachment cleanup, same as the rows below.
+	const media = await adminExecute(ATTACH, 'search', [
+		[['res_model', '=', ROOM], ['res_id', '=', id]]
+	]);
+	if (media.length) await adminExecute(ATTACH, 'unlink', [media]);
 	const events = await adminExecute(EVENT, 'search', [[['x_studio_room_id', '=', id]]]);
 	if (events.length) await adminExecute(EVENT, 'unlink', [events]);
 	const members = await adminExecute(MEMBER, 'search', [[['x_studio_room_id', '=', id]]]);

@@ -23,8 +23,13 @@ export async function load(url, context, next) {
 			shortCircuit: true,
 			source: `
 				globalThis.__odooCalls = [];
+				// Queued results, for helpers that READ before they decide (media
+				// ownership, cascade deletes). Shift one per call; fall through to the
+				// defaults once empty, so existing checks are unaffected.
+				globalThis.__odooResults = [];
 				export async function adminExecute(model, method, args, kw) {
 					globalThis.__odooCalls.push({ model, method, args, kw });
+					if (globalThis.__odooResults.length) return globalThis.__odooResults.shift();
 					// create returns an id; everything else the helpers ignore
 					return method === 'create' ? 1 : true;
 				}
