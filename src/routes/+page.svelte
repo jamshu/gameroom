@@ -12,8 +12,6 @@
 
 	let myRooms = $state([]);
 	let q = $state('');
-	let typeFilter = $state('');
-	let statusFilter = $state('');
 	let error = $state('');
 	let creating = $state(false);
 
@@ -51,13 +49,10 @@
 
 	const filterLocal = (rooms) => {
 		const needle = q.trim().toLowerCase();
+		if (!needle) return rooms;
 		return rooms.filter(
 			(r) =>
-				(!needle ||
-					r.name?.toLowerCase().includes(needle) ||
-					r.hostName?.toLowerCase().includes(needle)) &&
-				(!typeFilter || r.gameType === typeFilter) &&
-				(!statusFilter || r.status === statusFilter)
+				r.name?.toLowerCase().includes(needle) || r.hostName?.toLowerCase().includes(needle)
 		);
 	};
 
@@ -80,10 +75,7 @@
 	/** Only called when in-memory filtering came up empty. */
 	async function serverSearch() {
 		searching = true;
-		const params =
-			`&q=${encodeURIComponent(q.trim())}` +
-			(typeFilter ? `&type=${typeFilter}` : '') +
-			(statusFilter ? `&status=${statusFilter}` : '');
+		const params = `&q=${encodeURIComponent(q.trim())}`;
 		const rooms = await loadRooms(params);
 		if (rooms) serverHits = rooms;
 		searching = false;
@@ -196,33 +188,6 @@
 			</button>
 		</form>
 
-		<div class="filter-row">
-			<select class="select" bind:value={typeFilter} onchange={() => (serverHits = null)}>
-				<option value="">All games</option>
-				{#each GAMES as g (g.id)}
-					<option value={g.id}>{g.emoji} {g.label}</option>
-				{/each}
-			</select>
-			<select class="select" bind:value={statusFilter} onchange={() => (serverHits = null)}>
-				<option value="">Any status</option>
-				<option value="lobby">Open lobby</option>
-				<option value="playing">In progress</option>
-			</select>
-			{#if q || typeFilter || statusFilter}
-				<button
-					type="button"
-					class="btn btn--ghost btn--sm"
-					onclick={() => {
-						q = '';
-						typeFilter = '';
-						statusFilter = '';
-						serverHits = null;
-						showAll = false;
-					}}>Clear</button
-				>
-			{/if}
-		</div>
-
 	</section>
 
 	{#if showCreate}
@@ -257,12 +222,12 @@
 	{#if error}<p class="error-text">{error}</p>{/if}
 
 	<h2 class="section-title">
-		{q || typeFilter || statusFilter ? 'Matching gamerooms' : 'Latest gamerooms'}
+		{q ? 'Matching gamerooms' : 'Latest gamerooms'}
 	</h2>
 	{#if visible.length === 0}
 		<p class="muted">
 			{#if searching}Searching…
-			{:else if q || typeFilter || statusFilter}No rooms match that — try a different search.
+			{:else if q}No rooms match that — try a different search.
 			{:else}No open rooms yet — create the first one.{/if}
 		</p>
 	{/if}
@@ -306,16 +271,21 @@
 	.search-row {
 		display: flex;
 		gap: 10px;
+		flex-wrap: wrap;
 	}
 	.search-row .input {
 		flex: 1;
+		min-width: 0;
 	}
-	.filter-row {
-		display: flex;
-		gap: 10px;
-		align-items: center;
-		margin-top: 10px;
-		flex-wrap: wrap;
+	/* On phones the input takes the whole first row so it isn't squeezed to a
+	   sliver next to the buttons, which wrap onto the line below. */
+	@media (max-width: 560px) {
+		.search-row .input {
+			flex-basis: 100%;
+		}
+		.search-row .btn {
+			flex: 1;
+		}
 	}
 	.show-more {
 		width: 100%;
