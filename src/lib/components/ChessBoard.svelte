@@ -1,8 +1,11 @@
 <script>
+	import { tick, onMount } from 'svelte';
 	import { Chess } from 'chess.js';
 	import Avatar from './Avatar.svelte';
+	import { playMove, playCapture, isMuted, setMuted, arm } from '$lib/sound.js';
 	import { createChessClock, formatClock } from '$lib/chessclock.svelte.js';
 	import { createFullscreen, portal } from '$lib/fullscreen.svelte.js';
+	import { createChessTheme, BOARD_THEMES, PIECE_SETS } from '$lib/chessthemes.svelte.js';
 
 	let { store, game, members, myUid } = $props();
 	let selected = $state(null); // square like 'e2'
@@ -54,7 +57,7 @@
 				break;
 			}
 			fens.push(c.fen());
-			movesAt.push({ from: mv.from, to: mv.to });
+			movesAt.push({ from: mv.from, to: mv.to, captured: !!mv.captured });
 		}
 		return { fens, movesAt };
 	});
@@ -99,7 +102,7 @@
 				const piece = board[rr][ff];
 				out.push({
 					sq: FILES[ff] + (8 - rr),
-					img: piece ? `/pieces/${piece.color}${piece.type.toUpperCase()}.svg` : null,
+					img: piece ? theme.src(piece.color, piece.type) : null,
 					label: piece ? `${piece.color === 'w' ? 'white' : 'black'} ${piece.type}` : '',
 					dark: (rr + ff) % 2 === 1
 				});
@@ -111,6 +114,134 @@
 	const legalTargets = $derived(
 		selected ? chess.moves({ square: selected, verbose: true }).map((m) => m.to) : []
 	);
+
+	/* ---- board / piece theme + hover tilt --------------------------------- */
+
+	const theme = createChessTheme();
+	let showThemes = $state(false);
+
+	// The tilt writes inline styles straight to the DOM rather than through
+	// $state: it fires on every pointermove, and routing 64 squares' worth of
+	// that through reactivity would re-render the board on mouse movement.
+	const TILT_DEG = 14; // the zoom + lift come from CSS :hover; this is the parallax
+	let reduceMotion = false;
+	$effect(() => {
+		reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+	});
+
+	function tiltMove(e) {
+		// tilt is a mouse affordance — on touch there is no hover to leave, and a
+		// dragged finger would strand a piece mid-tilt
+		if (reduceMotion || e.pointerType !== 'mouse') return;
+		const el = e.currentTarget;
+		const lift = el.querySelector('.lift');
+		if (!lift) return; // empty square — nothing to tilt
+		const r = el.getBoundingClientRect();
+		const px = (e.clientX - r.left) / r.width - 0.5;
+		const py = (e.clientY - r.top) / r.height - 0.5;
+		lift.style.transition = 'transform .06s linear';
+		lift.style.transform = `rotateX(${(-py * TILT_DEG).toFixed(2)}deg) rotateY(${(px * TILT_DEG).toFixed(2)}deg)`;
+		const shadow = el.querySelector('.contact');
+		if (shadow) {
+			shadow.style.transform = `translateX(calc(-50% + ${(-px * 14).toFixed(1)}px)) translateY(${(-py * 5).toFixed(1)}px) scale(${(1 - Math.abs(px) * 0.14).toFixed(3)})`;
+		}
+		const sheen = el.querySelector('.sheen');
+		if (sheen) {
+			sheen.style.opacity = '1';
+			sheen.style.background = `radial-gradient(circle at ${((px + 0.5) * 100).toFixed(0)}% ${((py + 0.5) * 100).toFixed(0)}%, rgba(255,255,255,.6), rgba(255,255,255,0) 58%)`;
+		}
+	}
+
+	function tiltLeave(e) {
+		const el = e.currentTarget;
+		const lift = el.querySelector('.lift');
+		if (lift) {
+			lift.style.transition = 'transform .55s cubic-bezier(.22,.61,.36,1)';
+			lift.style.transform = 'rotateX(0deg) rotateY(0deg)';
+		}
+		const shadow = el.querySelector('.contact');
+		if (shadow) shadow.style.transform = 'translateX(-50%) translateY(0) scale(1)';
+		const sheen = el.querySelector('.sheen');
+		if (sheen) sheen.style.opacity = '0';
+	}
+
+	/* ---- piece movement animation ----------------------------------------- */
+
+	// Pieces are rendered from the FEN, so a move would otherwise teleport. After
+	// the DOM settles we measure the from/to squares and play the piece in from
+	// its old position (a FLIP): no per-piece identity tracking needed, which
+	// castling, captures and promotions would all complicate.
+	let boardEl = $state(null);
+	const SLIDE_MS = 210;
+
+	function slide(from, to) {
+		if (reduceMotion || !boardEl) return;
+		const a = boardEl.querySelector(`[data-sq="${from}"]`);
+		const b = boardEl.querySelector(`[data-sq="${to}"]`);
+		const mover = b?.querySelector('.lift');
+		if (!a || !b || !mover) return;
+		const ra = a.getBoundingClientRect();
+		const rb = b.getBoundingClientRect();
+		const dx = ra.left - rb.left;
+		const dy = ra.top - rb.top;
+		if (!dx && !dy) return;
+		mover.animate(
+			[{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'translate(0px, 0px)' }],
+			{ duration: SLIDE_MS, easing: 'cubic-bezier(.22,.61,.36,1)' }
+		);
+		// the captured/landing square gets a brief pop
+		const img = mover.querySelector('.piece');
+		if (img) {
+			img.animate(
+				[{ filter: 'brightness(1.35)' }, { filter: 'brightness(1)' }],
+				{ duration: SLIDE_MS + 120, easing: 'ease-out' }
+			);
+		}
+	}
+
+	/** A piece landing, or a heavier thwack when it takes something. */
+	function playMoveSound(mv) {
+		if (mv?.captured) playCapture();
+		else playMove();
+	}
+
+	// My own move renders optimistically, so it is animated and sounded the moment
+	// it is played; remember it so the server echo doesn't replay either.
+	let selfAnimated = null; // plain let — must not drive rendering
+	let seenPly = null;
+
+	$effect(() => {
+		const n = game.moves.length;
+		const mv = history.movesAt[Math.min(n, history.movesAt.length - 1)] || null;
+		if (seenPly === null || n < seenPly) {
+			seenPly = n; // first render, or a rematch reset — nothing to play in
+			return;
+		}
+		if (n === seenPly) return;
+		seenPly = n;
+		if (reviewPly !== null) return; // reviewing an old position
+		if (selfAnimated && mv && selfAnimated.from === mv.from && selfAnimated.to === mv.to) {
+			selfAnimated = null; // already slid + sounded locally when I played it
+			return;
+		}
+		if (mv) {
+			slide(mv.from, mv.to);
+			// state-driven, so spectators and the waiting player hear it too
+			playMoveSound(mv);
+		}
+	});
+
+	/* ---- sound ------------------------------------------------------------ */
+
+	let muted = $state(false);
+	onMount(() => {
+		muted = isMuted();
+		arm(); // bind the autoplay unlock now, or the first move would be silent
+	});
+	function toggleMute() {
+		muted = !muted;
+		setMuted(muted);
+	}
 
 	/* ---- clock ------------------------------------------------------------ */
 
@@ -192,13 +323,18 @@
 			selected = null;
 			// optimistic: move renders instantly, server confirms via poll
 			const local = new Chess(fen);
+			let played;
 			try {
-				local.move({ from, to: sq, promotion: 'q' });
+				played = local.move({ from, to: sq, promotion: 'q' });
 				optimisticBaseFen = game.fen; // the position the server is still on
 				optimisticFen = local.fen();
 			} catch {
 				return;
 			}
+			// play the piece across as soon as it has rendered on its new square
+			selfAnimated = { from, to: sq };
+			tick().then(() => slide(from, sq));
+			playMoveSound({ captured: !!played.captured });
 			try {
 				await store.post('chess/move', { from, to: sq });
 			} catch (e) {
@@ -218,7 +354,7 @@
 	{#snippet playerBar(color)}
 		<div class="chess-player">
 			<Avatar uid={game.players[color]} name={nameOf(game.players[color])} size={28} />
-			<img class="mini" src="/pieces/{color}K.svg" alt={color === 'w' ? 'white' : 'black'} />
+			<img class="mini" src={theme.src(color, 'K')} alt={color === 'w' ? 'white' : 'black'} />
 			<span class="side-name">{nameOf(game.players[color])}</span>
 			{#if game.clock}
 				<span class="clock" class:clock--live={clock.ticking === color} class:clock--low={lowTime(clock[color])}>
@@ -246,14 +382,25 @@
 	{#if error}<p class="error-text">{error}</p>{/if}
 
 	<div class="board-wrap" class:board-wrap--fs={fs.isFs} bind:this={boardWrap} use:portal={fs.isFs}>
-		<div class="board">
+		<div class="board" style={theme.style} bind:this={boardEl}>
 			{#each squares as s (s.sq)}
 				<button
 					class="sq {s.dark ? 'sq--dark' : ''} {selected === s.sq ? 'sq--sel' : ''} {legalTargets.includes(s.sq) ? 'sq--hint' : ''}"
 					class:sq--last={lastMove && (lastMove.from === s.sq || lastMove.to === s.sq)}
+					class:sq--occupied={!!s.img}
+					data-sq={s.sq}
 					onclick={() => tap(s.sq)}
+					onpointermove={tiltMove}
+					onpointerleave={tiltLeave}
 				>
-					{#if s.img}<img class="piece" src={s.img} alt={s.label} draggable="false" />{/if}
+					{#if s.img}
+						<span class="glow"></span>
+						<span class="contact"></span>
+						<span class="lift">
+							<img class="piece" src={s.img} alt={s.label} draggable="false" />
+							<span class="sheen"></span>
+						</span>
+					{/if}
 				</button>
 			{/each}
 		</div>
@@ -306,10 +453,62 @@
 		<p class="muted" style="margin-top:10px;">Draw offered — waiting for a reply…</p>
 	{/if}
 
-	{#if myColor && !game.result}
-		<div class="game-actions">
+	<div class="game-actions">
+		{#if myColor && !game.result}
 			<button class="btn btn--ghost btn--sm" onclick={offerDraw} disabled={!!game.drawOffer}>½ Offer draw</button>
 			<button class="btn btn--ghost btn--sm btn--danger" onclick={resign}>⚑ Resign</button>
+		{/if}
+		<button
+			class="btn btn--ghost btn--sm"
+			onclick={() => (showThemes = !showThemes)}
+			aria-expanded={showThemes}
+		>
+			🎨 Theme
+		</button>
+		<button
+			class="btn btn--ghost btn--sm"
+			onclick={toggleMute}
+			aria-label={muted ? 'Turn move sounds on' : 'Turn move sounds off'}
+			title={muted ? 'Move sounds off' : 'Move sounds on'}
+		>
+			{muted ? '🔇' : '🔊'}
+		</button>
+	</div>
+
+	{#if showThemes}
+		<div class="themes">
+			<p class="themes-label">Board</p>
+			<div class="swatches">
+				{#each BOARD_THEMES as t (t.id)}
+					<button
+						class="sw"
+						class:sw--on={theme.board === t.id}
+						onclick={() => theme.setBoard(t.id)}
+						aria-pressed={theme.board === t.id}
+						title={t.label}
+					>
+						<span class="sw-chips">
+							<i style="background:{t.light}"></i><i style="background:{t.dark}"></i>
+						</span>
+						{t.label}
+					</button>
+				{/each}
+			</div>
+
+			<p class="themes-label">Pieces</p>
+			<div class="swatches">
+				{#each PIECE_SETS as p (p.id)}
+					<button
+						class="sw"
+						class:sw--on={theme.pieces === p.id}
+						onclick={() => theme.setPieces(p.id)}
+						aria-pressed={theme.pieces === p.id}
+					>
+						<img class="sw-pc" src="/pieces/{p.id}/wN.svg" alt="" />
+						{p.label}
+					</button>
+				{/each}
+			</div>
 		</div>
 	{/if}
 
@@ -445,24 +644,107 @@
 		max-width: min(100%, calc(100svh - 108px));
 		max-height: calc(100svh - 108px);
 	}
+	/* square colours come from the chosen board theme (--sq-l / --sq-d, set on
+	   .board), with a fallback so the board is never unstyled */
 	.sq {
+		position: relative;
 		aspect-ratio: 1;
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		background: #ebecd0;
+		background: var(--sq-l, #ebecd0);
 		border: none;
 		cursor: pointer;
 		padding: 0;
+		perspective: 460px; /* gives the hover tilt its depth */
 	}
 	.sq--dark {
-		background: #779556;
+		background: var(--sq-d, #779556);
+	}
+	/* hover tilt layers — see tiltMove()/tiltLeave() in the script */
+	.lift {
+		position: absolute;
+		inset: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		transform-style: preserve-3d;
+		will-change: transform;
+		pointer-events: none;
+	}
+	.contact {
+		position: absolute;
+		left: 50%;
+		bottom: 6%;
+		width: 56%;
+		height: 9%;
+		transform: translateX(-50%);
+		pointer-events: none;
+		filter: blur(2px);
+		background: radial-gradient(closest-side, rgba(0, 0, 0, 0.5), transparent);
+		transition:
+			transform 0.5s cubic-bezier(0.22, 0.61, 0.36, 1),
+			opacity 0.2s ease,
+			width 0.2s ease;
+	}
+	.sheen {
+		position: absolute;
+		inset: 16% 22%;
+		border-radius: 50%;
+		opacity: 0;
+		mix-blend-mode: screen;
+		pointer-events: none;
+		transition: opacity 0.25s;
+	}
+	/* soft pool of light under the cursor's piece */
+	.glow {
+		position: absolute;
+		inset: 0;
+		opacity: 0;
+		pointer-events: none;
+		transition: opacity 0.25s ease;
+		background: radial-gradient(circle at 50% 42%, rgba(255, 255, 255, 0.5), transparent 68%);
 	}
 	.piece {
 		width: 95%;
 		height: 95%;
 		pointer-events: none;
 		user-select: none;
+		transform: translateZ(14px); /* lifts the piece off the square for parallax */
+		filter: drop-shadow(0 3px 4px rgba(0, 0, 0, 0.34));
+		transition:
+			transform 0.22s cubic-bezier(0.22, 0.61, 0.36, 1),
+			filter 0.22s ease;
+	}
+
+	/* Hover: the piece zooms and lifts off the board, its shadow drops away and
+	   widens as if it rose. Mouse only — a touch device has no hover to leave. */
+	@media (hover: hover) and (pointer: fine) {
+		.sq--occupied:hover {
+			z-index: 3; /* the zoomed piece overlaps its neighbours */
+		}
+		.sq--occupied:hover .piece {
+			transform: translateZ(42px) scale(1.22);
+			filter: drop-shadow(0 14px 18px rgba(0, 0, 0, 0.5)) drop-shadow(0 3px 4px rgba(0, 0, 0, 0.3));
+		}
+		.sq--occupied:hover .glow {
+			opacity: 1;
+		}
+		.sq--occupied:hover .contact {
+			opacity: 0.45;
+			width: 66%;
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.piece,
+		.contact,
+		.glow,
+		.sheen {
+			transition: none;
+		}
+		.sq--occupied:hover .piece {
+			transform: translateZ(14px) scale(1.08);
+		}
 	}
 	.sq--sel {
 		background: #f5f682;
@@ -519,8 +801,68 @@
 	}
 	.game-actions {
 		display: flex;
+		flex-wrap: wrap;
 		gap: 8px;
 		margin-top: 12px;
+	}
+
+	/* board + piece theme picker */
+	.themes {
+		margin-top: 12px;
+		padding: 12px 14px;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		background: var(--surface-2);
+	}
+	.themes-label {
+		margin: 0 0 8px;
+		font-size: 0.72rem;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--text-dim);
+	}
+	.swatches {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+	}
+	.swatches:not(:last-child) {
+		margin-bottom: 14px;
+	}
+	.sw {
+		display: flex;
+		align-items: center;
+		gap: 7px;
+		padding: 5px 11px 5px 7px;
+		font: inherit;
+		font-size: 0.82rem;
+		color: var(--text);
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: 999px;
+		cursor: pointer;
+	}
+	.sw:hover {
+		border-color: var(--accent);
+	}
+	.sw--on {
+		border-color: var(--accent);
+		box-shadow: inset 0 0 0 1px var(--accent);
+	}
+	.sw-chips {
+		display: flex;
+		border-radius: 3px;
+		overflow: hidden;
+		box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.16);
+	}
+	.sw-chips i {
+		width: 13px;
+		height: 13px;
+		display: block;
+	}
+	.sw-pc {
+		width: 18px;
+		height: 18px;
 	}
 	.moves {
 		margin-top: 10px;

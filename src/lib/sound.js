@@ -116,7 +116,22 @@ export function playDice() {
 	}
 }
 
-/** Captured an opponent token — a punchy downward thwack. */
+/**
+ * A piece landing on its square — a dry wooden knock.
+ *
+ * Two layers: a short low body that drops in pitch (the weight of the piece)
+ * and a much quieter, faster click on top (the felt hitting the board). Kept
+ * under 80ms so a fast exchange doesn't smear into one drone.
+ */
+export function playMove() {
+	if (isMuted()) return;
+	const ac = audio();
+	if (!ac) return;
+	tone(ac, { freq: 300, endFreq: 150, dur: 0.075, type: 'triangle', gain: 0.75 });
+	tone(ac, { at: 0.005, freq: 1200, endFreq: 600, dur: 0.035, type: 'square', gain: 0.22 });
+}
+
+/** Took a piece — a punchy downward thwack. Shared by ludo and chess. */
 export function playCapture() {
 	if (isMuted()) return;
 	const ac = audio();

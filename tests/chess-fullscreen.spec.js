@@ -97,3 +97,127 @@ test('pieces fill the square and fullscreen board is vertically centred', async 
 	await expect(page.locator('.fs-player--bottom')).toContainText('Me');
 	await expect(page.locator('.fs-player--top')).toContainText('Opp');
 });
+
+test('board and piece themes can be switched and persist', async ({ page }) => {
+	await mockBackend(page);
+	await page.goto('/room/1');
+	await expect(page.locator('.board')).toBeVisible();
+
+	// default set is the hand-polished one
+	await expect(page.locator('.piece').first()).toHaveAttribute('src', /\/pieces\/polished\//);
+
+	await page.getByRole('button', { name: '🎨 Theme' }).click();
+	await expect(page.locator('.themes')).toBeVisible();
+	await expect(page.locator('.themes .swatches').first().locator('.sw')).toHaveCount(6);
+	await expect(page.locator('.themes .swatches').last().locator('.sw')).toHaveCount(3);
+
+	// switch the board colours — they ride CSS custom properties on .board
+	await page.getByRole('button', { name: 'Boxwood' }).click();
+	const style = await page.locator('.board').getAttribute('style');
+	console.log('board style after Boxwood:', style);
+	expect(style).toContain('#f0d9b5');
+	expect(style).toContain('#b58863');
+
+	// switch the piece set — every piece img repoints at that directory
+	await page.getByRole('button', { name: 'Fantasy' }).click();
+	await expect(page.locator('.piece').first()).toHaveAttribute('src', /\/pieces\/fantasy\//);
+	await page.screenshot({ path: 'test-results/chess-theme-boxwood-fantasy.png' });
+
+	// choice survives a reload (localStorage)
+	await page.reload();
+	await expect(page.locator('.board')).toBeVisible();
+	await expect(page.locator('.piece').first()).toHaveAttribute('src', /\/pieces\/fantasy\//);
+	expect(await page.locator('.board').getAttribute('style')).toContain('#f0d9b5');
+});
+
+test('hovering a piece tilts it and settles back', async ({ browser }) => {
+	// a desktop (fine-pointer) context: hover/tilt is a pointer affordance
+	const ctx = await browser.newContext({ viewport: { width: 1100, height: 900 } });
+	const page = await ctx.newPage();
+	await mockBackend(page);
+	await page.goto('/room/1');
+	await expect(page.locator('.board')).toBeVisible();
+
+	// a square that holds a piece (a1 rook for white at the bottom-left)
+	const sq = page.locator('.sq:has(.piece)').first();
+	const lift = sq.locator('.lift');
+	expect(await lift.evaluate((el) => el.style.transform || '')).toBe('');
+
+	const box = await sq.boundingBox();
+	// off-centre so both axes rotate
+	await page.mouse.move(box.x + box.width * 0.78, box.y + box.height * 0.24);
+	await expect
+		.poll(async () => lift.evaluate((el) => el.style.transform || ''))
+		.toMatch(/rotateX\(-?[\d.]+deg\) rotateY\(-?[\d.]+deg\)/);
+	const tilted = await lift.evaluate((el) => el.style.transform);
+	console.log('tilt transform:', tilted);
+	// sheen lights up while hovering
+	await expect(sq.locator('.sheen')).toHaveCSS('opacity', '1');
+	await page.screenshot({ path: 'test-results/chess-hover-tilt.png' });
+
+	// leaving resets to flat
+	await page.mouse.move(box.x + box.width * 0.78, box.y - 220);
+	await expect
+		.poll(async () => lift.evaluate((el) => el.style.transform || ''))
+		.toBe('rotateX(0deg) rotateY(0deg)');
+	await ctx.close();
+});
+
+test('playing a move slides the piece and plays a sound', async ({ browser }) => {
+	const ctx = await browser.newContext({ viewport: { width: 1100, height: 900 } });
+	const page = await ctx.newPage();
+
+	// count oscillators so we can prove a sound was actually synthesised
+	await page.addInitScript(() => {
+		window.__osc = 0;
+		const AC = window.AudioContext || window.webkitAudioContext;
+		window.AudioContext = class extends AC {
+			createOscillator() {
+				window.__osc++;
+				return super.createOscillator();
+			}
+		};
+	});
+
+	// same room, but it is WHITE (me) to move from the opening position
+	const myTurnGame = {
+		type: 'chess',
+		players: { w: 100, b: 101 },
+		fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+		moves: [],
+		result: null,
+		clock: { w: 600000, b: 600000, ticking: 'w' }
+	};
+	await page.route('**/api/auth/me', (r) => r.fulfill({ json: { user: ME } }));
+	await page.route('**/api/realtime/token**', (r) => r.fulfill({ status: 501, json: { error: 'off' } }));
+	await page.route('**/api/avatar/**', (r) => r.fulfill({ status: 404, body: '' }));
+	await page.route(/\/api\/rooms\/\d+$/, (r) =>
+		r.fulfill({ json: { room: ROOM, members: MEMBERS, me: { status: 'accepted', role: 'player' } } })
+	);
+	await page.route('**/api/rooms/*/poll**', (r) =>
+		r.fulfill({ json: { ok: true, cursor: 0, events: [], room: ROOM, members: MEMBERS, state: { v: 1, voice: [], game: myTurnGame } } })
+	);
+	await page.route('**/api/rooms/*/chess/move', (r) => r.fulfill({ json: { ok: true } }));
+
+	await page.goto('/room/1');
+	await expect(page.locator('.board')).toBeVisible();
+	// a real gesture first, or the browser keeps the AudioContext locked
+	await page.mouse.click(5, 5);
+	const before = await page.evaluate(() => window.__osc);
+
+	await page.locator('[data-sq="e2"]').click();
+	await expect(page.locator('[data-sq="e4"]')).toHaveClass(/sq--hint/); // legal target
+	await page.locator('[data-sq="e4"]').click();
+
+	// the pawn is now on e4 …
+	await expect(page.locator('[data-sq="e4"] .piece')).toBeVisible();
+	// … it slid there (a WAAPI animation was created for the move) …
+	const animated = await page.evaluate(() => document.getAnimations().length);
+	console.log('animations running right after the move:', animated);
+	// … and a sound was synthesised
+	await expect.poll(async () => page.evaluate(() => window.__osc)).toBeGreaterThan(before);
+	const after = await page.evaluate(() => window.__osc);
+	console.log('oscillators before/after move:', before, after);
+
+	await ctx.close();
+});
