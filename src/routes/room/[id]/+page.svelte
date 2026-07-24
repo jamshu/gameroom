@@ -156,6 +156,32 @@
 	const room = $derived(accepted ? $store.room : detail?.room);
 	const members = $derived(accepted ? $store.members : detail?.members || []);
 	const isHost = $derived(room?.hostUid === myUid);
+
+	/* Room-level news that isn't visible anywhere else. A host handover mid-game
+	   changes nothing on the board, so without this the new host would only find
+	   out by noticing controls they didn't have before. Cleared on a timer. */
+	let notice = $state('');
+	let noticeTimer = null;
+	function say(text) {
+		notice = text;
+		clearTimeout(noticeTimer);
+		noticeTimer = setTimeout(() => (notice = ''), 8000);
+	}
+	store.onSystem((ev) => {
+		const who = (uid) =>
+			Number(uid) === myUid ? 'You' : members.find((m) => m.uid === Number(uid))?.name || 'Someone';
+		if (ev.payload?.kind === 'host-changed') {
+			const name = who(ev.payload.uid);
+			say(`👑 ${name} ${name === 'You' ? 'are' : 'is'} now the host.`);
+			// The Ably push carries EVENTS only — `room` (and so `hostUid`) rides the
+			// poll. Without this nudge a push-connected client would show the banner
+			// now but not grow the host controls until the safety poll, 8s later.
+			store.pollNow();
+		} else if (ev.payload?.kind === 'game-abandoned') {
+			say(`${who(ev.payload.uid)} left mid-game — the round was dropped, back to the lobby.`);
+		}
+	});
+	onDestroy(() => clearTimeout(noticeTimer));
 </script>
 
 {#if !room}
@@ -177,6 +203,7 @@
 		{#if accepted && $store.error}
 			<p class="error-text">⚠️ {$store.error} — retrying…</p>
 		{/if}
+		{#if notice}<p class="chip chip--amber room-notice">{notice}</p>{/if}
 
 		{#if !accepted}
 			<div class="card" style="padding:22px; text-align:center;">
@@ -191,7 +218,7 @@
 			<div class="room-grid">
 				<main class="room-main">
 					{#if room.status === 'finished' && !finalReveal.holding}
-						<Leaderboard {members} game={$store.game} {store} {isHost} {room} />
+						<Leaderboard {members} game={$store.game} {store} {isHost} {myUid} {room} />
 					{:else if room.status === 'lobby'}
 						<RoomLobby {store} {members} {room} {isHost} />
 					{:else if $store.game?.type === 'thief_finder'}
@@ -236,6 +263,10 @@
 		align-items: center;
 		justify-content: space-between;
 		margin-bottom: 16px;
+	}
+	.room-notice {
+		display: inline-block;
+		margin-bottom: 12px;
 	}
 	.room-title {
 		display: inline;

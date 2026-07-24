@@ -10,7 +10,8 @@
 import assert from 'node:assert';
 import { register } from 'node:module';
 register('./room-stub-loader.mjs', import.meta.url);
-const { reseatRoles, resetRound, createRoomMedia, readRoomMedia, deleteRoom } = await import('./room.js');
+const { reseatRoles, resetRound, createRoomMedia, readRoomMedia, deleteRoom, pickSuccessorHost } =
+	await import('./room.js');
 
 const member = (id, role, status = 'accepted') => ({
 	id,
@@ -164,6 +165,30 @@ const writesTo = (role) =>
 		[['res_model', '=', 'x_gameroom'], ['res_id', '=', 42]],
 		'scoped to this room only'
 	);
+}
+
+// 9. Host succession: the room outlives whoever made it. Longest-standing
+//    ACCEPTED member takes over (member ids ascend with join order, same rule
+//    reseatRoles uses), never a pending/left row and never the person leaving.
+{
+	const m = (id, status = 'accepted') => ({
+		id, x_studio_status: status, x_studio_user_id: [100 + id, `P${id}`]
+	});
+
+	assert.equal(pickSuccessorHost([m(1), m(2), m(3)], 101), 102, 'next-oldest accepted takes over');
+	assert.equal(
+		pickSuccessorHost([m(3), m(2), m(1)], 101), 102,
+		'ordering is by member id, not array position'
+	);
+	assert.equal(
+		pickSuccessorHost([m(1), m(2, 'pending'), m(3)], 101), 103,
+		'a pending member never inherits the room'
+	);
+	assert.equal(
+		pickSuccessorHost([m(1), m(2, 'left')], 101), null,
+		'nobody accepted left → null, and the caller deletes the room'
+	);
+	assert.equal(pickSuccessorHost([m(1)], 101), null, 'the leaver is never their own successor');
 }
 
 console.log('room-check: all assertions passed');

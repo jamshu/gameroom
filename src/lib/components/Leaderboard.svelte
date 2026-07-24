@@ -3,9 +3,10 @@
 	import Avatar from './Avatar.svelte';
 	import { GAMES } from '$lib/games.js';
 
-	let { members, game = null, store = null, isHost = false, room = null } = $props();
+	let { members, game = null, store = null, isHost = false, myUid = null, room = null } = $props();
 	let busy = $state(false);
 	let error = $state('');
+	let promoting = $state(null);
 	// seeded once: a successful switch flips the room out of `finished`, which
 	// unmounts this component — there's nothing to follow.
 	let pick = $state(untrack(() => room?.gameType) ?? GAMES[0].id);
@@ -18,6 +19,11 @@
 	const topScore = $derived(ranked[0]?.score ?? 0);
 	const champions = $derived(topScore > 0 ? ranked.filter((m) => m.score === topScore) : []);
 	const soleWinner = $derived(champions.length === 1 ? champions[0] : null);
+	// anyone still here who could take the room over (spectators included — host
+	// is a room role, not a seat)
+	const handoverCandidates = $derived(
+		members.filter((m) => m.status === 'accepted' && m.uid !== myUid)
+	);
 
 	async function playAgain() {
 		error = '';
@@ -28,6 +34,20 @@
 			error = e.message;
 		} finally {
 			busy = false;
+		}
+	}
+
+	/** Hand the room over before heading off, so the others can start another round. */
+	async function makeHost(m) {
+		error = '';
+		if (!confirm(`Make ${m.name} the host? You'll lose the host controls.`)) return;
+		promoting = m.uid;
+		try {
+			await store.post('host', { uid: m.uid });
+		} catch (e) {
+			error = e.message;
+		} finally {
+			promoting = null;
 		}
 	}
 
@@ -105,6 +125,23 @@
 				Play again as…
 			</button>
 		</div>
+
+		<!-- Heading off? Pass the room on and the others can keep playing without
+		     you — otherwise the host controls leave with you. -->
+		{#if handoverCandidates.length}
+			<div class="lb-switch">
+				<span class="muted">or pass host to</span>
+				{#each handoverCandidates as m (m.uid)}
+					<button
+						class="btn btn--sm btn--ghost"
+						onclick={() => makeHost(m)}
+						disabled={promoting === m.uid}
+					>
+						{promoting === m.uid ? '…' : `👑 ${m.name}`}
+					</button>
+				{/each}
+			</div>
+		{/if}
 	{/if}
 </div>
 

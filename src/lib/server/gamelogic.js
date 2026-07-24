@@ -442,6 +442,17 @@ export function chessScores(game) {
 	};
 }
 
+/**
+ * The uids holding a seat in `game`. Chess keys its two seats by colour, the
+ * other games use a turn-order array — callers that only ask "is this player in
+ * the game?" shouldn't have to know which. Pure.
+ */
+export function gameSeatUids(game) {
+	const p = game?.players;
+	if (!p) return [];
+	return Array.isArray(p) ? [...p] : Object.values(p);
+}
+
 /* ------------------------------ client views ------------------------------ */
 
 /**

@@ -7,6 +7,7 @@
 	let error = $state('');
 	let starting = $state(false);
 	let removing = $state(null); // member id being removed
+	let promoting = $state(null); // member id being made host
 	let switching = $state(false);
 
 	const accepted = $derived(members.filter((m) => m.status === 'accepted'));
@@ -73,6 +74,21 @@
 		}
 	}
 
+	/** Hand the room over. The host keeps their seat and their place in the game —
+	 *  only the room controls move — so this is safe to do at any time. */
+	async function makeHost(m) {
+		error = '';
+		if (!confirm(`Make ${m.name} the host? You'll lose the host controls.`)) return;
+		promoting = m.id;
+		try {
+			await store.post('host', { uid: m.uid });
+		} catch (e) {
+			error = e.message;
+		} finally {
+			promoting = null;
+		}
+	}
+
 	async function start() {
 		error = '';
 		starting = true;
@@ -114,6 +130,14 @@
 			{#if isHost && m.uid !== room.hostUid}
 				<button
 					class="btn btn--ghost btn--sm remove-btn"
+					onclick={() => makeHost(m)}
+					disabled={promoting === m.id}
+					title="Make {m.name} the host of this room"
+				>
+					{promoting === m.id ? '…' : '👑 Make host'}
+				</button>
+				<button
+					class="btn btn--ghost btn--sm"
 					onclick={() => remove(m)}
 					disabled={removing === m.id}
 					title="Remove {m.name} from this room"

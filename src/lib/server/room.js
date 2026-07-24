@@ -283,6 +283,31 @@ export async function resetRound(state, members) {
 	state.game = null;
 }
 
+/**
+ * Who takes the room when the current host goes. Longest-standing accepted
+ * member wins — member ids ascend with join order, the same convention
+ * reseatRoles uses to decide who keeps a seat. Returns a uid, or null when
+ * nobody is left to hand it to (the caller then deletes the room). Pure.
+ *
+ * `leavingUid` is load-bearing, not just tidiness: callers hold rows read
+ * BEFORE they wrote the leaver to 'left', so that row still says `accepted`
+ * here and would otherwise elect the departing host their own successor.
+ */
+export function pickSuccessorHost(members, leavingUid) {
+	return (
+		members
+			.filter(
+				(m) => m.x_studio_status === 'accepted' && m.x_studio_user_id?.[0] !== leavingUid
+			)
+			.sort((a, b) => a.id - b.id)[0]?.x_studio_user_id?.[0] ?? null
+	);
+}
+
+/** Hand the room to another member. Caller has already authorized this. */
+export function setHost(roomId, uid) {
+	return adminExecute(ROOM, 'write', [[Number(roomId)], { x_studio_host_id: Number(uid) }]);
+}
+
 /** Delete a room and all its rows (FK-safe order: media → events → members → room). */
 export async function deleteRoom(roomId) {
 	const id = Number(roomId);
