@@ -1,11 +1,15 @@
 <script>
 	import Avatar from './Avatar.svelte';
 	import { simulate, buildBodies, BOARD } from '$lib/games/carroms-sim.js';
+	import { createFullscreen } from '$lib/fullscreen.svelte.js';
 
 	let { store, game, members, myUid } = $props();
 	let canvas = $state(null);
 	let error = $state('');
 	let posting = $state(false);
+
+	let boardWrap = $state(null);
+	const fs = createFullscreen(() => boardWrap);
 
 	const nameOf = $derived((uid) => members.find((m) => m.uid === uid)?.name || `#${uid}`);
 	const currentUid = $derived(game.players[game.turnIdx]);
@@ -238,19 +242,34 @@
 	{/if}
 	{#if error}<p class="error-text">{error}</p>{/if}
 
-	<canvas
-		bind:this={canvas}
-		width={BOARD.SIZE}
-		height={BOARD.SIZE}
-		class="carrom-canvas"
-		onmousedown={down}
-		onmousemove={move}
-		onmouseup={up}
-		onmouseleave={up}
-		ontouchstart={down}
-		ontouchmove={move}
-		ontouchend={up}
-	></canvas>
+	<div class="board-wrap" class:board-wrap--fs={fs.isFs} bind:this={boardWrap}>
+		<canvas
+			bind:this={canvas}
+			width={BOARD.SIZE}
+			height={BOARD.SIZE}
+			class="carrom-canvas"
+			onmousedown={down}
+			onmousemove={move}
+			onmouseup={up}
+			onmouseleave={up}
+			ontouchstart={down}
+			ontouchmove={move}
+			ontouchend={up}
+		></canvas>
+		<button
+			class="btn btn--ghost btn--sm fs-btn"
+			onclick={fs.toggle}
+			title={fs.isFs ? 'Exit fullscreen (Esc)' : 'Fullscreen board'}
+		>
+			{fs.isFs ? '✕ Exit' : '⛶ Fullscreen'}
+		</button>
+		{#if fs.isFs}
+			<div class="fs-status">
+				<span class="chip {myTeam === 'w' ? 'chip--green' : ''}">⚪ {game.scores.w}</span>
+				<span class="chip {myTeam === 'b' ? 'chip--green' : ''}">⚫ {game.scores.b}</span>
+			</div>
+		{/if}
+	</div>
 
 	<div class="turn-row">
 		{#each game.players as uid, i (uid)}
@@ -267,6 +286,9 @@
 		display: flex;
 		gap: 10px;
 	}
+	.board-wrap {
+		position: relative;
+	}
 	.carrom-canvas {
 		width: 100%;
 		max-width: 520px;
@@ -274,6 +296,43 @@
 		border-radius: var(--radius-sm);
 		touch-action: none;
 		display: block;
+	}
+	.fs-btn {
+		margin-top: 10px;
+	}
+
+	/* Fullscreen overlay (CSS-driven; the shared module gates the native API to
+	   desktop). `svh` = small viewport height, so on phones the board never hides
+	   behind the browser's collapsing toolbar. */
+	.board-wrap--fs {
+		position: fixed;
+		inset: 0 0 auto 0;
+		height: 100svh;
+		z-index: 100;
+		box-sizing: border-box;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 8px;
+		background: var(--bg);
+		padding: calc(8px + env(safe-area-inset-top)) calc(4px + env(safe-area-inset-right))
+			calc(8px + env(safe-area-inset-bottom)) calc(4px + env(safe-area-inset-left));
+	}
+	.board-wrap--fs .carrom-canvas {
+		flex: 0 1 auto;
+		max-width: none;
+		width: min(100%, calc(100svh - 96px));
+		max-height: calc(100svh - 88px);
+	}
+	.board-wrap--fs .fs-btn {
+		margin-top: 0;
+		flex: 0 0 auto;
+	}
+	.fs-status {
+		display: flex;
+		gap: 10px;
+		order: -1; /* score chips above the board in fullscreen */
 	}
 	.turn-row {
 		display: flex;

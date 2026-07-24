@@ -2,6 +2,7 @@
 	import { Chess } from 'chess.js';
 	import Avatar from './Avatar.svelte';
 	import { createChessClock, formatClock } from '$lib/chessclock.svelte.js';
+	import { createFullscreen } from '$lib/fullscreen.svelte.js';
 
 	let { store, game, members, myUid } = $props();
 	let selected = $state(null); // square like 'e2'
@@ -174,59 +175,7 @@
 	/* ---- fullscreen -------------------------------------------------------- */
 
 	let boardWrap = $state(null);
-	// iOS Safari cannot fullscreen arbitrary elements (only <video>), so `isFs`
-	// drives a CSS fallback and we only *additionally* use the native API where
-	// it works. `nativeFs` is a plain let — it must not drive rendering.
-	let isFs = $state(false);
-	let nativeFs = false;
-
-	// Native fullscreen misbehaves on phones (safe-area insets read 0 in the top
-	// layer, and it fights the position:fixed overlay), so we use it only on
-	// non-touch/desktop and let the CSS fallback carry mobile — where it's robust.
-	const canNativeFs = () =>
-		typeof window !== 'undefined' &&
-		window.matchMedia &&
-		!window.matchMedia('(pointer: coarse)').matches;
-
-	async function toggleFullscreen() {
-		if (!isFs) {
-			isFs = true; // CSS fallback applies immediately either way
-			try {
-				if (canNativeFs() && boardWrap?.requestFullscreen) {
-					await boardWrap.requestFullscreen();
-					nativeFs = true;
-				}
-			} catch {
-				nativeFs = false; // refused (or iOS) — the CSS fallback still covers us
-			}
-		} else {
-			isFs = false;
-			if (nativeFs && document.fullscreenElement) await document.exitFullscreen().catch(() => {});
-			nativeFs = false;
-		}
-	}
-
-	// The browser's own chrome (Esc, F11) can exit native fullscreen without us —
-	// keep our flag in sync or the CSS fallback would strand the board full-bleed.
-	$effect(() => {
-		const sync = () => {
-			if (nativeFs && !document.fullscreenElement) {
-				nativeFs = false;
-				isFs = false;
-			}
-		};
-		document.addEventListener('fullscreenchange', sync);
-		return () => document.removeEventListener('fullscreenchange', sync);
-	});
-
-	$effect(() => {
-		if (!isFs) return;
-		const onKey = (e) => {
-			if (e.key === 'Escape') isFs = false;
-		};
-		window.addEventListener('keydown', onKey);
-		return () => window.removeEventListener('keydown', onKey);
-	});
+	const fs = createFullscreen(() => boardWrap);
 
 	async function tap(sq) {
 		error = '';
@@ -296,7 +245,7 @@
 	{/if}
 	{#if error}<p class="error-text">{error}</p>{/if}
 
-	<div class="board-wrap" class:board-wrap--fs={isFs} bind:this={boardWrap}>
+	<div class="board-wrap" class:board-wrap--fs={fs.isFs} bind:this={boardWrap}>
 		<div class="board">
 			{#each squares as s (s.sq)}
 				<button
@@ -310,12 +259,12 @@
 		</div>
 		<button
 			class="btn btn--ghost btn--sm fs-btn"
-			onclick={toggleFullscreen}
-			title={isFs ? 'Exit fullscreen (Esc)' : 'Fullscreen board'}
+			onclick={fs.toggle}
+			title={fs.isFs ? 'Exit fullscreen (Esc)' : 'Fullscreen board'}
 		>
-			{isFs ? '✕ Exit' : '⛶ Fullscreen'}
+			{fs.isFs ? '✕ Exit' : '⛶ Fullscreen'}
 		</button>
-		{#if isFs}
+		{#if fs.isFs}
 			<div class="fs-status">
 				{#if game.clock}
 					<span class="clock" class:clock--live={clock.ticking === 'w'} class:clock--low={lowTime(clock.w)}>

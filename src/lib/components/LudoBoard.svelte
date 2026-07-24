@@ -2,10 +2,14 @@
 	import { onMount } from 'svelte';
 	import Avatar from './Avatar.svelte';
 	import { playDice, playCapture, playHome, isMuted, setMuted, arm } from '$lib/sound.js';
+	import { createFullscreen } from '$lib/fullscreen.svelte.js';
 
 	let { store, game, members, myUid } = $props();
 	let error = $state('');
 	let posting = $state(false);
+
+	let playArea = $state(null);
+	const fs = createFullscreen(() => playArea);
 	let rolling = $state(false);
 	let muted = $state(false);
 	// 3D die: the value comes from the player's swipe (see swipeEnd). cubeRX/cubeRY
@@ -283,6 +287,7 @@
 
 	{#if error}<p class="error-text">{error}</p>{/if}
 
+	<div class="play-area" class:play-area--fs={fs.isFs} bind:this={playArea}>
 	<div class="board-wrap">
 		<div class="board">
 			{#each cells as cell (cell.r * N + cell.c)}
@@ -353,6 +358,15 @@
 			{#if myColor}<span class="you-are">You are <span class="swatch" style="background:{cssColor(myColor)}"></span>{myColor}</span>{/if}
 		</div>
 	</div>
+
+		<button
+			class="btn btn--ghost btn--sm fs-btn"
+			onclick={fs.toggle}
+			title={fs.isFs ? 'Exit fullscreen (Esc)' : 'Fullscreen board'}
+		>
+			{fs.isFs ? '✕ Exit' : '⛶ Fullscreen'}
+		</button>
+	</div>
 </div>
 
 <style>
@@ -408,9 +422,48 @@
 		box-shadow: 0 0 6px -1px var(--pc);
 	}
 
+	.play-area {
+		position: relative;
+	}
 	.board-wrap {
 		max-width: 480px;
 		margin: 0 auto;
+	}
+	.fs-btn {
+		display: block;
+		margin: 12px auto 0;
+	}
+
+	/* Fullscreen overlay (CSS-driven; the shared module gates the native API to
+	   desktop). The board AND the dice/controls live inside so Ludo stays fully
+	   playable in fullscreen. `svh` keeps it clear of the mobile browser chrome. */
+	.play-area--fs {
+		position: fixed;
+		inset: 0 0 auto 0;
+		height: 100svh;
+		z-index: 100;
+		box-sizing: border-box;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 10px;
+		overflow: auto;
+		background: var(--bg);
+		padding: calc(10px + env(safe-area-inset-top)) calc(6px + env(safe-area-inset-right))
+			calc(10px + env(safe-area-inset-bottom)) calc(6px + env(safe-area-inset-left));
+	}
+	.play-area--fs .board-wrap {
+		width: 100%;
+		/* reserve room for the dice/controls row + exit button below the board */
+		max-width: min(100%, calc(100svh - 200px));
+		margin: 0;
+	}
+	.play-area--fs .controls {
+		margin-top: 0;
+	}
+	.play-area--fs .fs-btn {
+		margin: 0;
 	}
 	.board {
 		position: relative;
