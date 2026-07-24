@@ -41,6 +41,7 @@ export async function POST({ params, request, cookies }) {
 
 		game.fen = chess.fen();
 		game.moves.push(move.san);
+		delete game.drawOffer; // making a move declines any outstanding draw offer
 		if (chess.isCheckmate()) game.result = myColor;
 		else if (chess.isDraw() || chess.isStalemate()) game.result = 'draw';
 		// freeze the clock on a finished game, or every client keeps ticking it
