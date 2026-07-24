@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import Avatar from './Avatar.svelte';
 	import { playDice, playCapture, playHome, isMuted, setMuted, arm } from '$lib/sound.js';
-	import { createFullscreen } from '$lib/fullscreen.svelte.js';
+	import { createFullscreen, portal } from '$lib/fullscreen.svelte.js';
 
 	let { store, game, members, myUid } = $props();
 	let error = $state('');
@@ -287,7 +287,7 @@
 
 	{#if error}<p class="error-text">{error}</p>{/if}
 
-	<div class="play-area" class:play-area--fs={fs.isFs} bind:this={playArea}>
+	<div class="play-area" class:play-area--fs={fs.isFs} bind:this={playArea} use:portal={fs.isFs}>
 	<div class="board-wrap">
 		<div class="board">
 			{#each cells as cell (cell.r * N + cell.c)}

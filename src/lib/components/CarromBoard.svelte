@@ -1,7 +1,7 @@
 <script>
 	import Avatar from './Avatar.svelte';
 	import { simulate, buildBodies, BOARD } from '$lib/games/carroms-sim.js';
-	import { createFullscreen } from '$lib/fullscreen.svelte.js';
+	import { createFullscreen, portal } from '$lib/fullscreen.svelte.js';
 
 	let { store, game, members, myUid } = $props();
 	let canvas = $state(null);
@@ -242,7 +242,7 @@
 	{/if}
 	{#if error}<p class="error-text">{error}</p>{/if}
 
-	<div class="board-wrap" class:board-wrap--fs={fs.isFs} bind:this={boardWrap}>
+	<div class="board-wrap" class:board-wrap--fs={fs.isFs} bind:this={boardWrap} use:portal={fs.isFs}>
 		<canvas
 			bind:this={canvas}
 			width={BOARD.SIZE}

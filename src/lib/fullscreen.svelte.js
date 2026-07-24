@@ -68,3 +68,37 @@ export function createFullscreen(getEl) {
 		toggle
 	};
 }
+
+/**
+ * Svelte action: while `active`, move `node` to <body> so its `position:fixed`
+ * overlay is measured against the viewport — NOT a transformed ancestor. The app
+ * shell (`.room.fade-in`) carries a transform, and ANY non-`none` transform makes
+ * that ancestor the containing block for fixed descendants, which offset & mis-size
+ * the fullscreen board. A comment placeholder remembers the original slot so the
+ * node returns exactly where Svelte expects it (on exit and on component destroy).
+ */
+export function portal(node, active) {
+	const placeholder = document.createComment('fs-portal');
+
+	function moveOut() {
+		if (node.parentNode !== document.body) {
+			node.parentNode?.insertBefore(placeholder, node);
+			document.body.appendChild(node);
+		}
+	}
+	function moveBack() {
+		if (placeholder.parentNode) {
+			placeholder.parentNode.insertBefore(node, placeholder);
+			placeholder.remove();
+		}
+	}
+
+	if (active) moveOut();
+	return {
+		update(next) {
+			if (next) moveOut();
+			else moveBack();
+		},
+		destroy: moveBack // restore before Svelte removes it from its real parent
+	};
+}

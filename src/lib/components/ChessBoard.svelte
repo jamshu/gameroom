@@ -2,7 +2,7 @@
 	import { Chess } from 'chess.js';
 	import Avatar from './Avatar.svelte';
 	import { createChessClock, formatClock } from '$lib/chessclock.svelte.js';
-	import { createFullscreen } from '$lib/fullscreen.svelte.js';
+	import { createFullscreen, portal } from '$lib/fullscreen.svelte.js';
 
 	let { store, game, members, myUid } = $props();
 	let selected = $state(null); // square like 'e2'
@@ -136,6 +136,13 @@
 
 	const lowTime = (ms) => ms != null && ms <= 30000;
 
+	// Fullscreen clocks sit on each player's own side: my clock at the bottom (the
+	// board already flips so my pieces are at the bottom), the opponent's at the
+	// top. Spectators get the standard white-bottom / black-top orientation.
+	const bottomColor = $derived(myColor || 'w');
+	const topColor = $derived(bottomColor === 'w' ? 'b' : 'w');
+	const kingGlyph = (c) => (c === 'w' ? '♔' : '♚');
+
 	/* ---- resign / draw ---------------------------------------------------- */
 
 	const drawOfferedByMe = $derived(!!game.drawOffer && game.drawOffer === myUid);
@@ -207,28 +214,21 @@
 </script>
 
 <div class="card" style="padding:20px;">
-	<div class="chess-head">
-		<span class="side">
-			<Avatar uid={game.players.w} name={nameOf(game.players.w)} size={24} />
-			<img class="mini" src="/pieces/wK.svg" alt="white" />
-			<span class="side-name">{nameOf(game.players.w)}</span>
+	<!-- each player on their own side: opponent bar above the board, my bar below -->
+	{#snippet playerBar(color)}
+		<div class="chess-player">
+			<Avatar uid={game.players[color]} name={nameOf(game.players[color])} size={28} />
+			<img class="mini" src="/pieces/{color}K.svg" alt={color === 'w' ? 'white' : 'black'} />
+			<span class="side-name">{nameOf(game.players[color])}</span>
 			{#if game.clock}
-				<span class="clock" class:clock--live={clock.ticking === 'w'} class:clock--low={lowTime(clock.w)}>
-					{formatClock(clock.w)}
+				<span class="clock" class:clock--live={clock.ticking === color} class:clock--low={lowTime(clock[color])}>
+					{formatClock(clock[color])}
 				</span>
 			{/if}
-		</span>
-		<span class="side side--right">
-			{#if game.clock}
-				<span class="clock" class:clock--live={clock.ticking === 'b'} class:clock--low={lowTime(clock.b)}>
-					{formatClock(clock.b)}
-				</span>
-			{/if}
-			<span class="side-name">{nameOf(game.players.b)}</span>
-			<img class="mini" src="/pieces/bK.svg" alt="black" />
-			<Avatar uid={game.players.b} name={nameOf(game.players.b)} size={24} />
-		</span>
-	</div>
+		</div>
+	{/snippet}
+
+	{@render playerBar(topColor)}
 
 	{#if game.result}
 		<p class="chip chip--green" style="margin-bottom:10px;">{resultText}</p>
@@ -245,7 +245,7 @@
 	{/if}
 	{#if error}<p class="error-text">{error}</p>{/if}
 
-	<div class="board-wrap" class:board-wrap--fs={fs.isFs} bind:this={boardWrap}>
+	<div class="board-wrap" class:board-wrap--fs={fs.isFs} bind:this={boardWrap} use:portal={fs.isFs}>
 		<div class="board">
 			{#each squares as s (s.sq)}
 				<button
@@ -264,19 +264,23 @@
 		>
 			{fs.isFs ? '✕ Exit' : '⛶ Fullscreen'}
 		</button>
-		{#if fs.isFs}
-			<div class="fs-status">
-				{#if game.clock}
-					<span class="clock" class:clock--live={clock.ticking === 'w'} class:clock--low={lowTime(clock.w)}>
-						♔ {formatClock(clock.w)}
-					</span>
-					<span class="clock" class:clock--live={clock.ticking === 'b'} class:clock--low={lowTime(clock.b)}>
-						♚ {formatClock(clock.b)}
-					</span>
-				{/if}
+		{#if fs.isFs && game.clock}
+			<div class="fs-player fs-player--top">
+				<span class="side-name">{nameOf(game.players[topColor])}</span>
+				<span class="clock" class:clock--live={clock.ticking === topColor} class:clock--low={lowTime(clock[topColor])}>
+					{kingGlyph(topColor)} {formatClock(clock[topColor])}
+				</span>
+			</div>
+			<div class="fs-player fs-player--bottom">
+				<span class="side-name">{nameOf(game.players[bottomColor])}</span>
+				<span class="clock" class:clock--live={clock.ticking === bottomColor} class:clock--low={lowTime(clock[bottomColor])}>
+					{kingGlyph(bottomColor)} {formatClock(clock[bottomColor])}
+				</span>
 			</div>
 		{/if}
 	</div>
+
+	{@render playerBar(bottomColor)}
 
 	{#if game.moves.length}
 		<div class="review">
@@ -315,20 +319,16 @@
 </div>
 
 <style>
-	.chess-head {
+	/* a player row: avatar + colour + name on the left, clock on the right */
+	.chess-player {
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
-		margin-bottom: 12px;
-	}
-	.side {
-		display: flex;
-		align-items: center;
-		gap: 6px;
+		gap: 8px;
 		min-width: 0;
+		margin-block: 8px;
 	}
-	.side--right {
-		justify-content: flex-end;
+	.chess-player .clock {
+		margin-left: auto; /* push the clock to the right edge of the row */
 	}
 	.side-name {
 		overflow: hidden;
@@ -384,8 +384,9 @@
 	   the board was being sized too tall and clipped/pushed off-screen on phones. */
 	.board-wrap--fs {
 		position: fixed;
-		inset: 0 0 auto 0; /* pin top/left/right; height is explicit below */
-		height: 100svh; /* always fully on-screen, never behind mobile chrome */
+		inset: 0; /* fill the real viewport exactly, so centring is true centre.
+		             (height:100svh resolved TALLER than the viewport and pushed the
+		             board below centre — the "blank space at top" bug.) */
 		z-index: 100;
 		box-sizing: border-box;
 		display: flex;
@@ -400,27 +401,49 @@
 		padding: calc(8px + env(safe-area-inset-top)) calc(4px + env(safe-area-inset-right))
 			calc(8px + env(safe-area-inset-bottom)) calc(4px + env(safe-area-inset-left));
 	}
-	/* clocks + exit button keep their size; the board fits the space that's left */
-	.board-wrap--fs .fs-status,
+	/* chess.com layout: each player's clock on their own side — opponent pinned to
+	   the top, me to the bottom — with ONLY the board centred in between, so it
+	   sits dead centre with no floating gap. */
+	.board-wrap--fs .fs-player {
+		position: absolute;
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		max-width: 70%;
+	}
+	/* opponent strip spans the top (name left, clock right) */
+	.board-wrap--fs .fs-player--top {
+		top: calc(8px + env(safe-area-inset-top));
+		left: 12px;
+		right: 12px;
+		max-width: none;
+		justify-content: space-between;
+	}
+	/* my strip sits bottom-left; the exit button takes the bottom-right */
+	.board-wrap--fs .fs-player--bottom {
+		bottom: calc(8px + env(safe-area-inset-bottom));
+		left: 12px;
+	}
+	.board-wrap--fs .fs-player .side-name {
+		font-weight: 600;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
 	.board-wrap--fs .fs-btn {
-		flex: 0 0 auto;
+		position: absolute;
+		bottom: calc(8px + env(safe-area-inset-bottom));
+		right: calc(8px + env(safe-area-inset-right));
+		left: auto;
+		transform: none;
+		margin: 0;
 	}
 	.board-wrap--fs .board {
 		flex: 0 1 auto;
-		/* smaller reserve = bigger board. Just enough for the clocks strip, the
-		   exit button, gaps and padding above/below. */
-		width: min(100%, calc(100svh - 118px));
-		max-width: min(100%, calc(100svh - 118px));
-		/* hard guard: never exceed the leftover height even if the reserve is off */
-		max-height: calc(100svh - 110px);
-	}
-	.board-wrap--fs .fs-btn {
-		margin-top: 0;
-	}
-	.fs-status {
-		display: flex;
-		gap: 12px;
-		order: -1; /* clocks above the board in fullscreen */
+		/* reserve keeps the centred board clear of the pinned clock strips */
+		width: min(100%, calc(100svh - 108px));
+		max-width: min(100%, calc(100svh - 108px));
+		max-height: calc(100svh - 108px);
 	}
 	.sq {
 		aspect-ratio: 1;
@@ -436,8 +459,8 @@
 		background: #779556;
 	}
 	.piece {
-		width: 88%;
-		height: 88%;
+		width: 95%;
+		height: 95%;
 		pointer-events: none;
 		user-select: none;
 	}
