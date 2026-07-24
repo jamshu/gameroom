@@ -106,6 +106,19 @@ export function playWrong() {
 	tone(ac, { at: 0.06, freq: 146.83, endFreq: 110, dur: 0.36, type: 'square', gain: 0.3 });
 }
 
+/**
+ * Turn passed with nothing to do — a soft two-note sigh. Deliberately gentler
+ * than playWrong: rolling a 3 with every token still in the yard is the game
+ * working normally, not a mistake anyone made.
+ */
+export function playPass() {
+	if (isMuted()) return;
+	const ac = audio();
+	if (!ac) return;
+	tone(ac, { at: 0.0, freq: 392.0, dur: 0.11, type: 'sine', gain: 0.5 });
+	tone(ac, { at: 0.08, freq: 293.66, dur: 0.18, type: 'sine', gain: 0.42 });
+}
+
 /** Ludo dice roll — a short dry rattle of clipped blips. */
 export function playDice() {
 	if (isMuted()) return;
@@ -137,6 +150,69 @@ export function playCapture() {
 	const ac = audio();
 	if (!ac) return;
 	tone(ac, { freq: 440, endFreq: 120, dur: 0.22, type: 'sawtooth', gain: 0.6 });
+}
+
+/* ------------------------------- carroms ---------------------------------- */
+
+/** 0..1 from a sim impact speed. Shots run ~10–40 units, so 24 is a hard hit. */
+function impact(speed) {
+	return Math.max(0.15, Math.min(1, (speed || 0) / 24));
+}
+
+/** The flick itself — a short bright snap, brighter the harder you pulled back. */
+export function playCarromFlick(power = 0.6) {
+	if (isMuted()) return;
+	const ac = audio();
+	if (!ac) return;
+	const k = Math.max(0.15, Math.min(1, power));
+	tone(ac, { freq: 900 + k * 700, endFreq: 300, dur: 0.06, type: 'square', gain: 0.3 + k * 0.3 });
+	tone(ac, { at: 0.004, freq: 240, endFreq: 120, dur: 0.09, type: 'triangle', gain: 0.35 });
+}
+
+/**
+ * Two discs meeting — a hard little click. Deliberately shorter than the chess
+ * knock: a break can fire a dozen of these in under a second, and anything with
+ * a tail smears them into one buzz.
+ */
+export function playCarromHit(speed) {
+	if (isMuted()) return;
+	const ac = audio();
+	if (!ac) return;
+	const k = impact(speed);
+	tone(ac, { freq: 1100 + k * 900, endFreq: 500, dur: 0.028, type: 'square', gain: 0.18 + k * 0.3 });
+	tone(ac, { at: 0.003, freq: 420 + k * 200, endFreq: 200, dur: 0.045, type: 'triangle', gain: 0.2 + k * 0.2 });
+}
+
+/** Off the cushion — same gesture, lower and duller than a disc-on-disc click. */
+export function playCarromWall(speed) {
+	if (isMuted()) return;
+	const ac = audio();
+	if (!ac) return;
+	const k = impact(speed);
+	tone(ac, { freq: 200 + k * 120, endFreq: 90, dur: 0.07, type: 'triangle', gain: 0.16 + k * 0.22 });
+}
+
+/** Down the hole — a coin drops; the queen gets a brighter two-note flourish. */
+export function playCarromPocket(kind = 'coin') {
+	if (isMuted()) return;
+	const ac = audio();
+	if (!ac) return;
+	if (kind === 'queen') {
+		tone(ac, { at: 0.0, freq: 784.0, dur: 0.13 });
+		tone(ac, { at: 0.09, freq: 1174.7, dur: 0.26, gain: 0.9 });
+		return;
+	}
+	tone(ac, { freq: 520, endFreq: 180, dur: 0.16, type: 'triangle', gain: 0.7 });
+	tone(ac, { at: 0.05, freq: 150, endFreq: 80, dur: 0.16, type: 'sine', gain: 0.5 });
+}
+
+/** Your own striker went down — a flat, unhappy buzz. */
+export function playCarromFoul() {
+	if (isMuted()) return;
+	const ac = audio();
+	if (!ac) return;
+	tone(ac, { freq: 165, endFreq: 98, dur: 0.42, type: 'square', gain: 0.45 });
+	tone(ac, { at: 0.08, freq: 123.5, endFreq: 82, dur: 0.34, type: 'sawtooth', gain: 0.28 });
 }
 
 /** Brought a token home — bright two-note chime (C6 → G6). */

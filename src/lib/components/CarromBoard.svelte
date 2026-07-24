@@ -1,12 +1,42 @@
 <script>
+	import { onMount } from 'svelte';
 	import Avatar from './Avatar.svelte';
 	import { simulate, buildBodies, BOARD } from '$lib/games/carroms-sim.js';
 	import { createFullscreen, portal } from '$lib/fullscreen.svelte.js';
+	import { createTheme, CARROM_THEMES } from '$lib/themes.svelte.js';
+	import ThemePicker from './ThemePicker.svelte';
+	import {
+		playCarromFlick,
+		playCarromHit,
+		playCarromWall,
+		playCarromPocket,
+		playCarromFoul,
+		isMuted,
+		setMuted,
+		arm
+	} from '$lib/sound.js';
 
 	let { store, game, members, myUid } = $props();
 	let canvas = $state(null);
 	let error = $state('');
 	let posting = $state(false);
+
+	const theme = createTheme({ key: 'gameroom:carrom-theme', themes: CARROM_THEMES });
+	let showThemes = $state(false);
+	let muted = $state(false);
+	const pal = $derived(theme.current.palette);
+
+	onMount(() => {
+		muted = isMuted();
+		// the AudioContext needs a gesture that has ALREADY happened — waiting until
+		// the first shot would silence it (the flick's own pointerup is too late)
+		arm();
+	});
+
+	function toggleMute() {
+		muted = !muted;
+		setMuted(muted);
+	}
 
 	let boardWrap = $state(null);
 	const fs = createFullscreen(() => boardWrap);
@@ -35,26 +65,26 @@
 		const S = BOARD.SIZE;
 		ctx.clearRect(0, 0, S, S);
 		// board
-		ctx.fillStyle = '#e9d3a3';
+		ctx.fillStyle = pal.felt;
 		ctx.fillRect(0, 0, S, S);
-		ctx.strokeStyle = '#8a5a2b';
+		ctx.strokeStyle = pal.frame;
 		ctx.lineWidth = 14;
 		ctx.strokeRect(7, 7, S - 14, S - 14);
 		// center circle
 		ctx.beginPath();
 		ctx.arc(S / 2, S / 2, 110, 0, Math.PI * 2);
-		ctx.strokeStyle = '#c09a5a';
+		ctx.strokeStyle = pal.line;
 		ctx.lineWidth = 3;
 		ctx.stroke();
 		// pockets
 		for (const [px, py] of POCKETS) {
 			ctx.beginPath();
 			ctx.arc(px, py, BOARD.POCKET_R, 0, Math.PI * 2);
-			ctx.fillStyle = '#3a2410';
+			ctx.fillStyle = pal.pocket;
 			ctx.fill();
 		}
 		// baseline
-		ctx.strokeStyle = '#c09a5a';
+		ctx.strokeStyle = pal.line;
 		ctx.lineWidth = 3;
 		ctx.beginPath();
 		ctx.moveTo(150, BASE_Y);
@@ -68,7 +98,8 @@
 		for (const p of pieces) {
 			ctx.beginPath();
 			ctx.arc(p.x, p.y, BOARD.R, 0, Math.PI * 2);
-			ctx.fillStyle = p.color === 'q' || p.id === 'q' ? '#c0392b' : colorOf(p) === 'w' ? '#f7f1e1' : '#2d2a26';
+			ctx.fillStyle =
+				p.color === 'q' || p.id === 'q' ? pal.queen : colorOf(p) === 'w' ? pal.white : pal.black;
 			ctx.fill();
 			ctx.strokeStyle = 'rgba(0,0,0,0.35)';
 			ctx.lineWidth = 2;
@@ -86,7 +117,7 @@
 		if (sx != null) {
 			ctx.beginPath();
 			ctx.arc(sx, sy, BOARD.STRIKER_R, 0, Math.PI * 2);
-			ctx.fillStyle = '#4a6fa5';
+			ctx.fillStyle = pal.striker;
 			ctx.fill();
 			ctx.strokeStyle = '#fff';
 			ctx.lineWidth = 3;
@@ -110,9 +141,12 @@
 		return p.color || (game.pieces.find((g) => g.id === p.id)?.color ?? 'w');
 	}
 
-	// redraw on any state change
+	// redraw on any state change. Dependencies are listed as bare expressions, so
+	// `pal` has to appear HERE — reading it inside draw() alone wouldn't register,
+	// and a theme switch would leave the canvas on the old palette until the next
+	// move repainted it.
 	$effect(() => {
-		game.pieces; animBodies; strikerX; aim; displayPieces; myTurn;
+		game.pieces; animBodies; strikerX; aim; displayPieces; myTurn; pal;
 		draw();
 	});
 
@@ -123,6 +157,30 @@
 			lastV = game.v;
 			if (!animBodies) tweenTo(game.pieces);
 		}
+	});
+
+	/* ---- sound for everyone who didn't take the shot ----------------------
+	   `shoot()` only runs on the shooter's client, so without this the rest of
+	   the room watches a coin drop in silence. Same shape as ludo's: driven off
+	   the state version (poll OR push), plain `let`s so the effect doesn't
+	   depend on what it writes, and `soundReady` skips the arrival replay. */
+	let skipStateSound = false; // set by shoot(); we already sounded it live
+	let soundedV = null;
+	let soundReady = false;
+	$effect(() => {
+		const v = game.v;
+		const ev = game.lastEvent;
+		if (ev && v !== soundedV) {
+			soundedV = v;
+			if (skipStateSound) {
+				skipStateSound = false; // our own shot, already heard against the animation
+			} else if (soundReady && ev.kind === 'shot') {
+				if (ev.foul) playCarromFoul();
+				if (ev.queen) playCarromPocket('queen');
+				else if (ev.pocketed) playCarromPocket('coin');
+			}
+		}
+		soundReady = true;
 	});
 
 	function tweenTo(target) {
@@ -183,6 +241,9 @@
 		shoot(vx, vy);
 	}
 
+	/** Two clicks closer together than this blur into one buzz on a hard break. */
+	const MIN_CLICK_GAP_MS = 28;
+
 	async function shoot(vx, vy) {
 		const bodies = buildBodies(game.pieces, strikerX, BASE_Y, vx, vy);
 		const frames = [];
@@ -190,11 +251,35 @@
 		frames.push(bodies.map((b) => ({ ...b })));
 		animFrames = frames;
 
-		// play animation, then post the settled result
+		playCarromFlick(Math.hypot(vx, vy) / 40);
+		// we sound our own shot against the animation below; suppress the echo the
+		// state effect would otherwise play a round trip later
+		skipStateSound = true;
+
+		// play animation, sounding each impact as it comes on screen, then post the
+		// settled result
 		await new Promise((resolve) => {
 			let i = 0;
+			let ev = 0;
+			let lastClickAt = 0;
+			const events = result.events || [];
 			function frame() {
 				animBodies = animFrames[Math.min(i, animFrames.length - 1)];
+				// frames are recorded every 4 sim steps and we advance 2 per tick, so
+				// the frame now on screen is sim step i*4
+				const shownStep = i * 4;
+				while (ev < events.length && events[ev].step <= shownStep) {
+					const e = events[ev++];
+					const now = performance.now();
+					if (e.type === 'pocket') {
+						if (e.id === 's') playCarromFoul();
+						else playCarromPocket(e.id === 'q' ? 'queen' : 'coin');
+					} else if (now - lastClickAt >= MIN_CLICK_GAP_MS) {
+						lastClickAt = now;
+						if (e.type === 'hit') playCarromHit(e.speed);
+						else playCarromWall(e.speed);
+					}
+				}
 				i += 2;
 				if (i < animFrames.length) requestAnimationFrame(frame);
 				else resolve();
@@ -226,7 +311,42 @@
 	<div class="carrom-head">
 		<span class="chip {myTeam === 'w' ? 'chip--green' : ''}">⚪ White: {game.scores.w} ({remaining('w')} left)</span>
 		<span class="chip {myTeam === 'b' ? 'chip--green' : ''}">⚫ Black: {game.scores.b} ({remaining('b')} left)</span>
+		<span class="head-actions">
+			<button
+				class="btn btn--ghost btn--sm"
+				onclick={() => (showThemes = !showThemes)}
+				aria-expanded={showThemes}
+				title="Board colours"
+			>
+				🎨
+			</button>
+			<button
+				class="btn btn--ghost btn--sm"
+				onclick={toggleMute}
+				aria-label={muted ? 'Turn shot sounds on' : 'Turn shot sounds off'}
+				title={muted ? 'Shot sounds off' : 'Shot sounds on'}
+			>
+				{muted ? '🔇' : '🔊'}
+			</button>
+		</span>
 	</div>
+
+	{#if showThemes}
+		<ThemePicker
+			groups={[
+				{
+					label: 'Board',
+					selected: theme.id,
+					onselect: (id) => theme.set(id),
+					options: CARROM_THEMES.map((t) => ({
+						id: t.id,
+						label: t.label,
+						swatch: { colors: [t.palette.felt, t.palette.frame, t.palette.striker] }
+					}))
+				}
+			]}
+		/>
+	{/if}
 
 	{#if game.result}
 		<p class="chip chip--green" style="margin-bottom:10px;">
@@ -284,7 +404,14 @@
 <style>
 	.carrom-head {
 		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
 		gap: 10px;
+	}
+	.head-actions {
+		display: flex;
+		gap: 6px;
+		margin-left: auto;
 	}
 	.board-wrap {
 		position: relative;

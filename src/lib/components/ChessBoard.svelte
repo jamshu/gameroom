@@ -6,6 +6,7 @@
 	import { createChessClock, formatClock } from '$lib/chessclock.svelte.js';
 	import { createFullscreen, portal } from '$lib/fullscreen.svelte.js';
 	import { createChessTheme, BOARD_THEMES, PIECE_SETS } from '$lib/chessthemes.svelte.js';
+	import ThemePicker from './ThemePicker.svelte';
 
 	let { store, game, members, myUid } = $props();
 	let selected = $state(null); // square like 'e2'
@@ -476,40 +477,30 @@
 	</div>
 
 	{#if showThemes}
-		<div class="themes">
-			<p class="themes-label">Board</p>
-			<div class="swatches">
-				{#each BOARD_THEMES as t (t.id)}
-					<button
-						class="sw"
-						class:sw--on={theme.board === t.id}
-						onclick={() => theme.setBoard(t.id)}
-						aria-pressed={theme.board === t.id}
-						title={t.label}
-					>
-						<span class="sw-chips">
-							<i style="background:{t.light}"></i><i style="background:{t.dark}"></i>
-						</span>
-						{t.label}
-					</button>
-				{/each}
-			</div>
-
-			<p class="themes-label">Pieces</p>
-			<div class="swatches">
-				{#each PIECE_SETS as p (p.id)}
-					<button
-						class="sw"
-						class:sw--on={theme.pieces === p.id}
-						onclick={() => theme.setPieces(p.id)}
-						aria-pressed={theme.pieces === p.id}
-					>
-						<img class="sw-pc" src="/pieces/{p.id}/wN.svg" alt="" />
-						{p.label}
-					</button>
-				{/each}
-			</div>
-		</div>
+		<ThemePicker
+			groups={[
+				{
+					label: 'Board',
+					selected: theme.board,
+					onselect: (id) => theme.setBoard(id),
+					options: BOARD_THEMES.map((t) => ({
+						id: t.id,
+						label: t.label,
+						swatch: { colors: [t.light, t.dark] }
+					}))
+				},
+				{
+					label: 'Pieces',
+					selected: theme.pieces,
+					onselect: (id) => theme.setPieces(id),
+					options: PIECE_SETS.map((p) => ({
+						id: p.id,
+						label: p.label,
+						swatch: { img: `/pieces/${p.id}/wN.svg` }
+					}))
+				}
+			]}
+		/>
 	{/if}
 
 	{#if game.moves.length}
@@ -806,64 +797,7 @@
 		margin-top: 12px;
 	}
 
-	/* board + piece theme picker */
-	.themes {
-		margin-top: 12px;
-		padding: 12px 14px;
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm);
-		background: var(--surface-2);
-	}
-	.themes-label {
-		margin: 0 0 8px;
-		font-size: 0.72rem;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-		color: var(--text-dim);
-	}
-	.swatches {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 8px;
-	}
-	.swatches:not(:last-child) {
-		margin-bottom: 14px;
-	}
-	.sw {
-		display: flex;
-		align-items: center;
-		gap: 7px;
-		padding: 5px 11px 5px 7px;
-		font: inherit;
-		font-size: 0.82rem;
-		color: var(--text);
-		background: var(--surface);
-		border: 1px solid var(--border);
-		border-radius: 999px;
-		cursor: pointer;
-	}
-	.sw:hover {
-		border-color: var(--accent);
-	}
-	.sw--on {
-		border-color: var(--accent);
-		box-shadow: inset 0 0 0 1px var(--accent);
-	}
-	.sw-chips {
-		display: flex;
-		border-radius: 3px;
-		overflow: hidden;
-		box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.16);
-	}
-	.sw-chips i {
-		width: 13px;
-		height: 13px;
-		display: block;
-	}
-	.sw-pc {
-		width: 18px;
-		height: 18px;
-	}
+	/* theme picker styling lives in ThemePicker.svelte, shared by all boards */
 	.moves {
 		margin-top: 10px;
 		font-size: 0.8rem;

@@ -40,4 +40,42 @@ import { simulate, BOARD } from './carroms-sim.js';
 	}
 }
 
+// 5. Impacts are reported so the board can sound them. Collision speed drives
+//    loudness, so it must be a real closing speed, not a flag.
+{
+	const a = { id: 'a', x: 400, y: 500, r: 18, vx: 6, vy: 0, pocketed: false };
+	const b = { id: 'b', x: 500, y: 500, r: 18, vx: 0, vy: 0, pocketed: false };
+	const { events } = simulate([a, b]);
+	const hit = events.find((e) => e.type === 'hit');
+	assert(hit, 'a head-on collision should report a hit');
+	assert(hit.speed > 0, `hit should carry a closing speed, got ${hit.speed}`);
+	assert(hit.step >= 0, 'hit should carry the step it happened on');
+	assert([hit.id, hit.other].sort().join() === 'a,b', 'hit names both discs');
+}
+
+// 6. A pocket is reported for the body that fell in — the board tells a coin,
+//    the queen and the striker apart by this id.
+{
+	const c = { id: 'c', x: 200, y: 200, r: 18, vx: -14, vy: -14, pocketed: false };
+	const { events } = simulate([c]);
+	assert(events.some((e) => e.type === 'pocket' && e.id === 'c'), 'pocket event for c');
+}
+
+// 7. A cushion bounce is reported. Aimed along the wall's normal, well away from
+//    the corner pockets so it rebounds rather than being captured.
+{
+	const w = { id: 'w', x: 500, y: 500, r: 18, vx: 0, vy: -20, pocketed: false };
+	const { events } = simulate([w]);
+	assert(events.some((e) => e.type === 'wall' && e.id === 'w'), 'wall event for w');
+}
+
+// 8. A gentle tap stays silent — below-threshold impacts would only crowd the
+//    audio on a break without being audible as distinct hits.
+{
+	const a = { id: 'a', x: 400, y: 500, r: 18, vx: 2.5, vy: 0, pocketed: false };
+	const b = { id: 'b', x: 437, y: 500, r: 18, vx: 0, vy: 0, pocketed: false };
+	const { events } = simulate([a, b]);
+	assert(!events.some((e) => e.type === 'hit'), 'a nudge should not emit a hit');
+}
+
 console.log('carroms-sim: all checks passed');

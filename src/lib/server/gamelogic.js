@@ -29,6 +29,7 @@ export function initGame(gameType, playerUids, room) {
 			queenPocketedBy: null, // team ('w'|'b') that pocketed the queen
 			coverPending: false,
 			scores: { w: 0, b: 0 },
+			lastEvent: null, // {kind,...} drives client sound, read off game.v
 			result: null
 		};
 	}
@@ -580,6 +581,18 @@ export function carromsApplyShot(game, uid, { positions = [], pocketed = [], str
 		game.queenPocketedBy = null;
 	}
 	if (!continueTurn) game.turnIdx = (game.turnIdx + 1) % game.players.length;
+
+	// What the shot sounded like, for everyone who didn't take it. The shooter
+	// runs the sim locally and hears each impact against their own animation;
+	// opponents and spectators only ever receive this settled result, so without
+	// it they watch a coin drop into a pocket in silence.
+	game.lastEvent = {
+		kind: 'shot',
+		uid,
+		pocketed: pocketedSet.size,
+		queen: queenPocketed,
+		foul
+	};
 
 	// end: a color fully pocketed (and queen settled)
 	const queenDown = game.pieces.find((p) => p.color === 'q').pocketed;

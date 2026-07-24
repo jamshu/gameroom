@@ -1,12 +1,18 @@
 <script>
 	import { onMount } from 'svelte';
 	import Avatar from './Avatar.svelte';
-	import { playDice, playCapture, playHome, isMuted, setMuted, arm } from '$lib/sound.js';
+	import { playDice, playCapture, playHome, playMove, playPass, isMuted, setMuted, arm } from '$lib/sound.js';
 	import { createFullscreen, portal } from '$lib/fullscreen.svelte.js';
+	import { createTheme, LUDO_THEMES } from '$lib/themes.svelte.js';
+	import ThemePicker from './ThemePicker.svelte';
 
 	let { store, game, members, myUid } = $props();
 	let error = $state('');
 	let posting = $state(false);
+
+	// Re-maps what red/green/yellow/blue look like; seat identity is the server's.
+	const theme = createTheme({ key: 'gameroom:ludo-theme', themes: LUDO_THEMES });
+	let showThemes = $state(false);
 
 	let playArea = $state(null);
 	const fs = createFullscreen(() => playArea);
@@ -242,6 +248,8 @@
 				if (ev.kind === 'roll') playDice();
 				else if (ev.kind === 'capture') playCapture();
 				else if (ev.kind === 'home') playHome();
+				else if (ev.kind === 'move') playMove();
+				else if (ev.kind === 'pass') playPass();
 			}
 		}
 		soundReady = true;
@@ -266,13 +274,39 @@
 	const winnerName = $derived(game.result ? nameOf(game.result) : null);
 </script>
 
-<div class="card" style="padding:18px;">
+<div class="card" style="padding:18px; {theme.style}">
 	<div class="ld-head">
 		<h2 class="section-title" style="margin:0;">🎲 Ludo</h2>
+		<button
+			class="sound-btn"
+			onclick={() => (showThemes = !showThemes)}
+			aria-expanded={showThemes}
+			aria-label="Board colours"
+			title="Board colours"
+		>
+			🎨
+		</button>
 		<button class="sound-btn" onclick={toggleMute} aria-label={muted ? 'Turn sound on' : 'Turn sound off'}>
 			{muted ? '🔇' : '🔊'}
 		</button>
 	</div>
+
+	{#if showThemes}
+		<ThemePicker
+			groups={[
+				{
+					label: 'Colours',
+					selected: theme.id,
+					onselect: (id) => theme.set(id),
+					options: LUDO_THEMES.map((t) => ({
+						id: t.id,
+						label: t.label,
+						swatch: { colors: [t.colors.red, t.colors.green, t.colors.yellow, t.colors.blue] }
+					}))
+				}
+			]}
+		/>
+	{/if}
 
 	<!-- players + turn indicator -->
 	<div class="players">
@@ -287,7 +321,15 @@
 
 	{#if error}<p class="error-text">{error}</p>{/if}
 
-	<div class="play-area" class:play-area--fs={fs.isFs} bind:this={playArea} use:portal={fs.isFs}>
+	<!-- theme vars repeated here on purpose: `portal` moves this node to <body> in
+	     fullscreen, so anything inherited from the card above is lost -->
+	<div
+		class="play-area"
+		class:play-area--fs={fs.isFs}
+		style={theme.style}
+		bind:this={playArea}
+		use:portal={fs.isFs}
+	>
 	<div class="board-wrap">
 		<div class="board">
 			{#each cells as cell (cell.r * N + cell.c)}
