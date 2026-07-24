@@ -5,6 +5,7 @@
 	import { user } from '$lib/stores/auth.js';
 	import { api } from '$lib/api.js';
 	import { createRoomStore } from '$lib/stores/room.js';
+	import { gameLabel } from '$lib/games.js';
 	import { createVoiceMesh } from '$lib/webrtc.js';
 	import RoomLobby from '$lib/components/RoomLobby.svelte';
 	import ChatPanel from '$lib/components/ChatPanel.svelte';
@@ -165,9 +166,7 @@
 		<header class="room-head">
 			<div>
 				<h1 class="room-title">{room.name}</h1>
-				<span class="chip chip--accent">
-					{room.gameType === 'chess' ? '♟️ Chess' : room.gameType === 'carroms' ? '🎯 Carroms' : room.gameType === 'ludo' ? '🎲 Ludo' : '🕵️ Thief Finder'}
-				</span>
+				<span class="chip chip--accent">{gameLabel(room.gameType)}</span>
 				<span class="chip">{room.status}</span>
 			</div>
 			<button class="btn btn--ghost btn--sm" onclick={leaveRoom}>Leave</button>
@@ -192,7 +191,7 @@
 			<div class="room-grid">
 				<main class="room-main">
 					{#if room.status === 'finished' && !finalReveal.holding}
-						<Leaderboard {members} game={$store.game} {store} {isHost} />
+						<Leaderboard {members} game={$store.game} {store} {isHost} {room} />
 					{:else if room.status === 'lobby'}
 						<RoomLobby {store} {members} {room} {isHost} />
 					{:else if $store.game?.type === 'thief_finder'}

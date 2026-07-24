@@ -7,6 +7,12 @@ import { requireUser } from './auth.js';
 import { createSnapshotCache } from './roomcache.js';
 import { publishState, publishEvent } from './realtime.js';
 
+// The game list is shared with the client so a select, a capacity preview and a
+// validation check can't drift. Re-exported here because every server caller
+// already imports from this module.
+import { seatedPlayerIds } from '../games.js';
+export { GAME_TYPES, playerCapacity } from '../games.js';
+
 // Latest known member uids per room, refreshed on every member read (getMembers).
 // Lets writeState address per-uid push channels without an extra Odoo lookup; a
 // just-joined player missing here for one poll cycle is fine (safety poll covers).
@@ -186,6 +192,54 @@ export function publicRoom(room) {
 		maxPlayers: room.x_studio_max_players,
 		drawsTotal: room.x_studio_draws_total
 	};
+}
+
+/**
+ * Re-seat roles against a game's capacity, by join order (lowest member id
+ * first, so the host — always the first row — keeps their seat).
+ *
+ * Roles are otherwise only ever assigned at accept time, so without this a room
+ * that changes game type keeps the OLD game's seating and can never start:
+ * five thief-finder players all stay `player` and chess rejects them.
+ *
+ * At most two Odoo writes: one per target role, skipping anyone already correct.
+ */
+export async function reseatRoles(members, gameType, maxPlayers) {
+	const accepted = members.filter((m) => m.x_studio_status === 'accepted');
+	const seated = seatedPlayerIds(
+		accepted.map((m) => ({ id: m.id, accepted: true })),
+		gameType,
+		maxPlayers
+	);
+
+	const toPlayer = accepted.filter((m) => seated.has(m.id) && m.x_studio_role !== 'player');
+	const toSpectator = accepted.filter((m) => !seated.has(m.id) && m.x_studio_role !== 'spectator');
+	await Promise.all([
+		toPlayer.length
+			? adminExecute(MEMBER, 'write', [toPlayer.map((m) => m.id), { x_studio_role: 'player' }])
+			: null,
+		toSpectator.length
+			? adminExecute(MEMBER, 'write', [toSpectator.map((m) => m.id), { x_studio_role: 'spectator' }])
+			: null
+	].filter(Boolean));
+
+	// keep the caller's in-hand rows in step so a following publicMembers is accurate
+	for (const m of toPlayer) m.x_studio_role = 'player';
+	for (const m of toSpectator) m.x_studio_role = 'spectator';
+	return { promoted: toPlayer.length, demoted: toSpectator.length };
+}
+
+/**
+ * Clear a finished round so the room can play another: scores back to 0, the
+ * chess colour swap armed, the game dropped. Shared by `rematch` and the
+ * game-type switch so the two can't drift — the caller persists `state`.
+ */
+export async function resetRound(state, members) {
+	const ids = members.filter((m) => m.x_studio_status === 'accepted').map((m) => m.id);
+	if (ids.length) await adminExecute(MEMBER, 'write', [ids, { x_studio_score: 0 }]);
+	// chess: swap colours next round — last game's black plays white next.
+	if (state.game?.type === 'chess') state.nextWhiteUid = state.game.players.b;
+	state.game = null;
 }
 
 /** Delete a room and all its rows (FK-safe order: events → members → room). */

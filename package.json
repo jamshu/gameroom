@@ -10,6 +10,8 @@
 		"prepare": "svelte-kit sync || echo ''",
 		"setup:odoo": "node --env-file=.env scripts/setup-odoo.js",
 		"check:sim": "node src/lib/games/carroms-sim-check.js",
+		"check:games": "node src/lib/games-check.js",
+		"check:room": "node --import ./src/lib/server/room-stub-loader.mjs src/lib/server/room-check.js",
 		"check:thief": "node src/lib/server/thief-claims-check.js",
 		"check:ludo": "node src/lib/server/ludo-check.js",
 		"check:cache": "node src/lib/server/snapshot-cache-check.js",

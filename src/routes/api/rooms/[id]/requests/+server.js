@@ -1,16 +1,8 @@
 import { json } from '@sveltejs/kit';
 import { adminExecute } from '$lib/server/odoo.js';
-import { MEMBER, requireHost, appendEvent, jsonError, httpError } from '$lib/server/room.js';
+import { MEMBER, requireHost, appendEvent, playerCapacity, jsonError, httpError } from '$lib/server/room.js';
 
 export const prerender = false;
-
-// Player capacity per game type; overflow accepted members become spectators.
-function playerCapacity(room) {
-	if (room.x_studio_game_type === 'chess') return 2;
-	if (room.x_studio_game_type === 'carroms') return 4;
-	if (room.x_studio_game_type === 'ludo') return 4;
-	return room.x_studio_max_players || 10;
-}
 
 /** Host accepts or rejects a pending join request. */
 export async function POST({ params, request, cookies }) {
@@ -30,7 +22,8 @@ export async function POST({ params, request, cookies }) {
 		const playersNow = members.filter(
 			(m) => m.x_studio_status === 'accepted' && m.x_studio_role === 'player'
 		).length;
-		const role = room.x_studio_status === 'lobby' && playersNow < playerCapacity(room) ? 'player' : 'spectator';
+		const capacity = playerCapacity(room.x_studio_game_type, room.x_studio_max_players);
+		const role = room.x_studio_status === 'lobby' && playersNow < capacity ? 'player' : 'spectator';
 		await adminExecute(MEMBER, 'write', [[target.id], { x_studio_status: 'accepted', x_studio_role: role }]);
 		await appendEvent(params.id, 'system', { kind: 'member-accepted', uid: target.x_studio_user_id?.[0], role }, uid);
 		return json({ ok: true, role });

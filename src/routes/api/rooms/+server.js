@@ -1,11 +1,9 @@
 import { json } from '@sveltejs/kit';
 import { adminExecute } from '$lib/server/odoo.js';
 import { requireUser } from '$lib/server/auth.js';
-import { ROOM, MEMBER, sweepAbandonedRooms, jsonError } from '$lib/server/room.js';
+import { ROOM, MEMBER, GAME_TYPES, sweepAbandonedRooms, jsonError } from '$lib/server/room.js';
 
 export const prerender = false;
-
-const GAME_TYPES = ['chess', 'carroms', 'thief_finder', 'ludo'];
 
 /** Create a room; creator becomes host + accepted player. */
 export async function POST({ request, cookies }) {

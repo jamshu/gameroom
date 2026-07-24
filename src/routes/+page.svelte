@@ -3,8 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { user } from '$lib/stores/auth.js';
 	import { api } from '$lib/api.js';
-
-	const GAME_LABELS = { chess: '♟️ Chess', carroms: '🎯 Carroms', thief_finder: '🕵️ Thief Finder', ludo: '🎲 Ludo' };
+	import { GAMES, gameLabel } from '$lib/games.js';
 
 	/** Focus the node on mount — fires each time the create form opens. */
 	function autofocus(node) {
@@ -90,6 +89,25 @@
 		searching = false;
 	}
 
+	let refreshing = $state(false);
+
+	/** Re-pull the recent-rooms page so a room created on another device (or by
+	 *  someone else just now) shows up without having to search for it. Drops any
+	 *  active search so the fresh list is what's on screen. */
+	async function refresh() {
+		if (refreshing) return;
+		refreshing = true;
+		error = '';
+		serverHits = null;
+		showAll = false;
+		try {
+			const [rooms] = await Promise.all([loadRooms(), $user !== null ? loadMine() : null]);
+			if (rooms) cached = rooms;
+		} finally {
+			refreshing = false;
+		}
+	}
+
 	/** Typing filters locally for free; the server is a last resort. */
 	function onQueryInput() {
 		serverHits = null; // back to the local view
@@ -163,6 +181,16 @@
 				oninput={onQueryInput}
 			/>
 			<button class="btn btn--primary" disabled={searching}>{searching ? '…' : 'Search'}</button>
+			<button
+				type="button"
+				class="btn btn--ghost"
+				onclick={refresh}
+				disabled={refreshing}
+				title="Refresh the room list"
+				aria-label="Refresh the room list"
+			>
+				{refreshing ? '…' : '↻'}
+			</button>
 			<button type="button" class="btn btn--ghost" onclick={() => (showCreate = !showCreate)}>
 				{showCreate ? 'Cancel' : '+ New room'}
 			</button>
@@ -171,10 +199,9 @@
 		<div class="filter-row">
 			<select class="select" bind:value={typeFilter} onchange={() => (serverHits = null)}>
 				<option value="">All games</option>
-				<option value="thief_finder">🕵️ Thief Finder</option>
-				<option value="chess">♟️ Chess</option>
-				<option value="carroms">🎯 Carroms</option>
-				<option value="ludo">🎲 Ludo</option>
+				{#each GAMES as g (g.id)}
+					<option value={g.id}>{g.emoji} {g.label}</option>
+				{/each}
 			</select>
 			<select class="select" bind:value={statusFilter} onchange={() => (serverHits = null)}>
 				<option value="">Any status</option>
@@ -206,10 +233,9 @@
 				<input id="rname" class="input" bind:value={name} required maxlength="60" use:autofocus />
 				<label class="label" for="rgame">Game</label>
 				<select id="rgame" class="select" bind:value={gameType}>
-					<option value="thief_finder">🕵️ Thief Finder</option>
-					<option value="chess">♟️ Chess</option>
-					<option value="carroms">🎯 Carroms</option>
-					<option value="ludo">🎲 Ludo</option>
+					{#each GAMES as g (g.id)}
+						<option value={g.id}>{g.emoji} {g.label}</option>
+					{/each}
 				</select>
 				{#if gameType === 'thief_finder'}
 					<label class="label" for="rdraws">Number of draws</label>
@@ -244,7 +270,7 @@
 		<div class="card card--interactive room-row">
 			<div>
 				<strong>{r.name}</strong>
-				<span class="chip chip--accent">{GAME_LABELS[r.gameType]}</span>
+				<span class="chip chip--accent">{gameLabel(r.gameType)}</span>
 				<span class="muted">host: {r.hostName} · {r.status}</span>
 			</div>
 			<button class="btn btn--sm btn--primary" onclick={() => joinRoom(r.id)}>Join</button>
@@ -264,7 +290,7 @@
 		<a class="card card--interactive room-row" href={`/room/${r.id}`}>
 			<div>
 				<strong>{r.name}</strong>
-				<span class="chip chip--accent">{GAME_LABELS[r.gameType]}</span>
+				<span class="chip chip--accent">{gameLabel(r.gameType)}</span>
 				<span class="muted">host: {r.hostName} · {r.status}</span>
 				{#if r.myStatus === 'pending'}<span class="chip chip--amber">awaiting approval</span>{/if}
 			</div>

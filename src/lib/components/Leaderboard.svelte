@@ -1,9 +1,14 @@
 <script>
+	import { untrack } from 'svelte';
 	import Avatar from './Avatar.svelte';
+	import { GAMES } from '$lib/games.js';
 
-	let { members, game = null, store = null, isHost = false } = $props();
+	let { members, game = null, store = null, isHost = false, room = null } = $props();
 	let busy = $state(false);
 	let error = $state('');
+	// seeded once: a successful switch flips the room out of `finished`, which
+	// unmounts this component — there's nothing to follow.
+	let pick = $state(untrack(() => room?.gameType) ?? GAMES[0].id);
 
 	const ranked = $derived(
 		members
@@ -19,6 +24,20 @@
 		busy = true;
 		try {
 			await store.post('rematch', {});
+		} catch (e) {
+			error = e.message;
+		} finally {
+			busy = false;
+		}
+	}
+
+	/** Same room, same people, different game — the switch endpoint also does the
+	 *  round reset when the room is `finished`, so this is one call. */
+	async function playAgainAs() {
+		error = '';
+		busy = true;
+		try {
+			await store.post('game-type', { gameType: pick });
 		} catch (e) {
 			error = e.message;
 		} finally {
@@ -71,6 +90,22 @@
 		{/if}
 		<a class="btn btn--ghost" href="/">Back to rooms</a>
 	</div>
+
+	{#if isHost && store && room}
+		<!-- Keep the room, the members and the voice call — just play something
+		     else. Without this, switching games means rebuilding the room. -->
+		<div class="lb-switch">
+			<span class="muted">or play</span>
+			<select class="select" bind:value={pick} disabled={busy} aria-label="Game to play next">
+				{#each GAMES as g (g.id)}
+					<option value={g.id}>{g.emoji} {g.label}</option>
+				{/each}
+			</select>
+			<button class="btn btn--sm" onclick={playAgainAs} disabled={busy || pick === room.gameType}>
+				Play again as…
+			</button>
+		</div>
+	{/if}
 </div>
 
 <style>
@@ -133,5 +168,19 @@
 		justify-content: center;
 		flex-wrap: wrap;
 		margin-top: 18px;
+	}
+	.lb-switch {
+		display: flex;
+		gap: 8px;
+		align-items: center;
+		justify-content: center;
+		flex-wrap: wrap;
+		margin-top: 14px;
+		padding-top: 14px;
+		border-top: 1px solid var(--border);
+	}
+	.lb-switch .select {
+		width: auto;
+		flex: 0 1 170px;
 	}
 </style>

@@ -62,6 +62,9 @@ export function createRoomStore(roomId) {
 	let ably = null; // Ably Realtime client (null until/unless push is enabled)
 	let channel = null;
 	let pushConnected = false; // true while the wake-bell is live → poll backs off
+	// Bumped whenever a POST response hands us authoritative room/members. Acts as
+	// the version gate those two rows don't otherwise have — see poll().
+	let roomEpoch = 0;
 
 	function onSignal(fn) {
 		signalHandler = fn;
@@ -86,11 +89,6 @@ export function createRoomStore(roomId) {
 			game: state.game ? { ...state.game, v: state.v } : null,
 			gv: state.v
 		};
-	}
-
-	/** Merge a state envelope returned by a POST straight into the store. */
-	function applyState(state) {
-		if (state) store.update((s) => mergeState(s, state));
 	}
 
 	// Event ids already applied — one guard shared by the poll and the Ably push,
@@ -148,7 +146,13 @@ export function createRoomStore(roomId) {
 		inFlight = true;
 		try {
 			const gv = get(store).gv;
+			// `state` is version-gated by mergeState, but room/members are not — and a
+			// poll that STARTED before a POST handed us newer ones would otherwise
+			// land after it and revert them (switch the game, watch the chip flick
+			// back). Same newest-wins problem, solved with a counter instead.
+			const epochAtStart = roomEpoch;
 			const d = await api(`/api/rooms/${roomId}/poll?since=${cursor}&gv=${gv}`);
+			const overtaken = roomEpoch !== epochAtStart;
 			cursor = d.cursor || cursor;
 			// Strictly: a real event row, or a state version that actually advanced.
 			// NEVER diff members/room — `online` flips purely with elapsed time, so
@@ -156,7 +160,12 @@ export function createRoomStore(roomId) {
 			// the Odoo load. (The presence heartbeat writes no event row, and
 			// d.state only arrives when state.v > gv, so neither can self-re-arm.)
 			if ((d.events?.length ?? 0) > 0 || d.state) markActive();
-			ingest({ events: d.events, state: d.state, room: d.room, members: d.members });
+			ingest({
+				events: d.events,
+				state: d.state,
+				room: overtaken ? undefined : d.room,
+				members: overtaken ? undefined : d.members
+			});
 			errorStreak = 0;
 		} catch (e) {
 			if (TERMINAL_CODES.has(e?.code)) {
@@ -336,14 +345,20 @@ export function createRoomStore(roomId) {
 	const NO_ECHO_POLL = new Set(['chat']);
 
 	/**
-	 * POST to a room sub-route. If the response carried our new state we apply it
-	 * directly and leave the poll timer alone — that saves a whole round trip on
-	 * the acting player's own move, which is the latency they notice most.
+	 * POST to a room sub-route. If the response carried our new state (and/or a
+	 * changed room row) we apply it directly and leave the poll timer alone —
+	 * that saves a whole round trip on the acting player's own move, which is the
+	 * latency they notice most.
+	 *
+	 * `room`/`members` matter for the game-type switch: it echoes back rows the
+	 * poll would otherwise be the only source of, and since the response also
+	 * carries state, no immediate re-poll is scheduled to go and fetch them.
 	 */
 	async function post(path, body) {
 		const d = await api(`/api/rooms/${roomId}/${path}`, { method: 'POST', body });
 		markActive(); // we just did something; others are likely to respond
-		if (d?.state) applyState(d.state);
+		if (d?.room || d?.members) roomEpoch++; // ours is newer than any poll in flight
+		if (d?.state || d?.room || d?.members) ingest({ state: d.state, room: d.room, members: d.members });
 		else if (!NO_ECHO_POLL.has(path)) schedule(0);
 		return d;
 	}

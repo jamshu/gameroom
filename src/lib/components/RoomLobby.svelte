@@ -1,24 +1,55 @@
 <script>
+	import { untrack } from 'svelte';
 	import Avatar from './Avatar.svelte';
+	import { GAMES, gameById, seatedPlayerIds } from '$lib/games.js';
 
 	let { store, members, room, isHost } = $props();
 	let error = $state('');
 	let starting = $state(false);
 	let removing = $state(null); // member id being removed
+	let switching = $state(false);
 
 	const accepted = $derived(members.filter((m) => m.status === 'accepted'));
 	const pending = $derived(members.filter((m) => m.status === 'pending'));
 	const players = $derived(accepted.filter((m) => m.role === 'player'));
 
-	const needed = $derived(
-		room.gameType === 'chess'
-			? 'exactly 2 players'
-			: room.gameType === 'carroms'
-				? '2 or 4 players'
-				: room.gameType === 'ludo'
-					? '2 to 4 players'
-					: 'at least 3 players'
-	);
+	const needed = $derived(gameById(room.gameType).needs);
+
+	// What switching to `pick` would do to the seating, worked out client-side
+	// from the same capacity rule the server applies — no extra request.
+	// untracked seed + an effect that follows: the select is local (you can browse
+	// options without switching) but must snap back to the truth when someone else
+	// switches, or when our own POST fails.
+	let pick = $state(untrack(() => room.gameType));
+	let pickDraws = $state(untrack(() => room.drawsTotal) || 5);
+	$effect(() => {
+		pick = room.gameType;
+	});
+	const reseat = $derived.by(() => {
+		if (pick === room.gameType) return null;
+		const seated = seatedPlayerIds(
+			accepted.map((m) => ({ id: m.id, accepted: true })),
+			pick,
+			room.maxPlayers
+		);
+		return {
+			demoted: accepted.filter((m) => m.role === 'player' && !seated.has(m.id)).length,
+			promoted: accepted.filter((m) => m.role !== 'player' && seated.has(m.id)).length
+		};
+	});
+
+	async function switchGame() {
+		error = '';
+		switching = true;
+		try {
+			await store.post('game-type', { gameType: pick, drawsTotal: pickDraws });
+		} catch (e) {
+			error = e.message;
+			pick = room.gameType; // the switch didn't happen — don't leave the select lying
+		} finally {
+			switching = false;
+		}
+	}
 
 	async function handle(memberId, action) {
 		error = '';
@@ -96,6 +127,40 @@
 	{#if error}<p class="error-text">{error}</p>{/if}
 
 	{#if isHost}
+		<!-- Not enough people for Thief Finder, or too many for chess? Change the
+		     game here rather than abandoning the room and rebuilding it. Host only —
+		     non-hosts already see the game on the header chip. -->
+		<hr style="border-color:var(--border); margin:14px 0;" />
+		<h3 class="label" style="margin-top:0;">Game</h3>
+		<div class="switch-row">
+			<select class="select" bind:value={pick} disabled={switching} aria-label="Game">
+				{#each GAMES as g (g.id)}
+					<option value={g.id}>{g.emoji} {g.label}</option>
+				{/each}
+			</select>
+			{#if pick === 'thief_finder'}
+				<select class="select draws" bind:value={pickDraws} disabled={switching} aria-label="Number of draws">
+					<option value={5}>5 draws</option>
+					<option value={10}>10 draws</option>
+				</select>
+			{/if}
+			{#if pick !== room.gameType}
+				<button class="btn btn--sm" onclick={switchGame} disabled={switching}>
+					{switching ? 'Switching…' : 'Switch'}
+				</button>
+			{/if}
+		</div>
+		{#if reseat && (reseat.demoted || reseat.promoted)}
+			<p class="muted" style="margin:8px 2px 0;">
+				{#if reseat.demoted}
+					{reseat.demoted} player{reseat.demoted === 1 ? '' : 's'} will become spectator{reseat.demoted === 1 ? '' : 's'}.
+				{/if}
+				{#if reseat.promoted}
+					{reseat.promoted} spectator{reseat.promoted === 1 ? '' : 's'} will join as player{reseat.promoted === 1 ? '' : 's'}.
+				{/if}
+			</p>
+		{/if}
+
 		<button class="btn btn--primary" style="margin-top:18px;" onclick={start} disabled={starting}>
 			<!-- thief finder has a second, in-game "Start game" button, so this one
 			     opens the table rather than claiming to start the game twice -->
@@ -123,6 +188,19 @@
 	}
 	.remove-btn {
 		margin-left: auto;
+	}
+	.switch-row {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
+	}
+	.switch-row .select {
+		width: auto;
+		flex: 1 1 160px;
+	}
+	.switch-row .draws {
+		flex: 0 1 120px;
 	}
 	.dot {
 		width: 9px;
