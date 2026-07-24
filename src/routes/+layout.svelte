@@ -31,9 +31,11 @@
 		};
 	});
 
-	// auth gate: once the session check settles, route guests to /login
+	// auth gate: once the session check settles, route guests to /signup — a
+	// first-time visitor has no credentials, so the create-account page is the
+	// friendlier landing. Returning users reach /login from the link there.
 	$effect(() => {
-		if ($user === null && !isPublic($page.url.pathname)) goto('/login');
+		if ($user === null && !isPublic($page.url.pathname)) goto('/signup');
 		if ($user && isPublic($page.url.pathname)) goto('/');
 	});
 
