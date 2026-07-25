@@ -162,7 +162,7 @@
 	});
 </script>
 
-<div class="fade-in">
+<div class="fade-in home">
 	<section class="card" style="padding:20px; margin-bottom:20px;">
 		<form onsubmit={search} class="search-row">
 			<input
@@ -262,6 +262,7 @@
 		</a>
 	{/each}
 
+	<div class="spacer" aria-hidden="true"></div>
 	<footer class="credit">
 		<p class="credit-line">Created and maintained by <span class="credit-name">Jamshid.K</span></p>
 		<p class="credit-sub">
@@ -314,10 +315,22 @@
 		margin: 0 8px;
 	}
 
+	/* Column layout + a growing spacer keep the credit pinned to the bottom of
+	   the viewport on a near-empty page, without detaching it from the flow when
+	   the room lists are long. */
+	.home {
+		display: flex;
+		flex-direction: column;
+		flex: 1;
+	}
+	.spacer {
+		flex: 1 1 auto;
+	}
+
 	/* Sign-off at the foot of the page — hairline ornament above it so it reads
 	   as a closing mark rather than another list item. */
 	.credit {
-		margin: 40px 0 24px;
+		margin: 40px 0 0;
 		padding-top: 22px;
 		border-top: 1px solid var(--border);
 		text-align: center;

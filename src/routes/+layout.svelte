@@ -45,7 +45,7 @@
 	}
 </script>
 
-<div class="app">
+<div class="app" class:app--fill={$page.url.pathname === '/'}>
 	{#if $user}
 		<header class="topbar">
 			<a class="brand" href="/">🎲 Gamerooms</a>
@@ -62,6 +62,16 @@
 </div>
 
 <style>
+	/* Home is the only short page — fill the viewport so its footer credit can be
+	   pushed to the bottom instead of floating in the middle of empty space. */
+	.app--fill {
+		display: flex;
+		flex-direction: column;
+		min-height: 100dvh;
+		/* the credit sits at the very bottom here, so the roomy scroll-tail
+		   padding the other pages use isn't wanted */
+		padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+	}
 	.topbar {
 		display: flex;
 		align-items: center;
