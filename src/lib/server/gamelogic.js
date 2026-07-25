@@ -2,6 +2,14 @@
 // thief-finder `secret` map never leaves this layer unfiltered.
 import { Chess } from 'chess.js';
 import { httpError } from './room.js';
+import {
+	LUDO_COLORS,
+	LUDO_HOME,
+	LUDO_SAFE,
+	ludoAbsCell,
+	ludoBlockedCells,
+	ludoLegalMoves
+} from '../ludo-rules.js';
 
 /* --------------------------------- init ---------------------------------- */
 
@@ -251,27 +259,12 @@ export function thiefView(game, uid) {
 
 /* ---------------------------------- ludo ---------------------------------- */
 
-/**
- * Token position encoding (per token, per player):
- *   -1        in the yard (not yet entered)
- *   0..50     on the shared main track, RELATIVE to the player's own start cell
- *             (0 = start). Absolute board cell = (LUDO_START_OFFSET[color] + pos) % 52.
- *   51..56    the player's private 6-cell home column; 56 is the final home (exact).
- * A token needs a 6 to leave the yard, and an exact roll to land on 56.
- */
-const LUDO_COLORS = ['red', 'green', 'yellow', 'blue'];
-const LUDO_START_OFFSET = { red: 0, green: 13, yellow: 26, blue: 39 };
-const LUDO_TRACK = 52; // shared ring length
-const LUDO_HOME = 56; // final (exact) position
-// The 8 star safe cells (absolute): the four coloured start cells + four mid-arm
-// stars. A token sitting on one of these can't be captured.
-const LUDO_SAFE = new Set([0, 8, 13, 21, 26, 34, 39, 47]);
-
-/** Absolute ring cell for a main-track token, or null if it's in yard/home column. */
-function ludoAbsCell(color, pos) {
-	if (pos < 0 || pos > 50) return null;
-	return (LUDO_START_OFFSET[color] + pos) % LUDO_TRACK;
-}
+/* The position encoding, the ring constants and the legality rule all live in
+   ../ludo-rules.js — the board component imports the same ones, so the highlight
+   it draws and the move this file accepts can never disagree. Only the parts
+   that THROW stay here. Re-exported so existing importers (routes, ludo-check)
+   are unaffected. */
+export { ludoLegalMoves, ludoBlockedCells };
 
 /** Advance to the next player and clear the per-turn roll state. */
 function advanceLudoTurn(game) {
@@ -279,27 +272,6 @@ function advanceLudoTurn(game) {
 	game.sixStreak = 0;
 	game.dice = null;
 	game.rolled = false;
-}
-
-/**
- * Legal moves for `uid` given `dice`, as [{ token, target }]. PURE. Yard tokens
- * move only on a 6; a board token moves only if it lands exactly on or before
- * home (pos+dice <= 56 — overshoots are illegal). Own-stacking is allowed.
- */
-export function ludoLegalMoves(game, uid, dice) {
-	const toks = game.tokens[uid] || [];
-	const moves = [];
-	for (let i = 0; i < toks.length; i++) {
-		const pos = toks[i];
-		if (pos === LUDO_HOME) continue; // already finished
-		if (pos === -1) {
-			if (dice === 6) moves.push({ token: i, target: 0 });
-			continue;
-		}
-		const target = pos + dice;
-		if (target <= LUDO_HOME) moves.push({ token: i, target });
-	}
-	return moves;
 }
 
 /**

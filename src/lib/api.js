@@ -12,7 +12,7 @@ import { user } from '$lib/stores/auth.js';
 // not targets. A poll may be cut short freely — it just runs again — so it gets
 // the tighter one; a write is not safely repeatable, so it gets room to land.
 export const WRITE_TIMEOUT_MS = 20000;
-export const POLL_TIMEOUT_MS = 12000;
+export const POLL_TIMEOUT_MS = 10000;
 
 export async function api(
 	path,

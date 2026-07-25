@@ -4,6 +4,14 @@
 	import { playDice, playCapture, playHome, playMove, playPass, isMuted, setMuted, arm } from '$lib/sound.js';
 	import { createFullscreen, portal } from '$lib/fullscreen.svelte.js';
 	import { createTheme, LUDO_THEMES } from '$lib/themes.svelte.js';
+	// The SAME rule the server enforces, not a copy of it — see ludo-rules.js.
+	import {
+		LUDO_START_OFFSET as START_OFFSET,
+		LUDO_SAFE as SAFE,
+		ludoAbsCell,
+		ludoBlockedCells,
+		ludoLegalMoves
+	} from '$lib/ludo-rules.js';
 	import ThemePicker from './ThemePicker.svelte';
 
 	let { store, game, members, myUid } = $props();
@@ -98,9 +106,10 @@
 	   pos encoding matches the server: -1 yard, 0..50 shared ring (relative to
 	   the player's start), 51..55 home lane, 56 = home/finished. */
 	const N = 15;
-	const START_OFFSET = { red: 0, green: 13, yellow: 26, blue: 39 };
 	// The 52 shared ring cells as [row, col]; index 0 = red start, 13 = green,
-	// 26 = yellow, 39 = blue (matches START_OFFSET).
+	// 26 = yellow, 39 = blue (matches START_OFFSET). Purely presentational — where
+	// a ring index sits on screen — so unlike the offsets and the safe set it has
+	// no server counterpart and stays here.
 	const TRACK = [
 		[6, 1], [6, 2], [6, 3], [6, 4], [6, 5],
 		[5, 6], [4, 6], [3, 6], [2, 6], [1, 6], [0, 6],
@@ -115,7 +124,6 @@
 		[8, 5], [8, 4], [8, 3], [8, 2], [8, 1], [8, 0],
 		[7, 0], [6, 0]
 	];
-	const SAFE = new Set([0, 8, 13, 21, 26, 34, 39, 47]);
 	const START_COLOR = { 0: 'red', 13: 'green', 26: 'yellow', 39: 'blue' };
 	const HOME_LANES = {
 		red: [[7, 1], [7, 2], [7, 3], [7, 4], [7, 5]],
@@ -174,30 +182,57 @@
 	}
 	const pct = (v) => `${(v / N) * 100}%`;
 
-	// which of MY tokens can move with the pending dice (client mirror of the
-	// server rule — for highlighting; the server stays the source of truth).
-	function legalTokens(uid, dice) {
-		const toks = game.tokens[uid] || [];
-		const out = [];
-		for (let i = 0; i < toks.length; i++) {
-			const p = toks[i];
-			if (p === 56) continue;
-			if (p === -1) { if (dice === 6) out.push(i); continue; }
-			if (p + dice <= 56) out.push(i);
-		}
-		return out;
-	}
+	// Which of MY tokens can move with the pending dice. Runs the SERVER'S rule,
+	// imported — this used to be a hand-copy, and the auto-play effect below acts
+	// on it, so any drift would have posted moves the server rejects.
+	const legalTokens = (uid, dice) => ludoLegalMoves(game, uid, dice).map((m) => m.token);
 	const movable = $derived(myTurn && game.rolled && game.dice != null ? new Set(legalTokens(myUid, game.dice)) : new Set());
 
+	/* Nudge co-located tokens off the cell centre. Without this they render exactly
+	   on top of one another, which was survivable when a stack meant nothing and is
+	   not now that two tokens are a wall: an opponent would watch moves be refused
+	   with nothing on the board explaining why. */
+	const STACK_R = 0.17; // grid units
+	function fanOffset(idx, n) {
+		if (n < 2) return [0, 0];
+		const a = (2 * Math.PI * idx) / n - Math.PI / 2;
+		return [Math.sin(a) * STACK_R, Math.cos(a) * STACK_R];
+	}
+
 	// flatten all tokens for rendering, keyed stably
-	const tokens = $derived(
-		game.players.flatMap((uid) =>
+	const tokens = $derived.by(() => {
+		const flat = game.players.flatMap((uid) =>
 			game.tokens[uid].map((_, i) => {
 				const [cr, cc] = tokenCentre(uid, i);
-				return { key: `${uid}-${i}`, uid, i, color: game.colors[uid], cr, cc };
+				return { key: `${uid}-${i}`, uid, i, pos: game.tokens[uid][i], color: game.colors[uid], cr, cc };
 			})
-		)
-	);
+		);
+		// Grouped by rendered cell across ALL players, not per colour: a safe cell
+		// can hold one red and one yellow at once and both must stay visible.
+		const groups = new Map();
+		for (const t of flat) {
+			const k = `${t.cr.toFixed(2)},${t.cc.toFixed(2)}`;
+			if (!groups.has(k)) groups.set(k, []);
+			groups.get(k).push(t);
+		}
+		const out = [];
+		for (const g of groups.values()) {
+			// A wall is 2+ from ONE player, and only on the shared ring — four
+			// finished tokens sharing the home triangle are not a blockade, and
+			// yard slots are distinct per index so they never group at all.
+			const perUid = new Map();
+			for (const t of g) {
+				if (t.pos < 0 || t.pos > 50) continue;
+				perUid.set(t.uid, (perUid.get(t.uid) || 0) + 1);
+			}
+			const block = [...perUid.values()].some((n) => n >= 2);
+			g.forEach((t, idx) => {
+				const [dr, dc] = fanOffset(idx, g.length);
+				out.push({ ...t, cr: t.cr + dr, cc: t.cc + dc, block });
+			});
+		}
+		return out;
+	});
 
 	onMount(() => {
 		muted = isMuted();
@@ -487,10 +522,11 @@
 					class="token"
 					class:token--movable={movable.has(tk.i) && tk.uid === myUid}
 					class:token--mine={tk.uid === myUid}
+					class:token--block={tk.block}
 					style="top:{pct(tk.cr)}; left:{pct(tk.cc)}; --tc:{cssColor(tk.color)}"
 					disabled={!(movable.has(tk.i) && tk.uid === myUid)}
 					onclick={() => move(tk.i)}
-					aria-label="{tk.color} token {tk.i + 1}"
+					aria-label="{tk.color} token {tk.i + 1}{tk.block ? ' — part of a block' : ''}"
 				></button>
 			{/each}
 		</div>
@@ -718,6 +754,13 @@
 		animation: bob 0.9s ease-in-out infinite;
 	}
 	.token--movable:hover { filter: brightness(1.12); }
+	/* Two of one colour on a cell is a wall opponents can't land on OR cross. Read
+	   as one solid object: a dark rim binds the fanned pair together, so a refused
+	   move has a visible cause. */
+	.token--block {
+		border-color: rgba(15, 20, 40, 0.92);
+		box-shadow: 0 0 0 2px rgba(15, 20, 40, 0.55), 0 2px 5px rgba(0, 0, 0, 0.5);
+	}
 	@keyframes bob {
 		0%, 100% { transform: translate(-50%, -50%) scale(1); }
 		50% { transform: translate(-50%, -62%) scale(1.06); }

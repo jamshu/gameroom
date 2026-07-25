@@ -50,25 +50,79 @@ const ROLLED_SIX = baseGame({
  * @param write  route handler for the ludo write under test
  * @returns box whose `.game`/`.v` the poll serves — mutate to reconcile
  */
-async function mockBackend(page, { path, write, game = ROLLED_SIX }) {
-	const box = { game, v: 1 };
+async function mockBackend(page, { path, write, game = ROLLED_SIX } = {}) {
+	const box = { game, v: 1, polls: 0, failPolls: 0 };
 	await page.route('**/api/auth/me', (x) => x.fulfill({ json: { user: ME } }));
 	await page.route('**/api/realtime/token**', (x) => x.fulfill({ status: 501, json: { error: 'off' } }));
 	await page.route('**/api/avatar/**', (x) => x.fulfill({ status: 404, body: '' }));
 	await page.route(/\/api\/rooms\/\d+$/, (x) =>
 		x.fulfill({ json: { room: ROOM, members: MEMBERS, me: { status: 'accepted', role: 'player' } } })
 	);
-	await page.route('**/api/rooms/*/poll**', (x) =>
+	await page.route('**/api/rooms/*/poll**', (x) => {
+		box.polls++;
+		// `failPolls` lets a test drop the next N polls, which is what a timed-out
+		// poll looks like to the client: the offline path, errorStreak++.
+		if (box.failPolls > 0) {
+			box.failPolls--;
+			return x.abort();
+		}
 		x.fulfill({
 			json: {
 				ok: true, cursor: 0, events: [], room: ROOM, members: MEMBERS,
 				state: { v: box.v, voice: [], game: box.game }
 			}
-		})
-	);
-	await page.route(path, write);
+		});
+	});
+	if (path) await page.route(path, write);
 	return box;
 }
+
+/**
+ * A single failed poll must not freeze the board. The error backoff used to be a
+ * MULTIPLIER on whatever tier applied, and while push is connected that tier is
+ * the 60s safety net — so one timed-out poll bought a two-minute stale board and
+ * a red banner over it. The ladder is now its own thing: 1.5s, 3s, 6s…
+ */
+test('one failed poll recovers in seconds and never shows a banner', async ({ page }) => {
+	const box = await mockBackend(page);
+
+	await page.goto('/room/1');
+	await expect(page.locator('.board')).toBeVisible();
+	const seen = box.polls;
+
+	box.failPolls = 1;
+	// the state that the next successful poll should deliver
+	box.v = 2;
+	box.game = baseGame({
+		tokens: { 100: [0, -1, -1, -1], 101: [-1, -1, -1, -1] },
+		lastEvent: { kind: 'move', uid: 100, token: 0, die: 6 }
+	});
+
+	// recovery is the next rung of the ladder (~1.5s), not the 60s safety tier
+	await expect
+		.poll(() => box.polls, { timeout: 8000 })
+		.toBeGreaterThan(seen + 1);
+	await expect(page.getByText('Your turn — tap the die to roll.')).toBeVisible({ timeout: 8000 });
+	// and a blip that healed itself was never worth alarming anyone about
+	await expect(page.locator('.error-text')).toHaveCount(0);
+});
+
+test('a sustained outage does say so, in words that fit a failed read', async ({ page }) => {
+	const box = await mockBackend(page);
+
+	await page.goto('/room/1');
+	await expect(page.locator('.board')).toBeVisible();
+
+	box.failPolls = 4;
+	// From the SECOND consecutive failure the banner appears. "may not have gone
+	// through" is write wording — a poll is a read and never went anywhere.
+	const banner = page.locator('.error-text');
+	await expect(banner).toContainText('Connection trouble', { timeout: 15000 });
+	await expect(banner).not.toContainText('gone through');
+
+	// …and it clears itself once polls succeed again
+	await expect(banner).toHaveCount(0, { timeout: 20000 });
+});
 
 test('a lost move response does not let repeated taps pile up writes', async ({ page }) => {
 	let posts = 0;

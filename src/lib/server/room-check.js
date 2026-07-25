@@ -237,8 +237,12 @@ const writesTo = (role) =>
 
 	// slowest cadence a LIVE client can be on is the 60s push safety net
 	assert.ok(at(65000).online, 'a client on the 60s push safety poll must read online');
-	// …and the fallback path's worst case: IDLE_MS 10s × MAX_ERROR_BACKOFF 8
-	assert.ok(at(81000).online, 'a fully backed-off polling client must still read online');
+	// …and a struggling one is FASTER than that, not slower: the error path used
+	// to multiply whichever tier applied (IDLE_MS 10s × a cap of 8 = 80s, and 60s
+	// × 2 while push was connected — a two-minute frozen board). It now has its
+	// own ladder capped at ERROR_MAX_MS 15s, so failures no longer push anyone
+	// near this window. Kept as headroom, not as the binding case.
+	assert.ok(at(81000).online, 'a retrying client must still read online');
 	// but genuinely gone is still gone
 	assert.ok(!at(120000).online, 'two minutes silent is offline');
 	assert.ok(!publicMembers([member(1, 'player')])[0].online, 'never seen is offline');

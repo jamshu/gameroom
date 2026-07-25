@@ -29,7 +29,15 @@ const FAST_MS = 1000; // while WebRTC signaling is in flight
 const PUSH_SAFETY_MS = 60000;
 // Reasons the poll must give up rather than retry. Anything else is transient.
 const TERMINAL_CODES = new Set(['removed', 'not_member']);
-const MAX_ERROR_BACKOFF = 8; // cap the multiplier so recovery stays reasonable
+// Retry ladder while polls are failing — see cadence(). Deliberately NOT a
+// multiplier on the normal tiers: recovery has to be fast even when the tier it
+// would have multiplied is the 60s push safety net.
+const ERROR_BASE_MS = 1500;
+const ERROR_MAX_MS = 15000;
+// One failure is a blip that the ladder above heals in ~1.5s. Warning about it
+// is worse than staying quiet — the banner is what made a self-healing hiccup
+// look like a broken game. Speak up once it's clearly not recovering.
+const ERROR_QUIET_STREAK = 1;
 // Deliberately NOT widened alongside the two above. `cadence()` tests
 // document.hidden BEFORE `fast`, so this is also the tier a hidden tab
 // negotiating WebRTC sits on when push is off — raising it would slow voice
@@ -194,7 +202,16 @@ export function createRoomStore(roomId) {
 				store.update((s) => ({ ...s, error: e.message, closed: true }));
 			} else {
 				errorStreak++;
-				store.update((s) => ({ ...s, error: e.message }));
+				// A poll is a READ. api()'s wording — "that may not have gone
+				// through" — is about a write whose effect is unknown, and means
+				// nothing here; a poll that failed simply didn't read anything.
+				// Anything the server actually said (a 500's message) still wins.
+				// Noun phrase on purpose — the banner appends "— retrying…".
+				const msg = e?.offline ? 'Connection trouble' : e.message;
+				store.update((s) => ({
+					...s,
+					error: errorStreak > ERROR_QUIET_STREAK ? msg : null
+				}));
 			}
 		} finally {
 			inFlight = false;
@@ -212,24 +229,36 @@ export function createRoomStore(roomId) {
 	}
 
 	function cadence() {
-		// A failing room used to keep hammering at full speed, which is itself a
-		// 429 amplifier. Back off while it's broken; reset the moment it recovers.
-		const penalty = errorStreak ? Math.min(2 ** errorStreak, MAX_ERROR_BACKOFF) : 1;
+		// FAILING: its own ladder, and it outranks every tier below — including
+		// `fast`, despite the "never slow WebRTC" rule there. Two reasons. A tier
+		// is an answer to "how likely is something new?", which is the wrong
+		// question while nothing is getting through at all; and 1s polling into a
+		// failing room is exactly the 429 amplifier a backoff exists to prevent.
+		//
+		// This used to be a MULTIPLIER on whatever tier applied, which was
+		// backwards where it mattered most: one timed-out poll while push was
+		// connected gave 60s × 2 = a two-minute frozen board. The socket reporting
+		// "connected" says nothing when it plainly isn't delivering, and the poll
+		// IS the recovery path — so recovery must not inherit the safety-net
+		// interval. 1.5s, 3s, 6s, 12s, then 15s. Coupled to RECONCILE_MS in
+		// LudoBoard: the first three attempts fit inside its 6s window, so a
+		// pending write usually clears silently. Retune the two together.
+		if (errorStreak) return Math.min(ERROR_BASE_MS * 2 ** (errorStreak - 1), ERROR_MAX_MS);
 		// Push connected and not negotiating voice: real changes all arrive on the
 		// socket, so the timer is ONLY a safety net — back off fully even right
 		// after activity. Must outrank the active/base tiers or push saves nothing
-		// during play, and now outranks `document.hidden` too: backgrounding a
-		// healthy room used to take it from 60s to 10s, i.e. hiding the tab made it
-		// SIX TIMES noisier against a rate limit the whole room shares.
+		// during play, and outranks `document.hidden` too: backgrounding a healthy
+		// room used to take it from 60s to 10s, i.e. hiding the tab made it SIX
+		// TIMES noisier against a rate limit the whole room shares.
 		// The `!fast` guard is load-bearing — it leaves the hidden-outranks-fast
 		// ordering below exactly as it was for the push-off WebRTC path.
-		if (pushConnected && !fast) return PUSH_SAFETY_MS * penalty;
-		if (document.hidden) return HIDDEN_MS * penalty;
-		if (fast) return FAST_MS * penalty; // FAST outranks all — never slow WebRTC
+		if (pushConnected && !fast) return PUSH_SAFETY_MS;
+		if (document.hidden) return HIDDEN_MS;
+		if (fast) return FAST_MS; // FAST outranks all — never slow WebRTC
 		const quietFor = Date.now() - lastActivityAt;
-		if (quietFor < ACTIVE_WINDOW_MS) return ACTIVE_MS * penalty;
-		if (quietFor < IDLE_AFTER_MS) return BASE_MS * penalty;
-		return IDLE_MS * penalty;
+		if (quietFor < ACTIVE_WINDOW_MS) return ACTIVE_MS;
+		if (quietFor < IDLE_AFTER_MS) return BASE_MS;
+		return IDLE_MS;
 	}
 
 	function schedule(ms) {

@@ -106,4 +106,83 @@ const fresh = () => initGame('ludo', [A, B], {});
 	assert.equal(s[B], 0);
 }
 
+/* Blockades. Two tokens of ONE player on a cell are a wall: opponents may
+   neither land on it nor pass over it. Before this, a 2+ stack only meant
+   "immune from capture", so an opponent walked straight through and could even
+   share the cell.
+
+   A = red (offset 0), B = yellow (offset 26). Yellow rel r sits on abs
+   (26 + r) % 52; red rel p sits on abs p. */
+
+// 10. Landing on an opponent's block is illegal.
+{
+	const g = fresh();
+	// yellow rel 34 and 35 are abs 8 and 9 — park BOTH on abs 8 to make a wall
+	g.tokens[B][0] = 34;
+	g.tokens[B][1] = 34;
+	g.tokens[A][0] = 5; // red rel 5; +3 → rel 8 → abs 8, straight onto the wall
+	g.turnIdx = 0; g.dice = 3; g.rolled = true;
+	assert.deepEqual(
+		ludoLegalMoves(g, A, 3).map((m) => m.token),
+		[1, 2, 3].filter((i) => g.tokens[A][i] !== -1),
+		'the blocked token is not a legal move'
+	);
+	assert.throws(() => ludoMove(g, A, 0), /cannot move/, 'landing on a block is rejected');
+	assert.equal(g.tokens[A][0], 5, 'and the token did not move');
+}
+
+// 11. PASSING OVER a block is illegal too — the case a landing-only check misses.
+{
+	const g = fresh();
+	g.tokens[B][0] = 34; // abs 8
+	g.tokens[B][1] = 34;
+	g.tokens[A][0] = 5; // +6 → rel 11, but rel 8 (abs 8) is crossed on the way
+	g.turnIdx = 0; g.dice = 6; g.rolled = true;
+	assert.ok(
+		!ludoLegalMoves(g, A, 6).some((m) => m.token === 0),
+		'a token may not jump a block'
+	);
+	assert.throws(() => ludoMove(g, A, 0), /cannot move/, 'crossing a block is rejected');
+}
+
+// 12. Your OWN stack never blocks you.
+{
+	const g = fresh();
+	g.tokens[A][0] = 8;
+	g.tokens[A][1] = 8; // red's own wall on abs 8
+	g.tokens[A][2] = 5;
+	g.turnIdx = 0; g.dice = 3; g.rolled = true;
+	ludoMove(g, A, 2);
+	assert.equal(g.tokens[A][2], 8, 'red walks onto its own stack freely');
+}
+
+// 13. A block on our start cell keeps us in the yard even with a 6.
+{
+	const g = fresh();
+	// red's start is abs 0; yellow rel r with (26 + r) % 52 = 0 → r = 26
+	g.tokens[B][0] = 26;
+	g.tokens[B][1] = 26;
+	g.turnIdx = 0;
+	assert.equal(ludoLegalMoves(g, A, 6).length, 0, 'a 6 cannot enter onto a block');
+	// …so the roll auto-passes rather than leaving the player owing a move
+	ludoRoll(g, A, 6);
+	assert.equal(g.lastEvent.kind, 'pass', 'fully blocked → the turn passes');
+	assert.equal(g.turnIdx, 1);
+	assert.equal(g.rolled, false);
+}
+
+// 14. Two DIFFERENT colours on one safe cell are not a block for anybody. This
+//     is why the count is per player and never an aggregate.
+{
+	const g = fresh();
+	g.tokens[B][0] = 34; // yellow on abs 8
+	g.tokens[A][3] = 8;  // red also on abs 8 (safe, so no capture happened)
+	g.tokens[A][0] = 5;
+	g.turnIdx = 0; g.dice = 3; g.rolled = true;
+	assert.ok(
+		ludoLegalMoves(g, A, 3).some((m) => m.token === 0),
+		'one token each is two owners, not a wall'
+	);
+}
+
 console.log('ludo-check: all assertions passed');
