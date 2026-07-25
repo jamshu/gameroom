@@ -159,26 +159,70 @@
 
 	/* Room-level news that isn't visible anywhere else. A host handover mid-game
 	   changes nothing on the board, so without this the new host would only find
-	   out by noticing controls they didn't have before. Cleared on a timer. */
+	   out by noticing controls they didn't have before.
+
+	   Announcements QUEUE rather than replace each other. One leave can write
+	   three system events in a row (round abandoned → host handed on → member
+	   left), and a single slot meant the last one silently overwrote the two that
+	   actually mattered. Backed-up messages get a shorter dwell so a burst still
+	   clears in a few seconds. */
+	const NOTICE_MS = 8000;
+	const NOTICE_QUEUED_MS = 3500;
 	let notice = $state('');
 	let noticeTimer = null;
+	const pending = [];
+	let starting = false;
 	function say(text) {
-		notice = text;
-		clearTimeout(noticeTimer);
-		noticeTimer = setTimeout(() => (notice = ''), 8000);
+		pending.push(text);
+		if (notice || starting) return;
+		// Show on the next tick, not this one: a batch of events is handled in a
+		// single synchronous ingest, and the dwell depends on how many are waiting.
+		// Deciding on the first message would always see an empty queue and give a
+		// burst the lone-announcement timing.
+		starting = true;
+		setTimeout(() => {
+			starting = false;
+			showNext();
+		}, 0);
 	}
+	function showNext() {
+		clearTimeout(noticeTimer);
+		notice = pending.shift() || '';
+		if (notice) noticeTimer = setTimeout(showNext, pending.length ? NOTICE_QUEUED_MS : NOTICE_MS);
+	}
+	// A seated player walking out announces itself as `game-abandoned`, which says
+	// they left AND what it cost. The generic "left the room" the same request
+	// writes right after would only repeat it, so it's suppressed for that player.
+	//
+	// Matched on a short time window rather than a remembered uid: the two events
+	// can arrive in separate polls, and a marker that only cleared when its pair
+	// showed up would sit there for the rest of the session and silently eat that
+	// player's NEXT departure. A window expires on its own.
+	const ABANDON_WINDOW_MS = 15_000;
+	let abandoned = { uid: null, at: 0 };
 	store.onSystem((ev) => {
 		const who = (uid) =>
 			Number(uid) === myUid ? 'You' : members.find((m) => m.uid === Number(uid))?.name || 'Someone';
-		if (ev.payload?.kind === 'host-changed') {
+		const kind = ev.payload?.kind;
+		if (kind === 'host-changed') {
 			const name = who(ev.payload.uid);
 			say(`👑 ${name} ${name === 'You' ? 'are' : 'is'} now the host.`);
 			// The Ably push carries EVENTS only — `room` (and so `hostUid`) rides the
 			// poll. Without this nudge a push-connected client would show the banner
 			// now but not grow the host controls until the safety poll, 8s later.
 			store.pollNow();
-		} else if (ev.payload?.kind === 'game-abandoned') {
+		} else if (kind === 'game-abandoned') {
+			abandoned = { uid: Number(ev.payload.uid), at: Date.now() };
 			say(`${who(ev.payload.uid)} left mid-game — the round was dropped, back to the lobby.`);
+		} else if (kind === 'member-left') {
+			const uid = Number(ev.payload.uid);
+			// already announced, with the reason attached
+			if (uid === abandoned.uid && Date.now() - abandoned.at < ABANDON_WINDOW_MS) return;
+			const name = who(uid);
+			say(`👋 ${name} ${name === 'You' ? 'have' : 'has'} left the room.`);
+		} else if (kind === 'member-removed') {
+			const name = who(ev.payload.uid);
+			say(`👋 ${name} ${name === 'You' ? 'were' : 'was'} removed from the room.`);
 		}
 	});
 	onDestroy(() => clearTimeout(noticeTimer));
