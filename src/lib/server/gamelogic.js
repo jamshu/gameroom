@@ -316,7 +316,9 @@ export function ludoRoll(game, uid, die) {
 	game.sixStreak = die === 6 ? (game.sixStreak || 0) + 1 : 0;
 
 	if (game.sixStreak >= 3) {
-		game.lastEvent = { kind: 'pass', uid, reason: 'three-sixes' };
+		// `die` is carried here too (it's always 6) so the client can land its dice
+		// animation on it — advanceLudoTurn is about to clear game.dice.
+		game.lastEvent = { kind: 'pass', uid, die, reason: 'three-sixes' };
 		advanceLudoTurn(game);
 		return;
 	}

@@ -17,6 +17,10 @@
 	let recording = $state(false);
 	let elapsed = $state(0); // seconds into the current recording
 	let lightbox = $state(null); // {src, alt} while a photo is open full-size
+	// Why a given clip wouldn't play, keyed by message id. Deliberately NOT the
+	// `error` var above: that one belongs to the send/record paths and a playback
+	// failure landing in it would wipe whatever the composer was telling the user.
+	let clipErrors = $state({});
 
 	// Hidden entirely where MediaRecorder can't produce anything we accept.
 	const canRecord = pickAudioMime() !== null;
@@ -55,6 +59,42 @@
 	function mmss(sec) {
 		const s = Math.max(0, Math.round(sec));
 		return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+	}
+
+	/**
+	 * A voice note refused to play. Say why.
+	 *
+	 * This has to be bound on the element itself — media `error` events don't
+	 * bubble and aren't promise rejections, so nothing higher up can ever see
+	 * them. Without it the only symptom is a dead-looking player, which is how
+	 * the iOS codec problem went unnoticed for so long.
+	 *
+	 * The element's own MediaError can't tell a 404 from a codec it can't decode
+	 * (both surface as SRC_NOT_SUPPORTED, because our JSON error body is also
+	 * "not audio"), so re-ask the server with a 1-byte range to get the status.
+	 */
+	async function clipFailed(msg) {
+		let status = 0;
+		try {
+			const r = await fetch(srcOf(msg), { headers: { Range: 'bytes=0-0' } });
+			status = r.status;
+		} catch {
+			/* offline or blocked — leave status 0 */
+		}
+		let why;
+		if (status === 401 || status === 403) why = "You're no longer a member of this room";
+		else if (status === 404) why = 'This voice note is no longer available';
+		else if (status === 0) why = "Couldn't reach the server for this voice note";
+		else if (status >= 400) why = `Couldn't load this voice note (${status})`;
+		else why = `Your browser can't play this recording${msg.mime ? ` (${msg.mime})` : ''}`;
+		clipErrors = { ...clipErrors, [msg.id]: why };
+	}
+
+	/** It played after all (a retry, or a transient 5xx) — drop the complaint. */
+	function clipRecovered(msg) {
+		if (!(msg.id in clipErrors)) return;
+		const { [msg.id]: _gone, ...rest } = clipErrors;
+		clipErrors = rest;
 	}
 
 	async function send(e) {
@@ -192,9 +232,21 @@
 					{:else if msg.kind === 'voice'}
 						<span class="clip">
 							<!-- svelte-ignore a11y_media_has_caption -->
-							<audio src={srcOf(msg)} controls preload="none"></audio>
+							<audio
+								src={srcOf(msg)}
+								controls
+								preload="none"
+								onerror={() => clipFailed(msg)}
+								onloadeddata={() => clipRecovered(msg)}
+							></audio>
 							{#if msg.dur}<span class="clip-dur">{mmss(msg.dur)}</span>{/if}
 						</span>
+						{#if clipErrors[msg.id]}
+							<span class="clip-err">
+								{clipErrors[msg.id]}
+								<a href={srcOf(msg)} download>Download</a>
+							</span>
+						{/if}
 					{/if}
 					{#if msg.text}<span>{msg.text}</span>{/if}
 				</div>
@@ -342,6 +394,17 @@
 	.clip-dur {
 		font-size: 0.72rem;
 		opacity: 0.7;
+	}
+	.clip-err {
+		font-size: 0.72rem;
+		color: var(--danger, #e5484d);
+		padding: 0 6px 2px;
+		display: flex;
+		gap: 6px;
+		align-items: baseline;
+	}
+	.clip-err a {
+		color: inherit;
 	}
 	/* in flight — resolves the moment the server acks */
 	.pending {

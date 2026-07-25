@@ -113,6 +113,33 @@ test('media from another player renders off the room media proxy', async ({ page
 	await expect(page.getByText('and a plain message')).toBeVisible();
 });
 
+/**
+ * A clip that won't play must SAY so. This is the iPhone bug's second half: the
+ * <audio> element had no error handler, media error events don't bubble, and
+ * preload="none" means nothing fails until play is pressed — so a WebM/Opus clip
+ * an iOS listener can't decode looked like a working player that did nothing.
+ */
+test('a voice clip that will not play says why instead of failing silently', async ({ page }) => {
+	await mockBackend(page, {
+		events: [
+			{ id: 602, type: 'chat', senderUid: 101, payload: { kind: 'voice', attId: 89, mime: 'audio/webm', dur: 7 } }
+		]
+	});
+	// the attachment is gone — the same shape a stale/foreign attId produces
+	await page.route('**/api/rooms/*/media/89', (x) =>
+		x.fulfill({ status: 404, json: { ok: false, error: 'Not found' } })
+	);
+
+	await page.goto('/room/1');
+	const audio = page.locator('.chat-list audio');
+	await expect(audio).toHaveAttribute('src', '/api/rooms/1/media/89');
+	// preload="none" defers the failure to playback, which is the point — force it
+	await audio.evaluate((el) => el.load());
+
+	await expect(page.locator('.clip-err')).toContainText('no longer available');
+	await expect(page.locator('.clip-err a')).toHaveAttribute('href', '/api/rooms/1/media/89');
+});
+
 test('tapping a photo opens it full-size, and clicking again closes it', async ({ page }) => {
 	await mockBackend(page, {
 		events: [

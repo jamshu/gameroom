@@ -18,15 +18,33 @@
 	const fs = createFullscreen(() => playArea);
 	let rolling = $state(false);
 	let muted = $state(false);
-	// 3D die: the value comes from the player's swipe (see swipeEnd). cubeRX/cubeRY
-	// drive the cube's orientation; baseX/baseY accumulate whole spins so each
-	// throw tumbles forward before settling on the swiped face.
+	// 3D die. The VALUE is the server's — it arrives in the pushed state, never
+	// from this component. cubeRX/cubeRY drive the cube's orientation; baseX/baseY
+	// accumulate whole spins so each throw tumbles forward before settling.
 	let shownValue = $state(1);
 	let cubeRX = $state(-24);
 	let cubeRY = $state(18);
 	let baseX = 0;
 	let baseY = 0;
-	let swipe = null; // { x, y } captured on pointerdown
+	// The throw is airborne until the result lands, and never for less than this —
+	// otherwise a fast response makes the die snap and there's no throw to see.
+	const MIN_SPIN_MS = 480;
+	let rollStartedAt = 0;
+	let settleTimer = null;
+	// Plain mirror of `rolling`: the settle effect writes it, so it must not also
+	// READ the rune, or the effect re-runs on its own write.
+	let airborne = false;
+	// Separate from `rolling` on purpose. `rolling` is "a die is in the air",
+	// which is true on EVERY client while someone throws; this is "*I* have a
+	// roll outstanding", which is what may block my tap. Gating input on the
+	// former would eat the first tap of anyone whose turn began during the
+	// previous player's animation.
+	let myRoll = $state(false);
+	function setAirborne(v) {
+		airborne = v;
+		rolling = v;
+		if (!v) myRoll = false;
+	}
 
 	const nameOf = $derived((uid) => members.find((m) => m.uid === Number(uid))?.name || `#${uid}`);
 	const currentUid = $derived(game.players[game.turnIdx]);
@@ -142,6 +160,7 @@
 	onMount(() => {
 		muted = isMuted();
 		arm();
+		return () => clearTimeout(settleTimer); // a die in the air must not outlive the board
 	});
 	function toggleMute() {
 		muted = !muted;
@@ -153,7 +172,7 @@
 	const ORIENT = { 1: [0, 0], 2: [0, -90], 3: [-90, 0], 4: [90, 0], 5: [0, 90], 6: [0, 180] };
 	const TILT_X = -18;
 	const TILT_Y = 14;
-	const canRoll = $derived(myTurn && !game.rolled && !rolling && !game.result);
+	const canRoll = $derived(myTurn && !game.rolled && !myRoll && !game.result);
 
 	function showValue(value, spins) {
 		const [rx, ry] = ORIENT[value] || ORIENT[1];
@@ -164,45 +183,52 @@
 		cubeRY = baseY + ry + TILT_Y;
 	}
 
-	function swipeStart(e) {
-		if (!canRoll) return;
-		swipe = { x: e.clientX, y: e.clientY };
-		e.currentTarget.setPointerCapture?.(e.pointerId);
-	}
-
-	// The value IS the swipe: further/harder swipe → higher number (1-6).
-	function swipeEnd(e) {
-		if (!swipe) return;
-		const dx = e.clientX - swipe.x;
-		const dy = e.clientY - swipe.y;
-		swipe = null;
-		const dist = Math.hypot(dx, dy);
-		if (dist < 12) return; // a tap, not a throw — ignore
-		const value = Math.min(6, Math.max(1, 1 + Math.floor(dist / 45)));
-		const spins = 2 + Math.min(3, Math.floor(dist / 90));
-		roll(value, spins);
-	}
-
-	// keyboard fallback (accessibility): a plain random throw
 	function keyRoll(e) {
 		if (e.key !== 'Enter' && e.key !== ' ') return;
 		e.preventDefault();
-		if (!canRoll) return;
-		roll(1 + Math.floor(Math.random() * 6), 3);
+		roll();
 	}
 
-	async function roll(value, spins = 2) {
+	/**
+	 * Throw the die. We don't know the number yet and must not guess one: the
+	 * cube goes airborne now, and the settle happens in the state effect below
+	 * when the server's value arrives. That effect runs for everyone at the
+	 * table, so the roller and the spectators watch the same throw.
+	 */
+	async function roll() {
 		if (!canRoll) return;
 		error = '';
-		rolling = true;
-		showValue(value, spins); // tumble the cube to the swiped face
+		myRoll = true;
+		setAirborne(true);
+		rollStartedAt = Date.now();
 		try {
-			await store.post('ludo/roll', { die: value });
+			await store.post('ludo/roll');
 		} catch (e) {
 			error = e.message;
-		} finally {
-			setTimeout(() => (rolling = false), 650); // let the tumble finish
+			// no result is coming, so nothing will land the die — put it down
+			setAirborne(false);
 		}
+	}
+
+	/**
+	 * The server's number arrived: finish the throw on it.
+	 *
+	 * For the roller the die is already in the air, so we only honour whatever is
+	 * left of MIN_SPIN_MS. A spectator's throw starts here instead — they never
+	 * tapped anything, and before this they saw no die movement at all.
+	 */
+	function land(die) {
+		clearTimeout(settleTimer);
+		if (!airborne) {
+			setAirborne(true);
+			rollStartedAt = Date.now();
+		}
+		const wait = Math.max(0, MIN_SPIN_MS - (Date.now() - rollStartedAt));
+		settleTimer = setTimeout(() => {
+			settleTimer = null;
+			showValue(die, 2);
+			setAirborne(false);
+		}, wait);
 	}
 
 	async function move(i) {
@@ -222,6 +248,10 @@
 	// per state version so it never loops on itself. The move() call is deferred
 	// off the effect (a plain timer): move() writes state via store.post, which
 	// must never run synchronously inside an effect (same rule as the thief deal).
+	//
+	// It waits out the rest of the throw, too. The die is still in the air when
+	// this state arrives, and a token that jumps before the number lands shows the
+	// consequence ahead of its cause.
 	let autoV = -1;
 	$effect(() => {
 		if (myTurn && game.rolled && game.dice != null && game.v !== autoV) {
@@ -229,9 +259,39 @@
 			if (lt.length === 1) {
 				autoV = game.v;
 				const only = lt[0];
-				setTimeout(() => move(only), 0);
+				setTimeout(() => move(only), Math.max(0, MIN_SPIN_MS - (Date.now() - rollStartedAt)));
 			}
 		}
+	});
+
+	// state-driven die — same shape as the sound effect below, and for the same
+	// reason: the throw has to play for every player, not just whoever tapped.
+	//
+	// Gate on lastEvent.kind, NOT on game.dice: advanceLudoTurn nulls game.dice,
+	// and lastEvent carries `die` on move/capture/home too — keying on either of
+	// those would re-tumble the cube every time a token walks.
+	let landedV = null;
+	let landReady = false;
+	$effect(() => {
+		const v = game.v;
+		const ev = game.lastEvent;
+		const ready = landReady;
+		landReady = true;
+		if (v === landedV) return;
+		landedV = v;
+		if (!ev || (ev.kind !== 'roll' && ev.kind !== 'pass')) return;
+		// a pass clears game.dice on its way out, so lastEvent.die is the reliable one
+		const die = ev.die ?? game.dice;
+		if (!(die >= 1 && die <= 6)) {
+			// shouldn't happen — but a die left airborne would never come down
+			if (airborne) {
+				clearTimeout(settleTimer);
+				setAirborne(false);
+			}
+			return;
+		}
+		if (ready) land(die);
+		else showValue(die, 0); // joining mid-turn: sit on the pending value, no throw
 	});
 
 	// state-driven sound — fires on real state changes (poll OR push), not the
@@ -373,6 +433,7 @@
 	<!-- dice + status -->
 	<div class="controls">
 		<div class="dice-wrap">
+			<span class="dice-shadow" class:dice-shadow--rolling={rolling}></span>
 			<div
 				class="dice3d"
 				class:dice3d--live={canRoll}
@@ -380,9 +441,9 @@
 				data-value={shownValue}
 				role="button"
 				tabindex="0"
-				aria-label="Swipe the die to roll — swipe further for a higher number"
-				onpointerdown={swipeStart}
-				onpointerup={swipeEnd}
+				aria-label="Roll the die"
+				aria-disabled={!canRoll}
+				onclick={roll}
 				onkeydown={keyRoll}
 			>
 				<div class="cube" style="transform: rotateX({cubeRX}deg) rotateY({cubeRY}deg);">
@@ -403,7 +464,7 @@
 			{#if game.result}
 				<strong class="win">🏆 {winnerName} wins!</strong>
 			{:else if myTurn && !game.rolled}
-				<span>Your turn — swipe the die to roll (further = higher).</span>
+				<span>Your turn — tap the die to roll.</span>
 			{:else if myTurn && game.rolled}
 				<span>You rolled <strong>{game.dice}</strong> — tap a glowing token.</span>
 			{:else}
@@ -594,23 +655,65 @@
 		gap: 16px;
 		margin-top: 16px;
 	}
-	/* 3D die: a CSS cube you swipe to throw */
+	/* 3D die: a CSS cube you tap to throw. The THROW lives on .dice3d (a keyframed
+	   toss + tumble while the server's number is in flight) and the SETTLE lives on
+	   .cube (an inline transform + transition to the final face) — deliberately on
+	   two different elements, because a keyframe animation and an inline transform
+	   on the same node fight each other. */
 	.dice-wrap {
 		flex: 0 0 auto;
 		width: 60px;
 		height: 60px;
 		perspective: 520px;
+		position: relative;
+	}
+	/* ground contact: tightens as the die lifts, snaps back on landing */
+	.dice-shadow {
+		position: absolute;
+		left: 8px;
+		right: 8px;
+		bottom: -7px;
+		height: 7px;
+		border-radius: 50%;
+		background: rgba(10, 14, 28, 0.36);
+		filter: blur(3px);
+		transition: transform 0.28s ease, opacity 0.28s ease;
+		pointer-events: none;
+	}
+	.dice-shadow--rolling {
+		animation: dshadow 0.44s ease-in-out infinite;
+	}
+	@keyframes dshadow {
+		0%, 100% { transform: scaleX(1); opacity: 0.85; }
+		50% { transform: scaleX(0.55); opacity: 0.3; }
 	}
 	.dice3d {
 		width: 60px;
 		height: 60px;
 		position: relative;
-		cursor: grab;
-		touch-action: none; /* let us own the swipe instead of scrolling */
+		cursor: pointer;
+		touch-action: manipulation; /* a tap target — no double-tap zoom delay */
 		border-radius: 14px;
 		outline: none;
 	}
-	.dice3d:active { cursor: grabbing; }
+	.dice3d[aria-disabled='true'] { cursor: default; }
+	/* the toss: up, over, and back down, looping until the result lands */
+	.dice3d--rolling {
+		animation: dthrow 0.44s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+	}
+	@keyframes dthrow {
+		0% { transform: translateY(0) rotate(0deg) scale(1); }
+		45% { transform: translateY(-26px) rotate(-14deg) scale(1.09); }
+		100% { transform: translateY(0) rotate(0deg) scale(1); }
+	}
+	/* landing squash — plays once as .dice3d--rolling is removed */
+	.dice3d:not(.dice3d--rolling) {
+		animation: dland 0.34s cubic-bezier(0.3, 1.5, 0.5, 1);
+	}
+	@keyframes dland {
+		0% { transform: translateY(-4px) scale(1.06, 0.94); }
+		100% { transform: none; }
+	}
 	.dice3d--live {
 		filter: drop-shadow(0 0 7px color-mix(in srgb, var(--accent) 65%, transparent));
 	}
@@ -694,6 +797,20 @@
 	}
 
 	@media (prefers-reduced-motion: reduce) {
-		.token, .token--movable, .die--live, .die--rolling { animation: none; transition: none; }
+		/* these were .die--* until the die grew a throw — the classes never existed,
+		   so reduced motion had been silently doing nothing to it */
+		.token,
+		.token--movable,
+		.dice3d,
+		.dice3d--live,
+		.dice3d--live::after,
+		.dice3d--rolling,
+		.dice3d:not(.dice3d--rolling),
+		.dice-shadow,
+		.dice-shadow--rolling,
+		.cube {
+			animation: none;
+			transition: none;
+		}
 	}
 </style>

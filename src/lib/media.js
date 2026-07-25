@@ -17,6 +17,42 @@ export function mimeAllowed(kind, mime) {
 	return false;
 }
 
+/**
+ * Parse a `Range` request header against a known entity size.
+ *
+ * Lives here rather than in the media route because it's pure and wants direct
+ * testing (see media-check.js) — the route itself can't be imported outside a
+ * SvelteKit build.
+ *
+ * Returns:
+ *   null             → serve the whole entity with 200. Covers "no Range", a
+ *                      unit other than bytes, a malformed value, and multi-range
+ *                      requests, all of which the spec lets a server ignore.
+ *   'unsatisfiable'  → must be a 416; the range is well-formed but off the end.
+ *   { start, end }   → inclusive byte offsets for a 206.
+ */
+export function parseRange(header, total) {
+	if (!header || !(total > 0)) return null;
+	const m = /^bytes=(\d*)-(\d*)$/.exec(String(header).trim());
+	if (!m) return null; // includes multi-range "bytes=0-9,20-29"
+	const [, rawStart, rawEnd] = m;
+	let start, end;
+	if (rawStart === '') {
+		// suffix form: the LAST n bytes
+		if (rawEnd === '') return null; // "bytes=-" is neither form
+		const n = Number(rawEnd);
+		if (n === 0) return 'unsatisfiable';
+		start = Math.max(0, total - n);
+		end = total - 1;
+	} else {
+		start = Number(rawStart);
+		if (start >= total) return 'unsatisfiable';
+		end = rawEnd === '' ? total - 1 : Math.min(Number(rawEnd), total - 1);
+		if (end < start) return 'unsatisfiable';
+	}
+	return { start, end };
+}
+
 /* ------------------------------ browser only ------------------------------ */
 
 const IMAGE_MAX_EDGE = 1280;
@@ -68,12 +104,19 @@ export function base64ToBlob(dataBase64, mime) {
 
 /**
  * The recording container this browser will actually produce, or null when it
- * can't record at all (the mic button hides in that case). Safari only does
- * mp4/aac; everything else prefers Opus in WebM.
+ * can't record at all (the mic button hides in that case).
+ *
+ * mp4/aac is tried FIRST even though Opus is the better codec, because the clip
+ * has to play on everyone ELSE's device, not just ours: iOS Safari can't decode
+ * WebM/Opus at all, so a Chrome-recorded WebM note is silently dead for every
+ * iPhone in the room. mp4/aac plays everywhere. Browsers that can't record mp4
+ * (Firefox, older Chrome) fall through to Opus as before — those clips stay
+ * unplayable on iOS, which is why ChatPanel says so out loud instead of just
+ * rendering a dead player.
  */
 export function pickAudioMime() {
 	if (typeof MediaRecorder === 'undefined') return null;
-	for (const m of ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']) {
+	for (const m of ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm']) {
 		if (MediaRecorder.isTypeSupported(m)) return m;
 	}
 	return null;
