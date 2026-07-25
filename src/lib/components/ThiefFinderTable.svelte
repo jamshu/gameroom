@@ -1,6 +1,7 @@
 <script>
 	import { onMount, onDestroy } from 'svelte';
 	import Avatar from './Avatar.svelte';
+	import RoleArt from './RoleArt.svelte';
 	import { playCorrect, playWrong, isMuted, setMuted, arm } from '$lib/sound.js';
 	import { createHold } from '$lib/holdclock.svelte.js';
 
@@ -13,11 +14,8 @@
 	const isPolice = $derived(game.policeUid === myUid);
 	const amPlayer = $derived(game.players.includes(myUid));
 
-	const ROLE_EMOJI = {
-		King: '👑', Queen: '👸', Minister: '🎩', Soldier: '⚔️', Sepoy: '🪖',
-		Guard: '🛡️', Farmer: '🌾', Trader: '⚖️', Barber: '✂️', Cobbler: '🥾',
-		Police: '👮', Thief: '🥷'
-	};
+	// Role faces live in $lib/roles.js and render through <RoleArt>; medals are
+	// leaderboard decoration, not role data, so they stay local.
 	const MEDAL = ['🥇', '🥈', '🥉'];
 
 	onMount(() => {
@@ -149,19 +147,23 @@
 		{#if game.policeUid}
 			<div class="police-banner">
 				<Avatar uid={game.policeUid} name={nameOf(game.policeUid)} size={44} ring="gold" glow />
+				<RoleArt role="Police" w={64} h={44} em={26} />
 				<div class="police-text">
-					<span class="police-badge">👮 Police</span>
+					<span class="police-badge">Police</span>
 					<strong class="player-name">{nameOf(game.policeUid)}</strong>
 				</div>
 				<span class="muted police-hint">{isPolice ? 'That’s you!' : 'opened the police envelope'}</span>
 			</div>
 		{:else}
-			<p class="muted">Someone holds the 👮 police card — open an envelope to find your role.</p>
+			<p class="muted">
+				Someone holds the <RoleArt role="Police" w={30} h={21} em={16} /> police card — open an
+				envelope to find your role.
+			</p>
 		{/if}
 
 		{#if amPlayer && game.myEnvelope != null && game.myRole}
 			<div class="my-card fade-in">
-				<span class="my-card-emoji">{ROLE_EMOJI[game.myRole]}</span>
+				<RoleArt role={game.myRole} w={96} h={64} em={36} />
 				<div>
 					<p class="label" style="margin:0;">Your card (secret)</p>
 					<strong style="font-size:1.3rem;">{game.myRole}</strong>
@@ -181,7 +183,7 @@
 					onclick={() => act('thief/pick', { envelope: k })}
 				>
 					{#if mine}
-						<span class="env-emoji">{ROLE_EMOJI[game.myRole]}</span>
+						<RoleArt role={game.myRole} w={64} h={44} em={30} />
 						<span class="env-label">{game.myRole}</span>
 					{:else if holder != null}
 						<Avatar uid={Number(holder)} name={nameOf(holder)} size={40} />
@@ -202,7 +204,7 @@
 	{:else if game.phase === 'guessing'}
 		{#if amPlayer && game.myRole}
 			<div class="my-card fade-in">
-				<span class="my-card-emoji">{ROLE_EMOJI[game.myRole]}</span>
+				<RoleArt role={game.myRole} w={96} h={64} em={36} />
 				<div>
 					<p class="label" style="margin:0;">Your card (secret)</p>
 					<strong style="font-size:1.3rem;">{game.myRole}</strong>
@@ -212,8 +214,9 @@
 
 		<div class="police-banner">
 			<Avatar uid={game.policeUid} name={nameOf(game.policeUid)} size={44} ring="gold" glow />
+			<RoleArt role="Police" w={64} h={44} em={26} />
 			<div class="police-text">
-				<span class="police-badge">👮 Police</span>
+				<span class="police-badge">Police</span>
 				<strong class="player-name">{nameOf(game.policeUid)}</strong>
 			</div>
 			<span class="muted police-hint">
@@ -233,22 +236,29 @@
 		{/if}
 	{:else if game.phase === 'reveal' || game.phase === 'finished'}
 		{#if result}
-			{#snippet pill(uid, tone, badge)}
+			<!-- `role` draws the meme face; `label` always keeps the word, so the
+			     image is never the only signal (which is what makes its alt="") -->
+			{#snippet pill(uid, tone, role, label)}
 				<span class="pill pill--{tone}">
 					<Avatar {uid} name={nameOf(uid)} size={26} />
 					<strong>{nameOf(uid)}</strong>
-					{#if badge}<span class="pill-badge">{badge}</span>{/if}
+					{#if label}
+						<span class="pill-badge">
+							{#if role}<RoleArt {role} w={30} h={21} em={14} />{/if}
+							{label}
+						</span>
+					{/if}
 				</span>
 			{/snippet}
 			<div class="fade-in">
 				<p class="verdict {result.correct ? 'verdict--good' : 'verdict--bad'}">
 					{#if result.correct}
 						<span class="verdict-mark">✅</span> Police caught the thief!
-						{@render pill(result.thiefUid, 'green', '🥷 Thief')} is going down.
+						{@render pill(result.thiefUid, 'green', 'Thief', 'Thief')} is going down.
 					{:else}
 						<span class="verdict-mark">❌</span> Wrong guess! Police accused
-						{@render pill(result.accusedUid, 'dim', 'innocent')}, but
-						{@render pill(result.thiefUid, 'red', '🥷 Thief')} got away with the points!
+						{@render pill(result.accusedUid, 'dim', null, 'innocent')}, but
+						{@render pill(result.thiefUid, 'red', 'Thief', 'Thief')} got away with the points!
 					{/if}
 				</p>
 				<div class="reveal-grid">
@@ -258,7 +268,10 @@
 							<span class="player-name">
 								{nameOf(uid)}{Number(uid) === myUid ? ' (you)' : ''}
 							</span>
-							<span class="chip">{ROLE_EMOJI[role]} {role}</span>
+							<span class="chip chip--role">
+								<RoleArt {role} w={44} h={30} em={17} />
+								{role}
+							</span>
 							<span class="pts">+{result.points[uid]}</span>
 						</div>
 					{/each}
@@ -341,10 +354,6 @@
 		border-radius: var(--radius);
 		padding: 14px;
 	}
-	.my-card-emoji {
-		font-size: 2.2rem;
-	}
-
 	.police-banner {
 		display: flex;
 		align-items: center;
@@ -497,6 +506,10 @@
 		color: var(--text);
 	}
 	.pill-badge {
+		/* inline-flex so the role thumbnail and the word sit on one baseline */
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
 		font-size: 0.68rem;
 		font-weight: 700;
 		letter-spacing: 0.05em;
@@ -530,6 +543,10 @@
 
 	.reveal-grid {
 		margin-top: 12px;
+	}
+	/* the role thumbnail sits flush inside the pill, like the avatar in .pill */
+	.chip--role {
+		padding: 3px 12px 3px 3px;
 	}
 	.reveal-row,
 	.score-row {
