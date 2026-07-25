@@ -67,4 +67,33 @@ function counter() {
 	assert.equal(calls, 2);
 }
 
+// (f) invalidate drops a live entry. This is what a write calls: without it a
+//     read issued inside the remaining TTL is served the pre-write value, lands
+//     after the write's own push, and silently undoes it.
+{
+	const c = counter();
+	const cache = createSnapshotCache(c.fn, 1000);
+	assert.equal(await cache.get('r1'), 'v1:r1');
+	cache.invalidate('r1');
+	assert.equal(await cache.get('r1'), 'v2:r1', 'invalidated entry re-fetched');
+	assert.equal(c.calls(), 2);
+	// other rooms are untouched — one room's write must not flush everyone else's
+	await cache.get('r2'); // 3rd fetch
+	cache.invalidate('r1');
+	await cache.get('r2');
+	assert.equal(c.calls(), 3, 'invalidating r1 left r2 cached');
+}
+
+// (g) invalidate also clears an IN-FLIGHT fetch. That fetch started before the
+//     write, so letting it resolve into the cache would re-seat stale data.
+{
+	const c = counter();
+	const cache = createSnapshotCache(c.fn, 1000);
+	const inflight = cache.get('r1');
+	cache.invalidate('r1');
+	await inflight;
+	await cache.get('r1');
+	assert.equal(c.calls(), 2, 'the in-flight result was not left cached');
+}
+
 console.log('snapshot-cache-check: all assertions passed');

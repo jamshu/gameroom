@@ -266,6 +266,19 @@
 		}
 	}
 
+	// Authoritative state moved on, so whatever a failed post complained about is
+	// now answered. Matters most for a dropped connection: api() can't tell whether
+	// the server got the move, so it warns — and if it did land, that warning would
+	// otherwise sit over an already-correct board until the next action.
+	let clearedAtV = null;
+	$effect(() => {
+		const v = game.v;
+		if (v !== clearedAtV) {
+			clearedAtV = v;
+			error = '';
+		}
+	});
+
 	const lowTime = (ms) => ms != null && ms <= 30000;
 
 	// Fullscreen clocks sit on each player's own side: my clock at the bottom (the

@@ -27,7 +27,7 @@ export async function POST({ params, request, cookies }) {
 			game.result = myColor === 'w' ? 'b' : 'w';
 			game.clock.turnStartedAt = null;
 			await writeState(params.id, state);
-			await finishRoom(params.id, members, chessScores(game));
+			await finishRoom(params.id, members, chessScores(game), room);
 			await appendEvent(params.id, 'system', { kind: 'game-over', result: game.result, by: 'timeout' }, uid);
 			return json({ ok: true, result: game.result, flagged: true, state: stateView(state, uid) });
 		}
@@ -52,7 +52,7 @@ export async function POST({ params, request, cookies }) {
 		await appendEvent(params.id, 'move', { san: move.san, fen: game.fen, v: state.v }, uid);
 
 		if (game.result) {
-			await finishRoom(params.id, members, chessScores(game));
+			await finishRoom(params.id, members, chessScores(game), room);
 			await appendEvent(params.id, 'system', { kind: 'game-over', result: game.result }, uid);
 		}
 		return json({ ok: true, san: move.san, fen: game.fen, result: game.result, state: stateView(state, uid) });

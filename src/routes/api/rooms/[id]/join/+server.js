@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import { adminExecute } from '$lib/server/odoo.js';
 import { requireUser } from '$lib/server/auth.js';
-import { MEMBER, getRoom, getMembers, parseState, appendEvent, jsonError, httpError } from '$lib/server/room.js';
+import { MEMBER, getRoom, getMembers, parseState, appendEvent, pushRoster, jsonError, httpError } from '$lib/server/room.js';
 
 export const prerender = false;
 
@@ -33,6 +33,9 @@ export async function POST({ params, cookies }) {
 			}]);
 		}
 		await appendEvent(params.id, 'system', { kind: 'join-request', uid }, uid);
+		// re-read rather than patching the rows in hand: a first-time join CREATED a
+		// row, and only Odoo knows its id. Joins are rare enough to afford the read.
+		await pushRoster(params.id, room, await getMembers(params.id));
 		return json({ ok: true, status: 'pending' });
 	} catch (e) {
 		const { body, status } = jsonError(e);

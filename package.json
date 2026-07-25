@@ -9,6 +9,7 @@
 		"preview": "vite preview",
 		"prepare": "svelte-kit sync || echo ''",
 		"setup:odoo": "node --env-file=.env scripts/setup-odoo.js",
+		"check:api": "node src/lib/api-check.js",
 		"check:sim": "node src/lib/games/carroms-sim-check.js",
 		"check:games": "node src/lib/games-check.js",
 		"check:room": "node --import ./src/lib/server/room-stub-loader.mjs src/lib/server/room-check.js",

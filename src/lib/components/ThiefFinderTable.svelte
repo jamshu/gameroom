@@ -40,6 +40,19 @@
 		}
 	}
 
+	// Authoritative state moved on, so whatever a failed post complained about is
+	// now answered. Matters most for a dropped connection: api() can't tell whether
+	// the server got the action, so it warns — and if it did land, that warning
+	// would otherwise sit over an already-correct table until the next action.
+	let clearedAtV = null;
+	$effect(() => {
+		const v = game.v;
+		if (v !== clearedAtV) {
+			clearedAtV = v;
+			error = '';
+		}
+	});
+
 	/* -- reveal hold + auto draw ---------------------------------------------
 	   The reveal sits for a few seconds so everyone's poll lands inside it, then
 	   the next draw fires on its own. Only the host may deal (the endpoint is

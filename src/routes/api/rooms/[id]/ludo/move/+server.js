@@ -20,7 +20,7 @@ export async function POST({ params, request, cookies }) {
 		await appendEvent(params.id, 'move', { kind, uid, token: Number(token) }, uid);
 
 		if (game.result) {
-			await finishRoom(params.id, members, ludoScores(game));
+			await finishRoom(params.id, members, ludoScores(game), room);
 			await appendEvent(params.id, 'system', { kind: 'game-over', winner: game.result }, uid);
 		}
 		return json({ ok: true, state: stateView(state, uid) });

@@ -44,7 +44,10 @@ export function simulate(bodies, onStep = null) {
 	};
 
 	for (let step = 0; step < 6000; step++) {
-		if (onStep && step % 4 === 0) onStep(bodies, step);
+		// every step, not every 4th — the caller replays these as animation frames
+		// and decides its own playback rate, so recording coarsely would only cap
+		// how smooth a slow replay can be
+		if (onStep) onStep(bodies, step);
 		let moving = false;
 		for (const b of bodies) {
 			if (b.pocketed) continue;

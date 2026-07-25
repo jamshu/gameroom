@@ -11,6 +11,16 @@ function odooNow() {
 }
 
 /**
+ * How stale `last_seen` must be before a poll rewrites it. Sized against
+ * PRESENCE_WINDOW_MS (90s in room.js): comfortably under it, so a client polling
+ * on the slow push-connected cadence still refreshes in time, but far enough
+ * above the old 6s that a member write no longer rides nearly every poll.
+ * It also has to stay well under ABANDON_MIN (10 min) or sweepAbandonedRooms
+ * would start deleting rooms that are very much alive.
+ */
+const HEARTBEAT_AFTER_MS = 45000;
+
+/**
  * Consolidated room poll: events since cursor (private ones filtered to me),
  * members + presence, room status, and the per-session game view when the
  * state version advanced past the client's `gv`.
@@ -21,13 +31,13 @@ export async function GET({ params, url, cookies }) {
 		const since = Number(url.searchParams.get('since')) || 0;
 		const gv = Number(url.searchParams.get('gv')) || 0;
 
-		// presence heartbeat — write at most every ~6s, not every poll. It needs
-		// last_seen from the member read above, so it can't join that wave, but it
-		// is independent of the events query and rides along with it.
+		// presence heartbeat — throttled, not once per poll. It needs last_seen from
+		// the member read above, so it can't join that wave, but it is independent
+		// of the events query and rides along with it.
 		const last = member.x_studio_last_seen
 			? new Date(member.x_studio_last_seen.replace(' ', 'T') + 'Z').getTime()
 			: 0;
-		const needHeartbeat = Date.now() - last > 6000;
+		const needHeartbeat = Date.now() - last > HEARTBEAT_AFTER_MS;
 
 		// events: public ones + those privately targeted at me (WebRTC signals)
 		const [events] = await Promise.all([

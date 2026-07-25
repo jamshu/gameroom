@@ -45,8 +45,14 @@ export async function load(url, context, next) {
 			format: 'module',
 			shortCircuit: true,
 			source: `
+				// recorded, like __odooCalls, so a check can assert what the room
+				// actually announced rather than only what it wrote
+				globalThis.__pushedRosters = [];
 				export async function publishState() {}
 				export async function publishEvent() {}
+				export async function publishRoster(roomId, payload) {
+					globalThis.__pushedRosters.push({ roomId, ...payload });
+				}
 			`
 		};
 	}

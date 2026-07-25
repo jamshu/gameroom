@@ -255,6 +255,19 @@
 		soundReady = true;
 	});
 
+	// Authoritative state moved on, so whatever a failed post complained about is
+	// now answered. Matters most for a dropped connection: api() can't tell whether
+	// the server got the move, so it warns — and if it did land, that warning would
+	// otherwise sit over an already-correct board until the next action.
+	let clearedAtV = null;
+	$effect(() => {
+		const v = game.v;
+		if (v !== clearedAtV) {
+			clearedAtV = v;
+			error = '';
+		}
+	});
+
 	// pip layout per die face (3×3 grid slots that are filled)
 	const PIPS = {
 		1: [4], 2: [0, 8], 3: [0, 4, 8], 4: [0, 2, 6, 8], 5: [0, 2, 4, 6, 8], 6: [0, 2, 3, 5, 6, 8]

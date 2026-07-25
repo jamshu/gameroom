@@ -25,7 +25,7 @@ export async function POST({ params, request, cookies }) {
 		}, uid);
 
 		if (game.phase === 'finished') {
-			await finishRoom(params.id, members, game.totals);
+			await finishRoom(params.id, members, game.totals, room);
 			await appendEvent(params.id, 'system', { kind: 'game-over' }, uid);
 		}
 		return json({ ok: true, correct: result.correct, state: stateView(state, uid) });

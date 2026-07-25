@@ -20,16 +20,21 @@ const IDLE_MS = 10000; // nothing at all for 30s — empty lobby, abandoned game
 const ACTIVE_WINDOW_MS = 5000;
 const IDLE_AFTER_MS = 30000;
 const FAST_MS = 1000; // while WebRTC signaling is in flight
-// When Ably push is connected the wake-bell drives responsiveness, so the poll
-// only runs as a safety net — kept ≤ the presence window so `last_seen` (written
-// on poll when >6s stale) still refreshes and nobody flips falsely offline.
-const PUSH_SAFETY_MS = 8000;
+// When Ably push is connected, every actual change now arrives on the wire —
+// state, events AND the room/member roster — so the poll is purely a safety net.
+// It used to sit at 8s only because presence rode on it; the heartbeat and the
+// `online` window in server/room.js were widened together to let this go up.
+// These three numbers are coupled: this must stay under PRESENCE_WINDOW_MS there,
+// or a player polling on schedule renders as offline to everyone else.
+const PUSH_SAFETY_MS = 60000;
 // Reasons the poll must give up rather than retry. Anything else is transient.
 const TERMINAL_CODES = new Set(['removed', 'not_member']);
 const MAX_ERROR_BACKOFF = 8; // cap the multiplier so recovery stays reasonable
-// Capped by presence, not by load: `online` is a 15s window (room.js) and the
-// heartbeat only writes when last_seen is >6s old, so anything past ~10s here
-// would render idle players permanently offline.
+// Deliberately NOT widened alongside the two above. `cadence()` tests
+// document.hidden BEFORE `fast`, so this is also the tier a hidden tab
+// negotiating WebRTC sits on when push is off — raising it would slow voice
+// signaling on the fallback path, which this work is meant to leave untouched.
+// Browsers throttle background timers anyway, so there was little to win.
 const HIDDEN_MS = 10000;
 
 export function createRoomStore(roomId) {
@@ -62,9 +67,13 @@ export function createRoomStore(roomId) {
 	let ably = null; // Ably Realtime client (null until/unless push is enabled)
 	let channel = null;
 	let pushConnected = false; // true while the wake-bell is live → poll backs off
-	// Bumped whenever a POST response hands us authoritative room/members. Acts as
-	// the version gate those two rows don't otherwise have — see poll().
+	// Bumped whenever a POST response OR an Ably roster push hands us authoritative
+	// room/members. Acts as the version gate those two rows don't otherwise have —
+	// see poll().
 	let roomEpoch = 0;
+	// Rosters carry a server timestamp for the same reason: two pushes can arrive
+	// out of order and there is no version field to compare.
+	let lastRosterTs = 0;
 
 	function onSignal(fn) {
 		signalHandler = fn;
@@ -256,15 +265,26 @@ export function createRoomStore(roomId) {
 				markActive();
 				ingest({ events: [msg.data] });
 			});
+			// roster: the room row + member list, which the state push doesn't carry.
+			// Before this they refreshed only on the safety poll, so a join approval,
+			// a role change or a host handover took up to 8s to show.
+			channel.subscribe('roster', (msg) => {
+				const d = msg.data;
+				if (!d || !(d.ts > lastRosterTs)) return; // an older push lost the race
+				lastRosterTs = d.ts;
+				roomEpoch++; // a poll already in flight is now stale — see poll()
+				markActive();
+				ingest({ room: d.room, members: d.members });
+			});
 
+			let wasConnected = false;
 			ably.connection.on((sc) => {
 				pushConnected = ably?.connection.state === 'connected';
 				console.log('[realtime]', ably?.connection.state, pushConnected ? '(push ON)' : '');
 				if (sc?.reason) console.warn('[realtime] reason:', sc.reason.message);
 				if (pushConnected && !userChannel) {
 					// clientId == our uid — subscribe our private channel for filtered
-					// state + targeted (signal) events. A catch-up poll re-syncs
-					// anything published while we were connecting/reconnecting.
+					// state + targeted (signal) events.
 					const uid = ably.auth.clientId;
 					userChannel = ably.channels.get(`room:${roomId}:u:${uid}`);
 					userChannel.subscribe('state', (msg) => {
@@ -275,8 +295,16 @@ export function createRoomStore(roomId) {
 						markActive();
 						ingest({ events: [msg.data] });
 					});
-					schedule(0);
 				}
+				// Catch-up on EVERY transition into connected, not just the first.
+				// iOS tears the WebSocket down whenever the page backgrounds or the
+				// screen locks, so this is the normal path there, not an edge case —
+				// and `since=cursor` is the only way back to what we missed while
+				// away. Previously this only ran on first connect, so a returning
+				// phone waited for the safety poll; at the new 60s that would be a
+				// very visible stall.
+				if (pushConnected && !wasConnected) schedule(0);
+				wasConnected = pushConnected;
 			});
 		} catch (e) {
 			pushConnected = false;
@@ -393,7 +421,19 @@ export function createRoomStore(roomId) {
 	 * carries state, no immediate re-poll is scheduled to go and fetch them.
 	 */
 	async function post(path, body) {
-		const d = await api(`/api/rooms/${roomId}/${path}`, { method: 'POST', body });
+		let d;
+		try {
+			d = await api(`/api/rooms/${roomId}/${path}`, { method: 'POST', body });
+		} catch (e) {
+			// The response never arrived, so we can't know whether the server applied
+			// this. Resending is NOT safe: writes bump state.v and the poll is served
+			// from a 750ms room-snapshot cache, so a reconciling read can miss a write
+			// that did land — and a carroms shot re-applied on a retained turn would
+			// score twice. Ask the server instead and let the next authoritative state
+			// settle it; the board corrects itself either way.
+			if (e?.offline) schedule(0);
+			throw e;
+		}
 		markActive(); // we just did something; others are likely to respond
 		if (d?.room || d?.members) roomEpoch++; // ours is newer than any poll in flight
 		if (d?.state || d?.room || d?.members) ingest({ state: d.state, room: d.room, members: d.members });

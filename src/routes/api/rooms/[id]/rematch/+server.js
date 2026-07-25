@@ -1,5 +1,5 @@
 import { json } from '@sveltejs/kit';
-import { requireHost, appendEvent, parseState, writeState, resetRound, jsonError, httpError } from '$lib/server/room.js';
+import { requireHost, appendEvent, parseState, writeState, resetRound, pushRoster, jsonError, httpError } from '$lib/server/room.js';
 import { stateView } from '$lib/server/gamelogic.js';
 
 export const prerender = false;
@@ -15,6 +15,10 @@ export async function POST({ params, cookies }) {
 		await resetRound(state, members);
 		await writeState(params.id, state, { x_studio_status: 'lobby' });
 		await appendEvent(params.id, 'system', { kind: 'rematch' }, uid);
+		// `finished → lobby` plus the scores resetRound just cleared: both live on
+		// rows the state push doesn't carry. resetRound updated them in hand.
+		room.x_studio_status = 'lobby';
+		await pushRoster(params.id, room, members);
 		return json({ ok: true, state: stateView(state, uid) });
 	} catch (e) {
 		const { body, status } = jsonError(e);

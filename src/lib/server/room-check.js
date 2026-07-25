@@ -10,7 +10,7 @@
 import assert from 'node:assert';
 import { register } from 'node:module';
 register('./room-stub-loader.mjs', import.meta.url);
-const { reseatRoles, resetRound, createRoomMedia, readRoomMedia, deleteRoom, pickSuccessorHost } =
+const { reseatRoles, resetRound, createRoomMedia, readRoomMedia, deleteRoom, pickSuccessorHost, finishRoom, publicMembers } =
 	await import('./room.js');
 
 const member = (id, role, status = 'accepted') => ({
@@ -94,6 +94,9 @@ const writesTo = (role) =>
 	assert.deepEqual(scoreWrite.args[0], [1, 2], 'only accepted members zeroed');
 	assert.equal(state.nextWhiteUid, 101, 'chess colour swap armed to last black');
 	assert.equal(state.game, null, 'game dropped');
+	// in-hand rows too — rematch pushes these straight to the room, so a row left
+	// holding last round's score would broadcast a scoreboard that no longer exists
+	assert.deepEqual(members.map((m) => m.x_studio_score), [0, 0, undefined], 'accepted rows zeroed in hand');
 }
 
 // 6. resetRound on a non-chess game arms no swap flag.
@@ -189,6 +192,56 @@ const writesTo = (role) =>
 		'nobody accepted left → null, and the caller deletes the room'
 	);
 	assert.equal(pickSuccessorHost([m(1)], 101), null, 'the leaver is never their own successor');
+}
+
+// 9. finishRoom is the single place every game ends through, so it is the only
+//    place that can announce the result. Without the roster push the flip to
+//    `finished` and the final scores live on rows no other push carries, and the
+//    rest of the room sits on a live-looking board until their next poll.
+{
+	globalThis.__odooCalls.length = 0;
+	globalThis.__pushedRosters.length = 0;
+	const members = [member(1, 'player'), member(2, 'player')];
+	const room = { id: 42, x_name: 'R', x_studio_status: 'playing', x_studio_host_id: [101, 'P1'] };
+	await finishRoom(42, members, { 101: 3, 102: 7 }, room);
+
+	assert.equal(globalThis.__pushedRosters.length, 1, 'the room is told exactly once');
+	const [push] = globalThis.__pushedRosters;
+	assert.equal(push.room.status, 'finished', 'the pushed room row is the post-write one');
+	assert.deepEqual(push.members.map((m) => m.score), [3, 7], 'final scores ride along');
+	assert.ok(push.members.every((m) => m.role === 'player'), 'seating role, never a game secret');
+}
+
+// 9b. …but stays silent without a room row. The eight callers predate the push,
+//     so a missed one must degrade to the old poll-driven behaviour, not throw.
+{
+	globalThis.__odooCalls.length = 0;
+	globalThis.__pushedRosters.length = 0;
+	await finishRoom(42, [member(1, 'player')], { 101: 1 });
+	assert.equal(globalThis.__pushedRosters.length, 0, 'no room row → no push');
+	assert.ok(
+		globalThis.__odooCalls.some((c) => c.args[1]?.x_studio_status === 'finished'),
+		'the write still happens'
+	);
+}
+
+// 10. The presence window and the poll cadence are three numbers in three files
+//     that have to agree: PRESENCE_WINDOW_MS here, PUSH_SAFETY_MS + HIDDEN_MS in
+//     stores/room.js, HEARTBEAT_AFTER_MS in the poll route. Get it wrong and a
+//     client polling exactly as designed renders offline to everyone else — a
+//     bug that looks like a network fault, not a constant. Pin the boundary.
+{
+	const seenAgo = (ms) =>
+		new Date(Date.now() - ms).toISOString().slice(0, 19).replace('T', ' ');
+	const at = (ms) => publicMembers([{ ...member(1, 'player'), x_studio_last_seen: seenAgo(ms) }])[0];
+
+	// slowest cadence a LIVE client can be on is the 60s push safety net
+	assert.ok(at(65000).online, 'a client on the 60s push safety poll must read online');
+	// …and the fallback path's worst case: IDLE_MS 10s × MAX_ERROR_BACKOFF 8
+	assert.ok(at(81000).online, 'a fully backed-off polling client must still read online');
+	// but genuinely gone is still gone
+	assert.ok(!at(120000).online, 'two minutes silent is offline');
+	assert.ok(!publicMembers([member(1, 'player')])[0].online, 'never seen is offline');
 }
 
 console.log('room-check: all assertions passed');

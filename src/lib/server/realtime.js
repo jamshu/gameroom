@@ -51,6 +51,30 @@ export async function publishState(roomId, state, memberUids = []) {
 	}
 }
 
+/**
+ * Push the room row + member roster on the PUBLIC channel.
+ *
+ * Safe to share: the poll already hands both to every member, and the `role` in
+ * here is SEATING (player/spectator, written by reseatRoles) — the thief-finder
+ * roles are a different thing entirely, living in the state blob and filtered by
+ * stateView. Nothing per-uid, so one publish serves the whole room.
+ *
+ * `ts` is the ordering guard. Unlike state, room/members carry no version of
+ * their own, so a client that receives two rosters out of order has no other way
+ * to tell which is newer.
+ *
+ * Best-effort like the rest: a publish failure must never fail the mutation.
+ */
+export async function publishRoster(roomId, { room, members }) {
+	try {
+		const rest = await ablyRest();
+		if (!rest) return;
+		await rest.channels.get(roomChannel(roomId)).publish('roster', { ts: Date.now(), room, members });
+	} catch (e) {
+		console.error('publishRoster failed:', e?.message);
+	}
+}
+
 /** Push one event: public → room channel, targeted → the recipient's channel. */
 export async function publishEvent(roomId, event, targetUid = null) {
 	try {

@@ -9,6 +9,7 @@ import {
 	resetRound,
 	publicRoom,
 	publicMembers,
+	pushRoster,
 	jsonError,
 	httpError
 } from '$lib/server/room.js';
@@ -60,9 +61,8 @@ export async function POST({ params, request, cookies }) {
 			x_studio_draws_total: draws,
 			x_studio_status: 'lobby'
 		});
-		// The Ably push carries state, not room — without an event a push-connected
-		// client would keep showing the old game until the 8s safety poll. This is
-		// the wake-bell that pulls everyone into an immediate poll.
+		// kept for the room feed — this is a notification, not the transport. The
+		// roster push below is what actually moves the new game type.
 		await appendEvent(params.id, 'system', { kind: 'game-type-changed', gameType, from }, uid);
 
 		// reflect the new values so the acting host's own view updates from the
@@ -70,6 +70,10 @@ export async function POST({ params, request, cookies }) {
 		room.x_studio_game_type = gameType;
 		room.x_studio_draws_total = draws;
 		room.x_studio_status = 'lobby';
+
+		// …and everyone else's from the push. reseatRoles already brought the member
+		// rows in hand up to date, so these are the post-write values.
+		await pushRoster(params.id, room, members);
 
 		// members too: re-seating rewrote roles, and because this response carries
 		// state the store won't schedule a catch-up poll to go and fetch them.

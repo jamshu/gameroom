@@ -10,6 +10,7 @@ import {
 	pickSuccessorHost,
 	setHost,
 	resetRound,
+	pushRoster,
 	jsonError
 } from '$lib/server/room.js';
 import { gameSeatUids } from '$lib/server/gamelogic.js';
@@ -72,6 +73,18 @@ export async function POST({ params, cookies }) {
 		// one write for the state + any status change, same as writeState's callers elsewhere
 		if (dirty) await writeState(params.id, state, extraVals);
 		await appendEvent(params.id, 'system', { kind: 'member-left', uid }, uid);
+
+		// Bring the in-hand rows up to date and tell the room. Only safe to mark the
+		// leaver now: pickSuccessorHost above reads this row and relies on it still
+		// saying `accepted` — flipping it earlier would elect the leaver their own
+		// successor.
+		member.x_studio_status = 'left';
+		if (extraVals.x_studio_status) room.x_studio_status = extraVals.x_studio_status;
+		if (newHostUid) {
+			const successor = members.find((m) => m.x_studio_user_id?.[0] === newHostUid);
+			room.x_studio_host_id = successor?.x_studio_user_id ?? [newHostUid, ''];
+		}
+		await pushRoster(params.id, room, members);
 		return json({ ok: true, newHostUid });
 	} catch (e) {
 		const { body, status } = jsonError(e);

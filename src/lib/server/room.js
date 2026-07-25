@@ -5,7 +5,7 @@
 import { adminExecute } from './odoo.js';
 import { requireUser } from './auth.js';
 import { createSnapshotCache } from './roomcache.js';
-import { publishState, publishEvent } from './realtime.js';
+import { publishState, publishEvent, publishRoster } from './realtime.js';
 
 // The game list is shared with the client so a select, a capacity preview and a
 // validation check can't drift. Re-exported here because every server caller
@@ -203,6 +203,18 @@ export async function appendEvent(roomId, type, payload, senderUid, targetUid = 
 	return id;
 }
 
+/**
+ * How stale `last_seen` may get before a member renders offline.
+ *
+ * Coupled to the poll: it must exceed the slowest cadence a live client can be
+ * on, or someone polling exactly as designed would show as offline. The ceiling
+ * is the push safety net (60s) and a hidden tab (45s), both in stores/room.js,
+ * plus jitter — 90s clears them with room to spare. Widening this is what let
+ * the poll slow down; the cost is that the lobby dot is now coarse, going dark
+ * up to ~90s after someone actually leaves.
+ */
+const PRESENCE_WINDOW_MS = 90000;
+
 /** Members serialized for clients (uid-keyed, presence derived). */
 export function publicMembers(members) {
 	const now = Date.now();
@@ -217,8 +229,29 @@ export function publicMembers(members) {
 			score: m.x_studio_score || 0,
 			online:
 				m.x_studio_last_seen &&
-				now - new Date(m.x_studio_last_seen.replace(' ', 'T') + 'Z').getTime() < 15000
+				now - new Date(m.x_studio_last_seen.replace(' ', 'T') + 'Z').getTime() < PRESENCE_WINDOW_MS
 		}));
+}
+
+/**
+ * Serialize and push the two rows every client renders. Call this after ANY
+ * write that changes them — the Ably push otherwise carries only state and
+ * events, so a role change, a join approval, a host handover or a room status
+ * flip would reach the rest of the room no sooner than their next poll.
+ *
+ * Deliberately takes the rows the caller already holds rather than re-reading:
+ * they have just been mutated, and the room snapshot cache has a 750ms TTL and
+ * NO invalidation, so a re-read here could publish the pre-write rows. Callers
+ * that mutate must keep their in-hand rows in step (reseatRoles and finishRoom
+ * both do) — that is what makes this accurate without another Odoo round trip.
+ */
+export function pushRoster(roomId, room, members) {
+	// Drop this room from the snapshot cache first. Polls read through it, and a
+	// poll issued inside the remaining TTL would be served the PRE-write rows —
+	// landing after this push and silently undoing it. That used to self-correct
+	// on the next poll seconds later; with the safety net now at 60s it would not.
+	roomCache.invalidate(Number(roomId));
+	return publishRoster(roomId, { room: publicRoom(room), members: publicMembers(members) });
 }
 
 /** Room serialized for clients — never includes raw state. */
@@ -276,8 +309,13 @@ export async function reseatRoles(members, gameType, maxPlayers) {
  * game-type switch so the two can't drift — the caller persists `state`.
  */
 export async function resetRound(state, members) {
-	const ids = members.filter((m) => m.x_studio_status === 'accepted').map((m) => m.id);
+	const accepted = members.filter((m) => m.x_studio_status === 'accepted');
+	const ids = accepted.map((m) => m.id);
 	if (ids.length) await adminExecute(MEMBER, 'write', [ids, { x_studio_score: 0 }]);
+	// keep the caller's in-hand rows in step, same as reseatRoles — they feed the
+	// roster push and the response body, both of which would otherwise show the
+	// scores this call just cleared
+	for (const m of accepted) m.x_studio_score = 0;
 	// chess: swap colours next round — last game's black plays white next.
 	if (state.game?.type === 'chess') state.nextWhiteUid = state.game.players.b;
 	state.game = null;
@@ -363,16 +401,26 @@ export async function sweepAbandonedRooms() {
  * they're independent rows and can at least go out together instead of one
  * blocking round trip each.
  */
-export async function finishRoom(roomId, members, scoresByUid = {}) {
-	const scoreWrites = members
-		.filter((m) => m.x_studio_user_id?.[0] != null && scoresByUid[m.x_studio_user_id[0]] != null)
-		.map((m) =>
-			adminExecute(MEMBER, 'write', [[m.id], { x_studio_score: scoresByUid[m.x_studio_user_id[0]] }])
-		);
+export async function finishRoom(roomId, members, scoresByUid = {}, room = null) {
+	const scored = members.filter(
+		(m) => m.x_studio_user_id?.[0] != null && scoresByUid[m.x_studio_user_id[0]] != null
+	);
 	await Promise.all([
-		...scoreWrites,
+		...scored.map((m) =>
+			adminExecute(MEMBER, 'write', [[m.id], { x_studio_score: scoresByUid[m.x_studio_user_id[0]] }])
+		),
 		adminExecute(ROOM, 'write', [[Number(roomId)], { x_studio_status: 'finished' }])
 	]);
+
+	// Every game ends through here, so this is the one place that has to announce
+	// it. `room` is optional only because it arrived after the eight callers did;
+	// without it the final scores and the flip to `finished` reach everyone else
+	// no sooner than their next poll.
+	if (room) {
+		for (const m of scored) m.x_studio_score = scoresByUid[m.x_studio_user_id[0]];
+		room.x_studio_status = 'finished';
+		await pushRoster(roomId, room, members);
+	}
 }
 
 export function jsonError(e) {

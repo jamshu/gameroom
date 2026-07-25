@@ -10,7 +10,19 @@ export async function api(path, { method = 'GET', body, redirectOn401 = true } =
 		opts.headers['Content-Type'] = 'application/json';
 		opts.body = JSON.stringify(body);
 	}
-	const res = await fetch(path, opts);
+	let res;
+	try {
+		res = await fetch(path, opts);
+	} catch {
+		// fetch() rejects with a TypeError when the request never completed at all:
+		// Safari words it 'Load failed', Chrome 'Failed to fetch'. Neither means
+		// anything to a player, and — importantly — neither tells us whether the
+		// server processed it. Flagged so callers can re-poll and let the
+		// authoritative state answer that, rather than resending blind.
+		const err = new Error('Connection lost — that may not have gone through.');
+		err.offline = true;
+		throw err;
+	}
 	const data = await res.json().catch(() => ({}));
 	if (res.status === 401 && redirectOn401) {
 		// Holding a user means their session expired mid-play → send them to sign

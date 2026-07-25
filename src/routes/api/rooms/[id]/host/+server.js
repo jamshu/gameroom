@@ -6,6 +6,7 @@ import {
 	publicRoom,
 	publicMembers,
 	appendEvent,
+	pushRoster,
 	jsonError,
 	httpError
 } from '$lib/server/room.js';
@@ -38,6 +39,10 @@ export async function POST({ params, request, cookies }) {
 		// echo the room back so the acting host's own view flips immediately rather
 		// than a poll later — the same trick the game-type switch uses
 		const room = await getRoom(params.id);
+		// and push the same rows to everyone else: host is what gates the start,
+		// rematch, game-type and join-request controls, so the new host's client
+		// has to learn it holds them without waiting for a poll
+		await pushRoster(params.id, room, members);
 		return json({ ok: true, room: publicRoom(room), members: publicMembers(members) });
 	} catch (e) {
 		const { body, status } = jsonError(e);

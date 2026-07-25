@@ -29,7 +29,7 @@ export async function POST({ params, request, cookies }) {
 			for (const puid of game.players) {
 				scores[puid] = game.scores[carromTeamOf(game, puid)] || 0;
 			}
-			await finishRoom(params.id, members, scores);
+			await finishRoom(params.id, members, scores, room);
 			await appendEvent(params.id, 'system', { kind: 'game-over', result: game.result }, uid);
 		}
 		return json({ ok: true, ...outcome, result: game.result, state: stateView(state, uid) });

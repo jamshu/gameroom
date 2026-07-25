@@ -155,6 +155,10 @@
 	$effect(() => {
 		if (game.v !== lastV) {
 			lastV = game.v;
+			// Authoritative state moved, so whatever a failed post complained about is
+			// now answered — a dropped connection whose shot actually landed would
+			// otherwise leave its warning on screen over a perfectly correct board.
+			error = '';
 			if (!animBodies) tweenTo(game.pieces);
 		}
 	});
@@ -186,12 +190,18 @@
 	function tweenTo(target) {
 		const from = (displayPieces || target).map((p) => ({ ...p }));
 		const start = performance.now();
-		const DUR = 400;
+		const DUR = 600;
 		function frame(t) {
 			const k = Math.min(1, (t - start) / DUR);
+			// Spectators only receive settled positions, so this path is a straight
+			// line, not the real one — easing it out lands the coins softly instead
+			// of stopping them dead. Kept short for the same reason: the longer a
+			// fake path is on screen, the more it reads as discs sliding through
+			// each other.
+			const e = 1 - (1 - k) ** 3;
 			displayPieces = target.map((p) => {
 				const f = from.find((q) => q.id === p.id) || p;
-				return { ...p, x: f.x + (p.x - f.x) * k, y: f.y + (p.y - f.y) * k };
+				return { ...p, x: f.x + (p.x - f.x) * e, y: f.y + (p.y - f.y) * e };
 			});
 			if (k < 1) requestAnimationFrame(frame);
 			else displayPieces = null;
@@ -244,6 +254,13 @@
 	/** Two clicks closer together than this blur into one buzz on a hard break. */
 	const MIN_CLICK_GAP_MS = 28;
 
+	/** Sim steps replayed per second of animation. The physics is untouched — this
+	 *  is purely how fast the recorded shot is played back. It used to be ~480
+	 *  (2 snapshots × 4 steps, once per frame), which flung the striker across the
+	 *  board in about three frames; 135 lets a full-power shot run ~1.5s. Lower is
+	 *  slower — this constant is the only knob. */
+	const SHOT_STEPS_PER_SEC = 135;
+
 	async function shoot(vx, vy) {
 		const bodies = buildBodies(game.pieces, strikerX, BASE_Y, vx, vy);
 		const frames = [];
@@ -259,16 +276,16 @@
 		// play animation, sounding each impact as it comes on screen, then post the
 		// settled result
 		await new Promise((resolve) => {
-			let i = 0;
+			const events = result.events || [];
+			const last = animFrames.length - 1;
+			const start = performance.now();
 			let ev = 0;
 			let lastClickAt = 0;
-			const events = result.events || [];
-			function frame() {
-				animBodies = animFrames[Math.min(i, animFrames.length - 1)];
-				// frames are recorded every 4 sim steps and we advance 2 per tick, so
-				// the frame now on screen is sim step i*4
-				const shownStep = i * 4;
-				while (ev < events.length && events[ev].step <= shownStep) {
+
+			/** Sound every impact up to `step`. Called each frame, then once more with
+			 *  Infinity so a pocket the final frame landed past is still heard. */
+			function sound(step) {
+				while (ev < events.length && events[ev].step <= step) {
 					const e = events[ev++];
 					const now = performance.now();
 					if (e.type === 'pocket') {
@@ -280,9 +297,21 @@
 						else playCarromWall(e.speed);
 					}
 				}
-				i += 2;
-				if (i < animFrames.length) requestAnimationFrame(frame);
-				else resolve();
+			}
+
+			// driven off the clock rather than a per-tick frame counter, so the shot
+			// takes the same time on a 60Hz and a 144Hz screen and a dropped frame
+			// costs smoothness instead of slowing the whole shot down
+			function frame(t) {
+				const step = ((t - start) / 1000) * SHOT_STEPS_PER_SEC;
+				const i = Math.min(Math.round(step), last);
+				animBodies = animFrames[i];
+				sound(step);
+				if (i < last) requestAnimationFrame(frame);
+				else {
+					sound(Infinity);
+					resolve();
+				}
 			}
 			requestAnimationFrame(frame);
 		});

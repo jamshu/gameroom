@@ -36,7 +36,7 @@ export async function POST({ params, cookies }) {
 		delete game.drawOffer;
 
 		await writeState(params.id, state);
-		await finishRoom(params.id, members, chessScores(game));
+		await finishRoom(params.id, members, chessScores(game), room);
 		await appendEvent(
 			params.id,
 			'system',

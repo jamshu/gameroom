@@ -6,6 +6,7 @@ import {
 	parseState,
 	writeState,
 	appendEvent,
+	pushRoster,
 	jsonError,
 	httpError
 } from '$lib/server/room.js';
@@ -56,6 +57,12 @@ export async function POST({ params, request, cookies }) {
 		state.banned = [...new Set([...(state.banned || []), targetUid])];
 		await writeState(params.id, state);
 		await appendEvent(params.id, 'system', { kind: 'member-removed', uid: targetUid }, uid);
+
+		// everyone still here sees the roster shrink at once. The removed player's
+		// own exit still rides the poll's coded 403 (`removed`), which is what the
+		// store treats as terminal — the roster alone doesn't stop them polling.
+		target.x_studio_status = 'left';
+		await pushRoster(params.id, room, members);
 
 		return json({ ok: true, state: stateView(state, uid) });
 	} catch (e) {
