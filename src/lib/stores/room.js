@@ -8,7 +8,7 @@
 // then guesses), so backing off after a few quiet seconds would slow down
 // exactly the moments that matter.
 import { writable, get } from 'svelte/store';
-import { api } from '$lib/api.js';
+import { api, POLL_TIMEOUT_MS } from '$lib/api.js';
 
 // Budget, not preference: Odoo Online rate-limits per IP at roughly 1 req/s, and
 // every poll costs 3 Odoo calls shared across the whole room. A 4-player room at
@@ -162,7 +162,13 @@ export function createRoomStore(roomId) {
 			// land after it and revert them (switch the game, watch the chip flick
 			// back). Same newest-wins problem, solved with a counter instead.
 			const epochAtStart = roomEpoch;
-			const d = await api(`/api/rooms/${roomId}/poll?since=${cursor}&gv=${gv}`);
+			// Bounded on purpose: `inFlight` above is released only in the `finally`,
+			// so without a ceiling one stuck poll silently swallows every later
+			// schedule(0) — including the reconcile a failed move fires — until the
+			// browser gives up on its own. A cut-short poll costs nothing; it re-runs.
+			const d = await api(`/api/rooms/${roomId}/poll?since=${cursor}&gv=${gv}`, {
+				timeoutMs: POLL_TIMEOUT_MS
+			});
 			const overtaken = roomEpoch !== epochAtStart;
 			cursor = d.cursor || cursor;
 			// Strictly: a real event row, or a state version that actually advanced.
@@ -209,12 +215,17 @@ export function createRoomStore(roomId) {
 		// A failing room used to keep hammering at full speed, which is itself a
 		// 429 amplifier. Back off while it's broken; reset the moment it recovers.
 		const penalty = errorStreak ? Math.min(2 ** errorStreak, MAX_ERROR_BACKOFF) : 1;
+		// Push connected and not negotiating voice: real changes all arrive on the
+		// socket, so the timer is ONLY a safety net — back off fully even right
+		// after activity. Must outrank the active/base tiers or push saves nothing
+		// during play, and now outranks `document.hidden` too: backgrounding a
+		// healthy room used to take it from 60s to 10s, i.e. hiding the tab made it
+		// SIX TIMES noisier against a rate limit the whole room shares.
+		// The `!fast` guard is load-bearing — it leaves the hidden-outranks-fast
+		// ordering below exactly as it was for the push-off WebRTC path.
+		if (pushConnected && !fast) return PUSH_SAFETY_MS * penalty;
 		if (document.hidden) return HIDDEN_MS * penalty;
 		if (fast) return FAST_MS * penalty; // FAST outranks all — never slow WebRTC
-		// Push connected: real changes arrive as wake-bells (schedule(0)), so the
-		// timer is ONLY a safety net — back off fully even right after activity.
-		// This must outrank the active/base tiers or push saves nothing during play.
-		if (pushConnected) return PUSH_SAFETY_MS * penalty;
 		const quietFor = Date.now() - lastActivityAt;
 		if (quietFor < ACTIVE_WINDOW_MS) return ACTIVE_MS * penalty;
 		if (quietFor < IDLE_AFTER_MS) return BASE_MS * penalty;
@@ -232,10 +243,23 @@ export function createRoomStore(roomId) {
 		timer = setTimeout(poll, base === 0 ? 0 : base + Math.random() * 300);
 	}
 
+	/**
+	 * "Something happened — poll now", but never faster than the error backoff.
+	 *
+	 * `poll()`'s own `finally` has always honoured the backoff (see the note
+	 * there), but every OTHER wake-bell used to call schedule(0) directly and skip
+	 * it. That put the worst case exactly where it hurt: a struggling room made
+	 * each failed POST queue an immediate extra poll, so the failures amplified
+	 * the load that was causing them — against a rate limit the whole room shares.
+	 */
+	function wake() {
+		schedule(errorStreak ? undefined : 0);
+	}
+
 	function onVisibility() {
 		if (!document.hidden) {
 			markActive(); // user is back and looking — be responsive for a bit
-			schedule(0);
+			wake();
 		}
 	}
 
@@ -303,6 +327,10 @@ export function createRoomStore(roomId) {
 				// away. Previously this only ran on first connect, so a returning
 				// phone waited for the safety poll; at the new 60s that would be a
 				// very visible stall.
+				// Deliberately schedule(0) and NOT wake(): a socket that just came up
+				// is the one hard piece of evidence the network is healthy again, so
+				// the error backoff would be answering a question already settled. It
+				// can't run away either — Ably's own reconnect backoff paces it.
 				if (pushConnected && !wasConnected) schedule(0);
 				wasConnected = pushConnected;
 			});
@@ -431,13 +459,13 @@ export function createRoomStore(roomId) {
 			// that did land — and a carroms shot re-applied on a retained turn would
 			// score twice. Ask the server instead and let the next authoritative state
 			// settle it; the board corrects itself either way.
-			if (e?.offline) schedule(0);
+			if (e?.offline) wake();
 			throw e;
 		}
 		markActive(); // we just did something; others are likely to respond
 		if (d?.room || d?.members) roomEpoch++; // ours is newer than any poll in flight
 		if (d?.state || d?.room || d?.members) ingest({ state: d.state, room: d.room, members: d.members });
-		else if (!NO_ECHO_POLL.has(path)) schedule(0);
+		else if (!NO_ECHO_POLL.has(path)) wake();
 		return d;
 	}
 
@@ -460,6 +488,6 @@ export function createRoomStore(roomId) {
 		pushLocalMedia,
 		resolveLocalChat,
 		dropLocalChat,
-		pollNow: () => schedule(0)
+		pollNow: () => wake()
 	};
 }

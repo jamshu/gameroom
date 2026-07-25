@@ -46,6 +46,48 @@
 		if (!v) myRoll = false;
 	}
 
+	/* An unresolved write — the POST never came back, so we do NOT know whether it
+	   applied. It usually did: the reported bug was a player tapping a token,
+	   seeing nothing move, tapping again, while everyone ELSE watched the token
+	   move on the first tap.
+
+	   Releasing the control here is what turned one lost response into a burst.
+	   `posting`/`myRoll` used to clear in the `finally`, which re-enabled the
+	   token against a board still showing the old position — so the natural
+	   response (tap again) queued another write, and each one also forced an
+	   immediate re-poll. Instead we HOLD the control and wait for authoritative
+	   state, which the store is already fetching. `pendingWrite` is cleared by the
+	   version effect below, the same one that clears `error`.
+
+	   The timer is the floor under that: if no state arrives at all we must not
+	   strand the board, so the lock lifts and the warning finally shows. */
+	const RECONCILE_MS = 6000;
+	// Plain for the logic, rune for the UI — releasePending() runs inside the
+	// version effect below, so it must not READ any state that effect writes.
+	// Same split as airborne/rolling above.
+	let pendingWrite = false;
+	let syncing = $state(false);
+	let reconcileTimer = null;
+	function holdForReconcile() {
+		pendingWrite = true;
+		syncing = true;
+		clearTimeout(reconcileTimer);
+		reconcileTimer = setTimeout(() => {
+			reconcileTimer = null;
+			releasePending('Connection lost — that may not have gone through.');
+		}, RECONCILE_MS);
+	}
+	function releasePending(msg = '') {
+		clearTimeout(reconcileTimer);
+		reconcileTimer = null;
+		if (!pendingWrite) return;
+		pendingWrite = false;
+		syncing = false;
+		posting = false;
+		setAirborne(false);
+		if (msg) error = msg;
+	}
+
 	const nameOf = $derived((uid) => members.find((m) => m.uid === Number(uid))?.name || `#${uid}`);
 	const currentUid = $derived(game.players[game.turnIdx]);
 	const isMine = $derived(currentUid === myUid);
@@ -160,7 +202,11 @@
 	onMount(() => {
 		muted = isMuted();
 		arm();
-		return () => clearTimeout(settleTimer); // a die in the air must not outlive the board
+		// neither a die in the air nor a pending write may outlive the board
+		return () => {
+			clearTimeout(settleTimer);
+			clearTimeout(reconcileTimer);
+		};
 	});
 	function toggleMute() {
 		muted = !muted;
@@ -204,9 +250,16 @@
 		try {
 			await store.post('ludo/roll');
 		} catch (e) {
-			error = e.message;
-			// no result is coming, so nothing will land the die — put it down
-			setAirborne(false);
+			if (e?.offline) {
+				// May well have landed. Keep the die in the air and stay quiet until
+				// state answers — re-arming the tap here is what caused the burst.
+				holdForReconcile();
+			} else {
+				// A real answer (409 "already rolled", 403 "not your turn"): terminal,
+				// so say it and put the die down.
+				error = e.message;
+				setAirborne(false);
+			}
 		}
 	}
 
@@ -237,10 +290,17 @@
 		posting = true;
 		try {
 			await store.post('ludo/move', { token: i });
-		} catch (e) {
-			error = e.message;
-		} finally {
 			posting = false;
+		} catch (e) {
+			if (e?.offline) {
+				// Hold the token — see holdForReconcile. Note `posting` stays TRUE,
+				// which is what keeps the button disabled; clearing it in a `finally`
+				// is the bug this whole change is about.
+				holdForReconcile();
+			} else {
+				error = e.message;
+				posting = false;
+			}
 		}
 	}
 
@@ -319,12 +379,18 @@
 	// now answered. Matters most for a dropped connection: api() can't tell whether
 	// the server got the move, so it warns — and if it did land, that warning would
 	// otherwise sit over an already-correct board until the next action.
+	//
+	// This is also what ends an unresolved write: the board it was waiting for has
+	// arrived, so the lock lifts silently and the player never learns anything went
+	// wrong. Releasing WITHOUT a message is the whole point — the usual outcome of
+	// a lost response here is that the write landed anyway.
 	let clearedAtV = null;
 	$effect(() => {
 		const v = game.v;
 		if (v !== clearedAtV) {
 			clearedAtV = v;
 			error = '';
+			releasePending();
 		}
 	});
 
@@ -461,7 +527,11 @@
 		</div>
 
 		<div class="status">
-			{#if game.result}
+			{#if syncing}
+				<!-- Deliberately not an error. The write probably landed; we're waiting
+				     for the board that proves it, and it almost always arrives. -->
+				<span class="syncing"><span class="syncing-dot"></span>Syncing…</span>
+			{:else if game.result}
 				<strong class="win">🏆 {winnerName} wins!</strong>
 			{:else if myTurn && !game.rolled}
 				<span>Your turn — tap the die to roll.</span>
@@ -634,6 +704,10 @@
 		box-shadow: 0 2px 5px rgba(0, 0, 0, 0.45);
 		padding: 0;
 		cursor: default;
+		/* Without this WebKit holds every tap for the double-tap-zoom window, so the
+		   board feels laggy on an iPhone and instant on a desktop — which is what
+		   had players tapping a token over and over. The die already had it. */
+		touch-action: manipulation;
 		transition: top 0.32s cubic-bezier(0.34, 1.2, 0.5, 1), left 0.32s cubic-bezier(0.34, 1.2, 0.5, 1);
 		z-index: 2;
 	}
@@ -777,6 +851,24 @@
 		font-size: 0.95rem;
 	}
 	.win { color: var(--gold); font-size: 1.05rem; }
+	/* Muted on purpose — an unresolved write is not an error, and the board it is
+	   waiting for nearly always arrives a moment later. */
+	.syncing {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		color: var(--text-dim);
+	}
+	.syncing-dot {
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		background: currentColor;
+		animation: syncpulse 1s ease-in-out infinite;
+	}
+	@keyframes syncpulse {
+		50% { opacity: 0.2; }
+	}
 	.roll-log {
 		font-size: 0.82rem;
 		color: var(--text-dim);
@@ -808,6 +900,7 @@
 		.dice3d:not(.dice3d--rolling),
 		.dice-shadow,
 		.dice-shadow--rolling,
+		.syncing-dot,
 		.cube {
 			animation: none;
 			transition: none;

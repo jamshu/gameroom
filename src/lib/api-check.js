@@ -62,4 +62,32 @@ const res = (status, body) => ({
 	assert(d.state.v === 7, 'a good response should come back parsed');
 }
 
+// 5. A request that never answers gives up instead of hanging forever. Without a
+//    ceiling here one stuck poll wedges the room store's `inFlight` guard, and
+//    every later "poll now" — including the reconcile a failed move fires — is
+//    dropped until the browser decides to give up on its own.
+{
+	withFetch((_p, opts) =>
+		new Promise((_resolve, reject) => {
+			// a server that accepted the request and then went quiet
+			opts?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+		})
+	);
+	const t0 = Date.now();
+	const e = await api('/api/rooms/1/poll', { timeoutMs: 40 }).catch((err) => err);
+	assert(Date.now() - t0 < 2000, 'the timeout must actually fire, not hang');
+	assert(e.offline === true, 'a timeout is an unresolved write, same as a dropped socket');
+	assert(e.timeout === true, 'and is flagged so callers can word it differently');
+	assert(e.status === undefined, 'still no response, so still no status');
+}
+
+// 6. The timer must not outlive the request — a leaked one keeps the process
+//    (and, in a browser, a timer per call) alive after everything is settled.
+{
+	withFetch(async () => res(200, { ok: true }));
+	await api('/api/rooms/1/poll', { timeoutMs: 30000 });
+	// if the 30s timer were still pending, node could not exit at the end of this
+	// script. Reaching the final log line at all is the assertion.
+}
+
 console.log('api: all checks passed');
