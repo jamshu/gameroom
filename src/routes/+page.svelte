@@ -261,6 +261,13 @@
 			</div>
 		</a>
 	{/each}
+
+	<footer class="credit">
+		<p class="credit-line">Created and maintained by <span class="credit-name">Jamshid.K</span></p>
+		<p class="credit-sub">
+			For any support contact <a href="mailto:jamshu.mkd@gmail.com">jamshu.mkd@gmail.com</a>
+		</p>
+	</footer>
 </div>
 
 <style>
@@ -305,5 +312,47 @@
 	}
 	.room-row .chip {
 		margin: 0 8px;
+	}
+
+	/* Sign-off at the foot of the page — hairline ornament above it so it reads
+	   as a closing mark rather than another list item. */
+	.credit {
+		margin: 40px 0 24px;
+		padding-top: 22px;
+		border-top: 1px solid var(--border);
+		text-align: center;
+	}
+	.credit::before {
+		content: '✦';
+		display: block;
+		margin-bottom: 8px;
+		color: var(--ornament);
+		font-size: 0.55rem;
+		letter-spacing: 0.4em;
+	}
+	.credit-line {
+		margin: 0;
+		font-family: var(--font-display);
+		font-size: 0.72rem;
+		font-weight: 500;
+		color: var(--text-dim);
+		letter-spacing: 0.01em;
+	}
+	.credit-name {
+		color: var(--text);
+		font-weight: 700;
+	}
+	.credit-sub {
+		margin: 4px 0 0;
+		font-size: 0.64rem;
+		color: var(--text-faint);
+	}
+	.credit-sub a {
+		color: var(--accent);
+		text-decoration: none;
+		border-bottom: 1px solid transparent;
+	}
+	.credit-sub a:hover {
+		border-bottom-color: currentColor;
 	}
 </style>
