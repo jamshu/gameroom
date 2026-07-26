@@ -23,6 +23,7 @@
 	let detail = $state(null); // /api/rooms/[id] response while not yet accepted
 	let accepted = $state(false);
 	let error = $state('');
+	let blocked = $state(false); // private room we're not invited to — stop retrying
 	let mesh = null;
 	let voicePeers = $state([]); // [{uid, state}] from the mesh
 	let inVoice = $state(false);
@@ -41,6 +42,12 @@
 			}
 		} catch (e) {
 			error = e.message;
+			// Not on a private room's guest list. Retrying every 5s would never
+			// succeed and would leave "Loading room…" sitting under the reason.
+			if (e.code === 'private') {
+				blocked = true;
+				clearInterval(detailTimer);
+			}
 		}
 	}
 
@@ -262,7 +269,12 @@
 	onDestroy(() => clearTimeout(noticeTimer));
 </script>
 
-{#if !room}
+{#if blocked}
+	<div class="card" style="padding:22px; text-align:center;">
+		<p style="margin-bottom:14px;">🔒 {error}</p>
+		<a class="btn btn--primary" href="/">Back to rooms</a>
+	</div>
+{:else if !room}
 	<p class="muted">Loading room…</p>
 	{#if error}<p class="error-text">{error}</p>{/if}
 {:else}
@@ -271,6 +283,7 @@
 			<div>
 				<h1 class="room-title">{room.name}</h1>
 				<span class="chip chip--accent">{gameLabel(room.gameType)}</span>
+				{#if room.visibility === 'private'}<span class="chip" title="Invite only">🔒 private</span>{/if}
 				<span class="chip">{room.status}</span>
 			</div>
 			<div class="head-actions">

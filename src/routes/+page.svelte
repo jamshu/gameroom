@@ -4,6 +4,7 @@
 	import { user } from '$lib/stores/auth.js';
 	import { api } from '$lib/api.js';
 	import { GAMES, gameLabel } from '$lib/games.js';
+	import UserPicker from '$lib/components/UserPicker.svelte';
 
 	/** Focus the node on mount — fires each time the create form opens. */
 	function autofocus(node) {
@@ -21,6 +22,10 @@
 	let gameType = $state('thief_finder');
 	let maxPlayers = $state(8);
 	let drawsTotal = $state(5);
+	// private rooms: only the people on this list see the room at all, and they
+	// walk straight in rather than waiting for approval
+	let isPrivate = $state(false);
+	let guests = $state([]); // [{ uid, name }]
 
 	async function loadMine() {
 		try {
@@ -128,7 +133,12 @@
 		try {
 			const d = await api('/api/rooms', {
 				method: 'POST',
-				body: { name, gameType, maxPlayers, drawsTotal }
+				body: {
+					name, gameType, maxPlayers, drawsTotal,
+					visibility: isPrivate ? 'private' : 'public',
+					// the server adds us to our own list; sending it would be harmless
+					allowedUids: isPrivate ? guests.map((u) => u.uid) : []
+				}
 			});
 			goto(`/room/${d.roomId}`);
 		} catch (e2) {
@@ -211,6 +221,23 @@
 					<label class="label" for="rmax">Max players</label>
 					<input id="rmax" class="input" type="number" min="3" max="12" bind:value={maxPlayers} />
 				{/if}
+
+				<label class="private-toggle">
+					<input type="checkbox" bind:checked={isPrivate} />
+					<span>🔒 Private room</span>
+				</label>
+				{#if isPrivate}
+					<p class="muted" style="margin:0 2px 6px;">
+						Only the people you add here will see this room, and they join without
+						waiting for your approval.
+					</p>
+					<UserPicker
+						selected={guests}
+						onpick={(u) => (guests = [...guests, u])}
+						onremove={(u) => (guests = guests.filter((g) => g.uid !== u.uid))}
+					/>
+				{/if}
+
 				<button class="btn btn--primary" style="margin-top:14px;" disabled={creating}>
 					{creating ? 'Creating…' : 'Create room'}
 				</button>
@@ -236,6 +263,7 @@
 			<div>
 				<strong>{r.name}</strong>
 				<span class="chip chip--accent">{gameLabel(r.gameType)}</span>
+				{#if r.visibility === 'private'}<span class="chip" title="Invite only">🔒 private</span>{/if}
 				<span class="muted">host: {r.hostName} · {r.status}</span>
 			</div>
 			<button class="btn btn--sm btn--primary" onclick={() => joinRoom(r.id)}>Join</button>
@@ -256,6 +284,7 @@
 			<div>
 				<strong>{r.name}</strong>
 				<span class="chip chip--accent">{gameLabel(r.gameType)}</span>
+				{#if r.visibility === 'private'}<span class="chip" title="Invite only">🔒 private</span>{/if}
 				<span class="muted">host: {r.hostName} · {r.status}</span>
 				{#if r.myStatus === 'pending'}<span class="chip chip--amber">awaiting approval</span>{/if}
 			</div>
@@ -301,6 +330,14 @@
 	}
 	.create-form {
 		margin-top: 4px;
+	}
+	.private-toggle {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin: 14px 2px 6px;
+		cursor: pointer;
+		font-weight: 500;
 	}
 	.room-row {
 		display: flex;

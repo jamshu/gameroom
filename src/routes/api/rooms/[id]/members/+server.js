@@ -1,12 +1,13 @@
 import { json } from '@sveltejs/kit';
-import { adminExecute } from '$lib/server/odoo.js';
 import {
-	MEMBER,
 	requireHost,
 	parseState,
 	writeState,
 	appendEvent,
 	pushRoster,
+	dropMember,
+	isPrivate,
+	allowedUids,
 	jsonError,
 	httpError
 } from '$lib/server/room.js';
@@ -43,27 +44,23 @@ export async function POST({ params, request, cookies }) {
 			throw httpError(409, 'You can only remove players before the game starts');
 		}
 
-		// 'left', not 'rejected': publicMembers filters `rejected` out entirely,
-		// which would retroactively degrade their name to `#uid` across chat history.
-		await adminExecute(MEMBER, 'write', [[target.id], { x_studio_status: 'left' }]);
-
 		const state = parseState(room) || { v: 0, voice: [], game: null };
-		// drop them from voice so the remaining peers tear the connection down
-		// (mesh.sync already prunes anyone absent from the roster)
-		state.voice = (state.voice || []).filter((u) => u !== targetUid);
-		// Marks them as removed-by-the-host rather than merely gone, which is what
-		// gives their in-flight poll a terminal 403 carrying the real reason instead
-		// of a bare "not a member". NOT a ban: `join` clears this marker, so they can
-		// ask again and the host can accept or reject as usual. It lives in room
-		// state, which stateView never serializes — so it cannot leak to clients.
-		state.banned = [...new Set([...(state.banned || []), targetUid])];
-		await writeState(params.id, state);
+		// row → 'left', out of voice, marked removed-by-host. Shared with the private
+		// room's guest list so the two ways out of a room behave identically.
+		await dropMember(target, state);
+
+		// A private room's guest list is what lets someone in, and `join` auto-accepts
+		// anyone on it — so without this the removed player walks straight back in.
+		// Folded into the state write via extraVals rather than a second ROOM write.
+		const kept = isPrivate(room) ? allowedUids(room).filter((u) => u !== targetUid) : null;
+		await writeState(params.id, state, kept ? { x_studio_allowed_user_ids: [[6, 0, kept]] } : {});
+		if (kept) room.x_studio_allowed_user_ids = kept;
+
 		await appendEvent(params.id, 'system', { kind: 'member-removed', uid: targetUid }, uid);
 
 		// everyone still here sees the roster shrink at once. The removed player's
 		// own exit still rides the poll's coded 403 (`removed`), which is what the
 		// store treats as terminal — the roster alone doesn't stop them polling.
-		target.x_studio_status = 'left';
 		await pushRoster(params.id, room, members);
 
 		return json({ ok: true, state: stateView(state, uid) });

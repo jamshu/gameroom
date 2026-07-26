@@ -16,8 +16,12 @@ export async function GET({ cookies }) {
 		]);
 		const roomIds = [...new Set(memberships.map((m) => m.x_studio_room_id?.[0]).filter(Boolean))];
 		if (!roomIds.length) return json({ ok: true, rooms: [] });
+		// No visibility gate needed: a member row already means you were let in.
+		// Invited-but-not-yet-joined rooms have no member row, so they show up in
+		// browse rather than here — that's correct, not a gap.
 		const rooms = await adminExecute(ROOM, 'read', [roomIds], {
-			fields: ['x_name', 'x_studio_game_type', 'x_studio_status', 'x_studio_host_id']
+			fields: ['x_name', 'x_studio_game_type', 'x_studio_status', 'x_studio_host_id',
+				'x_studio_visibility']
 		});
 		const byRoom = Object.fromEntries(memberships.map((m) => [m.x_studio_room_id?.[0], m]));
 		return json({
@@ -30,6 +34,7 @@ export async function GET({ cookies }) {
 					gameType: r.x_studio_game_type,
 					status: r.x_studio_status,
 					hostName: r.x_studio_host_id?.[1] || '',
+					visibility: r.x_studio_visibility === 'private' ? 'private' : 'public',
 					myStatus: byRoom[r.id]?.x_studio_status,
 					myRole: byRoom[r.id]?.x_studio_role
 				}))

@@ -97,21 +97,42 @@
 		clipErrors = rest;
 	}
 
-	async function send(e) {
-		e.preventDefault();
-		const t = text.trim();
-		if (!t) return;
+	/** Post one line of text. Returns false if it didn't land, so the composer can
+	 *  hand the message back. Shared with the empty-room greeting below. */
+	async function postText(t) {
 		error = '';
-		text = '';
 		// show it instantly; the POST + poll round trip happens behind the bubble
 		const tempId = store.pushLocalChat(myUid, t);
 		try {
 			const d = await store.post('chat', { text: t });
 			store.resolveLocalChat(tempId, d?.id);
+			return true;
 		} catch (e2) {
 			store.dropLocalChat(tempId);
-			text = t; // hand the message back so it isn't lost
 			error = e2.message;
+			return false;
+		}
+	}
+
+	async function send(e) {
+		e.preventDefault();
+		const t = text.trim();
+		if (!t) return;
+		text = '';
+		if (!(await postText(t))) text = t; // hand the message back so it isn't lost
+	}
+
+	// An empty chat is the hardest one to start, so the placeholder does the
+	// typing for you. One tap posts it — same optimistic path as any other line.
+	const GREETING = 'Hi 👋';
+	let greeting = $state(false);
+	async function sayHi() {
+		if (greeting || busy) return;
+		greeting = true;
+		try {
+			await postText(GREETING);
+		} finally {
+			greeting = false;
 		}
 	}
 
@@ -252,7 +273,9 @@
 				</div>
 			</div>
 		{:else}
-			<p class="muted" style="text-align:center; padding:16px 0;">Say hi 👋</p>
+			<button type="button" class="say-hi" onclick={sayHi} disabled={greeting || busy}>
+				{greeting ? 'Saying hi…' : 'Say hi 👋'}
+			</button>
 		{/each}
 	</div>
 	{#if error}<p class="error-text">{error}</p>{/if}
@@ -370,6 +393,29 @@
 	.chat-msg--mine .chat-who {
 		color: var(--on-accent);
 		opacity: 0.75;
+	}
+	/* Reads as the muted placeholder it replaced until you hover it, so an empty
+	   chat still looks calm rather than like it's asking for something. */
+	.say-hi {
+		align-self: center;
+		margin: 16px 0;
+		padding: 6px 14px;
+		border: 1px solid transparent;
+		border-radius: 999px;
+		background: none;
+		color: var(--text-dim);
+		font: inherit;
+		cursor: pointer;
+	}
+	.say-hi:hover:not(:disabled),
+	.say-hi:focus-visible {
+		border-color: var(--border);
+		background: var(--surface);
+		color: var(--text);
+	}
+	.say-hi:disabled {
+		cursor: default;
+		opacity: 0.6;
 	}
 	.shot {
 		all: unset;

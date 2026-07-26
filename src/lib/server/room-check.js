@@ -10,7 +10,7 @@
 import assert from 'node:assert';
 import { register } from 'node:module';
 register('./room-stub-loader.mjs', import.meta.url);
-const { reseatRoles, setRoles, resetRound, createRoomMedia, readRoomMedia, deleteRoom, pickSuccessorHost, finishRoom, publicMembers } =
+const { reseatRoles, setRoles, resetRound, createRoomMedia, readRoomMedia, deleteRoom, pickSuccessorHost, finishRoom, publicMembers, browseDomain, seatOnAccept, dropMember } =
 	await import('./room.js');
 
 const member = (id, role, status = 'accepted') => ({
@@ -292,6 +292,76 @@ const writesTo = (role) =>
 	// but genuinely gone is still gone
 	assert.ok(!at(120000).online, 'two minutes silent is offline');
 	assert.ok(!publicMembers([member(1, 'player')])[0].online, 'never seen is offline');
+}
+
+// 11. browseDomain decides who sees which room, so the shape of its OR group is
+//     the whole private-room feature. Two things it must get right:
+//     (a) the public side is `!= 'private'`, NOT `= 'public'` — every room that
+//         existed before the field did has NULL there, and `= 'public'` would
+//         make the entire back catalogue vanish from browse;
+//     (b) the OR is a trailing prefix group, so Odoo reads it as
+//         `(filters) AND (public OR I'm-listed)` rather than OR-ing the filters.
+{
+	const plain = browseDomain({ uid: 7 });
+	assert.deepEqual(plain, [
+		['x_studio_status', '!=', 'finished'],
+		'|',
+		['x_studio_visibility', '!=', 'private'],
+		['x_studio_allowed_user_ids', 'in', [7]]
+	]);
+
+	const filtered = browseDomain({ uid: 7, q: 'chess night', type: 'chess', status: 'lobby' });
+	assert.deepEqual(filtered.slice(0, 4), [
+		['x_studio_status', '!=', 'finished'],
+		['x_name', 'ilike', 'chess night'],
+		['x_studio_game_type', '=', 'chess'],
+		['x_studio_status', '=', 'lobby']
+	], 'the AND filters stay ahead of the OR group');
+	assert.equal(filtered[4], '|', 'the OR operator is the LAST thing pushed');
+	assert.equal(filtered.length, 7);
+
+	// junk from the query string never reaches the domain
+	assert.equal(browseDomain({ uid: 7, type: 'nope', status: 'finished' }).length, 4,
+		'unknown type and a non-browsable status are dropped');
+}
+
+// 12. seatOnAccept is shared by the host's Accept button and by a private room's
+//     auto-join, so a private room must seat people exactly as a public one does.
+{
+	const room = (over = {}) => ({
+		x_studio_game_type: 'chess', x_studio_max_players: 8, x_studio_status: 'lobby', ...over
+	});
+	const one = [member(1, 'player')];
+	const two = [member(1, 'player'), member(2, 'player')];
+
+	assert.equal(seatOnAccept(room(), one), 'player', 'a free chess seat');
+	assert.equal(seatOnAccept(room(), two), 'spectator', 'chess seats exactly 2');
+	assert.equal(seatOnAccept(room({ x_studio_status: 'playing' }), one), 'spectator',
+		'nobody takes a seat mid-game — game.players is frozen at start');
+	assert.equal(seatOnAccept(room({ x_studio_game_type: 'ludo' }), two), 'player', 'ludo seats 4');
+	assert.equal(seatOnAccept(room(), [member(1, 'player'), member(2, 'player', 'left')]), 'player',
+		'a departed row does not hold a seat');
+}
+
+// 13. dropMember: one way out of a room, shared by the host's Remove and by
+//     un-inviting someone from a private room. If those two diverged you'd get a
+//     member who is off the guest list but still sitting in the room.
+{
+	globalThis.__odooCalls.length = 0;
+	const target = member(2, 'player');
+	const state = { v: 1, voice: [101, 102, 103], banned: [104] };
+	const uid = await dropMember(target, state);
+
+	assert.equal(uid, 102, 'returns the uid it dropped');
+	const write = globalThis.__odooCalls.find((c) => c.method === 'write');
+	assert.deepEqual(write.args, [[2], { x_studio_status: 'left' }], "'left', never 'rejected'");
+	assert.deepEqual(state.voice, [101, 103], 'pulled out of the call');
+	assert.deepEqual(state.banned, [104, 102], 'marked removed-by-host, existing entries kept');
+	assert.equal(target.x_studio_status, 'left', 'in-hand row updated for the roster push');
+
+	// idempotent on the marker — a second removal must not double up
+	await dropMember(target, state);
+	assert.deepEqual(state.banned, [104, 102]);
 }
 
 console.log('room-check: all assertions passed');

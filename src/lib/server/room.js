@@ -10,8 +10,10 @@ import { publishState, publishEvent, publishRoster } from './realtime.js';
 // The game list is shared with the client so a select, a capacity preview and a
 // validation check can't drift. Re-exported here because every server caller
 // already imports from this module.
-import { seatedPlayerIds } from '../games.js';
-export { GAME_TYPES, playerCapacity } from '../games.js';
+// imported (not just re-exported) because browseDomain and seatOnAccept below
+// call them — `export … from` creates no local binding.
+import { seatedPlayerIds, GAME_TYPES, playerCapacity } from '../games.js';
+export { GAME_TYPES, playerCapacity };
 
 // Latest known member uids per room, refreshed on every member read (getMembers).
 // Lets writeState address per-uid push channels without an extra Odoo lookup; a
@@ -271,8 +273,91 @@ export function publicRoom(room) {
 		hostUid: room.x_studio_host_id?.[0],
 		hostName: room.x_studio_host_id?.[1],
 		maxPlayers: room.x_studio_max_players,
-		drawsTotal: room.x_studio_draws_total
+		drawsTotal: room.x_studio_draws_total,
+		// the 🔒 chip. The allowed-uid list is deliberately NOT here: this ships on
+		// every roster push and poll, and turning uids into names costs an extra
+		// res.users read. The host fetches the guest list from `invites` instead.
+		visibility: isPrivate(room) ? 'private' : 'public'
 	};
+}
+
+/* ---------------------------- private rooms -------------------------------
+   A room is private only when it says so. x_studio_visibility is NULL on every
+   row created before the field existed, so "not private" is the safe reading of
+   anything else — never test for 'public'. */
+
+export const isPrivate = (room) => room.x_studio_visibility === 'private';
+
+/** Who may see and auto-join. A many2many reads back as a bare id array — there
+ *  is no [id, name] tuple to lean on the way every many2one in this app does. */
+export const allowedUids = (room) => room.x_studio_allowed_user_ids || [];
+
+/** Replace the guest list. `[[6, 0, ids]]` is Odoo's "set exactly these". */
+export const setAllowed = (roomId, uids) =>
+	adminExecute(ROOM, 'write', [
+		[Number(roomId)],
+		{ x_studio_allowed_user_ids: [[6, 0, [...new Set(uids.map(Number))]]] }
+	]);
+
+/**
+ * The browse-list domain, as a pure function so the OR group can be asserted
+ * without a live Odoo.
+ *
+ * Odoo domains are prefix notation with an implicit `&` between complete terms,
+ * so a trailing `'|', A, B` reads as `(everything before) AND (A OR B)`.
+ */
+export function browseDomain({ uid, q, type, status }) {
+	const domain = [['x_studio_status', '!=', 'finished']];
+	if (q) domain.push(['x_name', 'ilike', q]);
+	if (GAME_TYPES.includes(type)) domain.push(['x_studio_game_type', '=', type]);
+	if (BROWSE_STATUSES.includes(status)) domain.push(['x_studio_status', '=', status]);
+	// a private room exists only for the people on its list
+	domain.push('|', ['x_studio_visibility', '!=', 'private'], ['x_studio_allowed_user_ids', 'in', [uid]]);
+	return domain;
+}
+
+export const BROWSE_STATUSES = ['lobby', 'playing'];
+
+/**
+ * The role a member takes the moment they're accepted — by the host approving a
+ * request, or by auto-join walking into a private room. Both paths must agree or
+ * a private room would seat people the public one wouldn't.
+ */
+export function seatOnAccept(room, members) {
+	const playersNow = members.filter(
+		(m) => m.x_studio_status === 'accepted' && m.x_studio_role === 'player'
+	).length;
+	const capacity = playerCapacityFor(room);
+	return room.x_studio_status === 'lobby' && playersNow < capacity ? 'player' : 'spectator';
+}
+
+const playerCapacityFor = (room) =>
+	playerCapacity(room.x_studio_game_type, room.x_studio_max_players);
+
+/**
+ * Take one member out of a room: row → 'left', dropped from voice, marked as
+ * removed-by-host. Mutates `state` and the caller's in-hand row; the caller
+ * persists the state and pushes the roster.
+ *
+ * Shared by the host's Remove and by striking someone off a private room's guest
+ * list, because those two must have identical effects — a difference between
+ * them is how you get a member who is out of the list but still in the room.
+ */
+export async function dropMember(target, state) {
+	// 'left', not 'rejected': publicMembers filters `rejected` out entirely, which
+	// would retroactively degrade their name to `#uid` across chat history.
+	await adminExecute(MEMBER, 'write', [[target.id], { x_studio_status: 'left' }]);
+	const targetUid = target.x_studio_user_id?.[0];
+	// drop them from voice so the remaining peers tear the connection down
+	// (mesh.sync already prunes anyone absent from the roster)
+	state.voice = (state.voice || []).filter((u) => u !== targetUid);
+	// Marks them as removed-by-the-host rather than merely gone, which is what
+	// gives their in-flight poll a terminal 403 carrying the real reason instead
+	// of a bare "not a member". NOT a ban: `join` clears this marker. For a private
+	// room the guest list is the actual gate; this only supplies the message.
+	state.banned = [...new Set([...(state.banned || []), targetUid])];
+	target.x_studio_status = 'left';
+	return targetUid;
 }
 
 /**

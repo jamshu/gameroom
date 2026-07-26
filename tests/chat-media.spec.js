@@ -93,6 +93,46 @@ test('a failed upload drops the bubble and reports the error', async ({ page }) 
 	await expect(page.locator('.shot img')).toHaveCount(0);
 });
 
+test('the empty-chat placeholder posts the greeting for you', async ({ page }) => {
+	await mockBackend(page);
+	let sent = null;
+	await page.route('**/api/rooms/*/chat', (x) => {
+		sent = x.request().postDataJSON();
+		x.fulfill({ json: { ok: true, id: 501 } });
+	});
+
+	await page.goto('/room/1');
+	const hi = page.getByRole('button', { name: 'Say hi 👋' });
+	await expect(hi).toBeVisible();
+
+	await hi.click();
+	expect(sent).toEqual({ text: 'Hi 👋' });
+
+	// posts through the same optimistic path as a typed line: the bubble is there
+	// before the ack, the placeholder is gone because the chat is no longer empty,
+	// and the composer was never involved
+	await expect(page.locator('.chat-bubble')).toHaveText(/Hi 👋/);
+	await expect(page.locator('.chat-msg.pending')).toHaveCount(0);
+	await expect(hi).toHaveCount(0);
+	await expect(page.getByPlaceholder('Message…')).toHaveValue('');
+});
+
+test('a greeting that fails to send leaves the placeholder to retry', async ({ page }) => {
+	await mockBackend(page);
+	await page.route('**/api/rooms/*/chat', (x) =>
+		x.fulfill({ status: 500, json: { ok: false, error: 'Chat is unavailable' } })
+	);
+
+	await page.goto('/room/1');
+	await page.getByRole('button', { name: 'Say hi 👋' }).click();
+
+	await expect(page.getByText('Chat is unavailable')).toBeVisible();
+	// the optimistic bubble was rolled back, so the chat is empty again and the
+	// button is back rather than the room being left with a phantom message
+	await expect(page.locator('.chat-bubble')).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Say hi 👋' })).toBeVisible();
+});
+
 test('media from another player renders off the room media proxy', async ({ page }) => {
 	await mockBackend(page, {
 		events: [

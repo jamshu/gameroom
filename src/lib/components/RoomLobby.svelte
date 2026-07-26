@@ -1,6 +1,8 @@
 <script>
 	import { untrack } from 'svelte';
 	import Avatar from './Avatar.svelte';
+	import UserPicker from './UserPicker.svelte';
+	import { api } from '$lib/api.js';
 	import { GAMES, gameById, seatedPlayerIds, playerCapacity } from '$lib/games.js';
 
 	let { store, members, room, isHost } = $props();
@@ -19,6 +21,40 @@
 	const seatsFull = $derived(players.length >= capacity);
 
 	const needed = $derived(gameById(room.gameType).needs);
+
+	/* ---- private room guest list -------------------------------------------
+	   Host-only, and fetched separately rather than riding publicRoom: the room
+	   row ships with every roster push and poll, and turning the many2many's bare
+	   uids into names costs a res.users read. This is asked for once. */
+	const isPrivateRoom = $derived(room.visibility === 'private');
+	let allowed = $state([]); // [{ uid, name }]
+	let invitesLoaded = $state(false);
+	let inviting = $state(null); // uid being added or dropped
+
+	$effect(() => {
+		if (!isHost || !isPrivateRoom || invitesLoaded) return;
+		invitesLoaded = true;
+		api(`/api/rooms/${room.id}/invites`)
+			.then((d) => (allowed = d.allowed))
+			.catch((e) => (error = e.message));
+	});
+
+	/** Both verbs echo the whole new list back, so there's no follow-up GET. */
+	async function invite(uid, action) {
+		error = '';
+		inviting = uid;
+		try {
+			const d = await api(`/api/rooms/${room.id}/invites`, { method: 'POST', body: { uid, action } });
+			allowed = d.allowed;
+			// dropping someone off the list also drops them from the room, and that
+			// roster change arrives on the push rather than in this response
+			if (action === 'remove') store.pollNow();
+		} catch (e) {
+			error = e.message;
+		} finally {
+			inviting = null;
+		}
+	}
 
 	// What switching to `pick` would do to the seating, worked out client-side
 	// from the same capacity rule the server applies — no extra request.
@@ -220,6 +256,39 @@
 
 	{#if error}<p class="error-text">{error}</p>{/if}
 
+	{#if isHost && isPrivateRoom}
+		<!-- Host only. Everyone here can see the room in their browse list and walks
+		     straight in — no join request. Taking someone off the list also takes
+		     them out of the room, so the list stays the single source of truth. -->
+		<hr style="border-color:var(--border); margin:14px 0;" />
+		<h3 class="label" style="margin-top:0;">🔒 Invited players ({allowed.length})</h3>
+		{#each allowed as u (u.uid)}
+			<div class="member-row">
+				<Avatar uid={u.uid} name={u.name} size={26} />
+				<span class="member-name">{u.name}</span>
+				{#if u.uid === room.hostUid}<span class="chip chip--amber">you</span>{/if}
+				{#if u.uid !== room.hostUid}
+					<button
+						class="btn btn--ghost btn--sm invite-btn"
+						onclick={() => invite(u.uid, 'remove')}
+						disabled={inviting === u.uid}
+						title="{u.name} loses access to this room"
+					>
+						{inviting === u.uid ? '…' : 'Uninvite'}
+					</button>
+				{/if}
+			</div>
+		{/each}
+		<div style="margin-top:8px;">
+			<UserPicker
+				selected={allowed}
+				showChips={false}
+				placeholder="Add someone by name…"
+				onpick={(u) => invite(u.uid, 'add')}
+			/>
+		</div>
+	{/if}
+
 	{#if isHost}
 		<!-- Not enough people for Thief Finder, or too many for chess? Change the
 		     game here rather than abandoning the room and rebuilding it. Host only —
@@ -285,6 +354,9 @@
 	/* first of the host controls, so it takes the slack and lines the whole
 	   trailing group up on the right */
 	.seat-btn {
+		margin-left: auto;
+	}
+	.invite-btn {
 		margin-left: auto;
 	}
 	.swap-row {

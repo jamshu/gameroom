@@ -4,7 +4,7 @@ import {
 	MEMBER,
 	requireHost,
 	appendEvent,
-	playerCapacity,
+	seatOnAccept,
 	pushRoster,
 	publicRoom,
 	publicMembers,
@@ -31,11 +31,8 @@ export async function POST({ params, request, cookies }) {
 			return json({ ok: true, room: publicRoom(room), members: publicMembers(members) });
 		}
 
-		const playersNow = members.filter(
-			(m) => m.x_studio_status === 'accepted' && m.x_studio_role === 'player'
-		).length;
-		const capacity = playerCapacity(room.x_studio_game_type, room.x_studio_max_players);
-		const role = room.x_studio_status === 'lobby' && playersNow < capacity ? 'player' : 'spectator';
+		// shared with a private room's auto-join so the two can't seat people differently
+		const role = seatOnAccept(room, members);
 		await adminExecute(MEMBER, 'write', [[target.id], { x_studio_status: 'accepted', x_studio_role: role }]);
 		await appendEvent(params.id, 'system', { kind: 'member-accepted', uid: target.x_studio_user_id?.[0], role }, uid);
 		// for the members already in the room. NOT for the new arrival: the token
