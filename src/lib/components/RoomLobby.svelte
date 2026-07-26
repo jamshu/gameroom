@@ -1,18 +1,22 @@
 <script>
 	import { untrack } from 'svelte';
 	import Avatar from './Avatar.svelte';
-	import { GAMES, gameById, seatedPlayerIds } from '$lib/games.js';
+	import { GAMES, gameById, seatedPlayerIds, playerCapacity } from '$lib/games.js';
 
 	let { store, members, room, isHost } = $props();
 	let error = $state('');
 	let starting = $state(false);
 	let removing = $state(null); // member id being removed
 	let promoting = $state(null); // member id being made host
+	let reseating = $state(null); // member id whose seat is being changed
+	let swapFor = $state(null); // member id waiting for a player to swap out
 	let switching = $state(false);
 
 	const accepted = $derived(members.filter((m) => m.status === 'accepted'));
 	const pending = $derived(members.filter((m) => m.status === 'pending'));
 	const players = $derived(accepted.filter((m) => m.role === 'player'));
+	const capacity = $derived(playerCapacity(room.gameType, room.maxPlayers));
+	const seatsFull = $derived(players.length >= capacity);
 
 	const needed = $derived(gameById(room.gameType).needs);
 
@@ -89,6 +93,33 @@
 		}
 	}
 
+	/**
+	 * Seat or unseat a member. `demoteMemberId` is the player giving up their seat
+	 * when the table is already full — the host picks them rather than the server
+	 * bumping whoever happens to sort last.
+	 */
+	async function setRole(m, role, demoteMemberId) {
+		error = '';
+		// A full table needs to know who steps down first, so ask before posting.
+		// The server enforces the same rule (code 'no_seat'); this just saves the
+		// round trip in the case the lobby can already see.
+		if (role === 'player' && seatsFull && demoteMemberId == null) {
+			swapFor = m.id;
+			return;
+		}
+		reseating = m.id;
+		try {
+			await store.post('roles', { memberId: m.id, role, demoteMemberId });
+			swapFor = null;
+		} catch (e) {
+			error = e.message;
+			// someone else took the last seat between render and click
+			if (e.code === 'no_seat') swapFor = m.id;
+		} finally {
+			reseating = null;
+		}
+	}
+
 	async function start() {
 		error = '';
 		starting = true;
@@ -127,9 +158,30 @@
 			{#if m.uid === room.hostUid}<span class="chip chip--amber">host</span>{/if}
 			<span class="chip {m.role === 'player' ? 'chip--green' : ''}">{m.role}</span>
 			<span class="dot {m.online ? 'dot--on' : ''}" title={m.online ? 'online' : 'offline'}></span>
+			{#if isHost}
+				<!-- The seat toggle is the one control that also applies to the host's
+				     OWN row: in chess the host holds one of the two seats, so sitting
+				     out is how they free it for someone waiting. Host stays host. -->
+				<button
+					class="btn btn--ghost btn--sm seat-btn"
+					onclick={() => setRole(m, m.role === 'player' ? 'spectator' : 'player')}
+					disabled={reseating === m.id}
+					title={m.role === 'player'
+						? `Move ${m.name} to the spectators`
+						: `Give ${m.name} a player seat`}
+				>
+					{#if reseating === m.id}
+						…
+					{:else if m.role === 'player'}
+						▼ Make spectator
+					{:else}
+						▲ Make player
+					{/if}
+				</button>
+			{/if}
 			{#if isHost && m.uid !== room.hostUid}
 				<button
-					class="btn btn--ghost btn--sm remove-btn"
+					class="btn btn--ghost btn--sm"
 					onclick={() => makeHost(m)}
 					disabled={promoting === m.id}
 					title="Make {m.name} the host of this room"
@@ -146,6 +198,24 @@
 				</button>
 			{/if}
 		</div>
+		{#if swapFor === m.id}
+			<!-- Every seat is taken, so seating this member means unseating another.
+			     Naming the swap here keeps it one confirmed action rather than
+			     "demote someone, then remember to come back and promote". -->
+			<div class="swap-row">
+				<span class="muted">Seats are full — who steps down for {m.name}?</span>
+				{#each players as p (p.id)}
+					<button
+						class="btn btn--sm"
+						onclick={() => setRole(m, 'player', p.id)}
+						disabled={reseating === m.id}
+					>
+						Swap out {p.name}
+					</button>
+				{/each}
+				<button class="btn btn--ghost btn--sm" onclick={() => (swapFor = null)}>Cancel</button>
+			</div>
+		{/if}
 	{/each}
 
 	{#if error}<p class="error-text">{error}</p>{/if}
@@ -194,7 +264,9 @@
 					? `Open table (${room.drawsTotal} draws)`
 					: 'Start'}
 		</button>
-		<p class="muted" style="margin-top:8px;">Needs {needed}. {players.length} player{players.length === 1 ? '' : 's'} ready.</p>
+		<p class="muted" style="margin-top:8px;">
+			Needs {needed}. {players.length} of {capacity} seat{capacity === 1 ? '' : 's'} taken.
+		</p>
 	{:else}
 		<p class="muted" style="margin-top:16px;">Waiting for the host to start…</p>
 	{/if}
@@ -210,8 +282,17 @@
 	.member-name {
 		font-weight: 500;
 	}
-	.remove-btn {
+	/* first of the host controls, so it takes the slack and lines the whole
+	   trailing group up on the right */
+	.seat-btn {
 		margin-left: auto;
+	}
+	.swap-row {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
+		padding: 4px 0 8px 40px;
 	}
 	.switch-row {
 		display: flex;

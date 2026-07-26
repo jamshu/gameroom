@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import { adminExecute } from '$lib/server/odoo.js';
 import { requireUser } from '$lib/server/auth.js';
-import { MEMBER, getRoom, getMembers, parseState, appendEvent, pushRoster, jsonError, httpError } from '$lib/server/room.js';
+import { MEMBER, getRoom, getMembers, parseState, writeState, appendEvent, pushRoster, jsonError, httpError } from '$lib/server/room.js';
 
 export const prerender = false;
 
@@ -11,10 +11,15 @@ export async function POST({ params, cookies }) {
 		const { uid } = await requireUser(cookies);
 		const room = await getRoom(params.id);
 		if (room.x_studio_status === 'finished') throw httpError(409, 'Room is finished');
-		// removed by the host — otherwise the rejoin branch below would flip their
-		// 'left' row straight back to 'pending'. Free: `room` is already in hand.
-		if ((parseState(room)?.banned || []).includes(uid)) {
-			throw httpError(403, 'The host removed you from this room', 'removed');
+		// Removed by the host. Their live session was already ejected by the coded 403
+		// in judgeMembership — that marker is what made it terminal AND accurate. It is
+		// not a ban, though: asking again clears it and puts them back in the queue for
+		// the host to accept or reject, which is what makes "remove someone so a waiting
+		// player can take the seat" a swap rather than a one-way door.
+		const state = parseState(room);
+		if (state?.banned?.includes(uid)) {
+			state.banned = state.banned.filter((u) => u !== uid);
+			await writeState(params.id, state);
 		}
 		const members = await getMembers(params.id);
 		const mine = members.find((m) => m.x_studio_user_id?.[0] === uid);

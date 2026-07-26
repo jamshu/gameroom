@@ -51,9 +51,11 @@ export async function POST({ params, request, cookies }) {
 		// drop them from voice so the remaining peers tear the connection down
 		// (mesh.sync already prunes anyone absent from the roster)
 		state.voice = (state.voice || []).filter((u) => u !== targetUid);
-		// `banned` blocks the instant re-request that `join` would otherwise allow
-		// by flipping a 'left' row back to 'pending'. It lives in room state, which
-		// stateView never serializes — so it cannot leak to clients.
+		// Marks them as removed-by-the-host rather than merely gone, which is what
+		// gives their in-flight poll a terminal 403 carrying the real reason instead
+		// of a bare "not a member". NOT a ban: `join` clears this marker, so they can
+		// ask again and the host can accept or reject as usual. It lives in room
+		// state, which stateView never serializes — so it cannot leak to clients.
 		state.banned = [...new Set([...(state.banned || []), targetUid])];
 		await writeState(params.id, state);
 		await appendEvent(params.id, 'system', { kind: 'member-removed', uid: targetUid }, uid);

@@ -10,7 +10,7 @@
 import assert from 'node:assert';
 import { register } from 'node:module';
 register('./room-stub-loader.mjs', import.meta.url);
-const { reseatRoles, resetRound, createRoomMedia, readRoomMedia, deleteRoom, pickSuccessorHost, finishRoom, publicMembers } =
+const { reseatRoles, setRoles, resetRound, createRoomMedia, readRoomMedia, deleteRoom, pickSuccessorHost, finishRoom, publicMembers } =
 	await import('./room.js');
 
 const member = (id, role, status = 'accepted') => ({
@@ -80,6 +80,52 @@ const writesTo = (role) =>
 	assert.deepEqual(res, { promoted: 0, demoted: 1 }, 'only accepted id 3,4 considered; id 4 demoted');
 	assert.deepEqual(writesTo('spectator')[0].args[0], [4]);
 	assert.equal(members[1].x_studio_role, 'player', 'the pending row is left untouched');
+}
+
+// 4b. setRoles is the MANUAL counterpart to reseatRoles — the host seating one
+//     person by hand. The whole reason it exists separately is this case: id 3 is
+//     the highest, so a reseatRoles recompute would put it straight back to
+//     spectator. Promotion into a free seat moves exactly one row.
+{
+	globalThis.__odooCalls.length = 0;
+	const members = [member(1, 'player'), member(2, 'spectator'), member(3, 'spectator')];
+	const res = await setRoles(members, [{ id: 3, role: 'player' }]);
+
+	assert.deepEqual(res, { promoted: 1, demoted: 0 });
+	assert.deepEqual(writesTo('player')[0].args[0], [3], 'only the named member promoted');
+	assert.equal(writesTo('spectator').length, 0, 'nobody else is touched');
+	assert.deepEqual(members.map((m) => m.x_studio_role), ['player', 'spectator', 'player']);
+}
+
+// 4c. The swap the lobby's picker posts: promote + demote in one call. Batched
+//     per target role, same write shape as reseatRoles, both rows updated in hand
+//     so the roster push that follows shows the finished seating.
+{
+	globalThis.__odooCalls.length = 0;
+	const members = [member(1, 'player'), member(2, 'player'), member(3, 'spectator')];
+	const res = await setRoles(members, [{ id: 3, role: 'player' }, { id: 2, role: 'spectator' }]);
+
+	assert.deepEqual(res, { promoted: 1, demoted: 1 });
+	assert.equal(globalThis.__odooCalls.length, 2, 'one write per target role, not one per member');
+	assert.deepEqual(writesTo('player')[0].args[0], [3]);
+	assert.deepEqual(writesTo('spectator')[0].args[0], [2]);
+	assert.deepEqual(members.map((m) => m.x_studio_role), ['player', 'spectator', 'player']);
+}
+
+// 4d. Idempotent, and non-accepted rows are never seated: the endpoint answers a
+//     no-op with the current rows, so a stale double-click must not write.
+{
+	globalThis.__odooCalls.length = 0;
+	const members = [member(1, 'player'), member(2, 'spectator', 'pending'), member(3, 'spectator')];
+	const res = await setRoles(members, [
+		{ id: 1, role: 'player' }, // already seated
+		{ id: 2, role: 'player' }, // pending — not a member yet
+		{ id: 9, role: 'player' } // no such row
+	]);
+
+	assert.deepEqual(res, { promoted: 0, demoted: 0 });
+	assert.equal(globalThis.__odooCalls.length, 0, 'nothing to change → no Odoo write at all');
+	assert.equal(members[1].x_studio_role, 'spectator', 'the pending row is left untouched');
 }
 
 // 5. resetRound: scores → 0 for accepted members, and a finished chess game arms

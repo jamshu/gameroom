@@ -104,6 +104,25 @@
 		store.setFast(negotiating);
 	});
 
+	/**
+	 * Host cuts a round short and takes everyone back to the lobby, so people can
+	 * be re-seated, removed or the game swapped without waiting out a long chess
+	 * or ludo match. Lives in the shell rather than in each board: the control is
+	 * identical for all four games, and only ThiefFinderTable is passed `isHost`.
+	 */
+	let ending = $state(false);
+	async function endGame() {
+		if (!confirm('End this game and go back to the lobby? The current round will be lost.')) return;
+		ending = true;
+		try {
+			await store.post('end', {});
+		} catch (e) {
+			error = e.message;
+		} finally {
+			ending = false;
+		}
+	}
+
 	async function leaveRoom() {
 		if (!confirm('Leave this room?')) return;
 		if (inVoice) await leaveVoice();
@@ -223,6 +242,21 @@
 		} else if (kind === 'member-removed') {
 			const name = who(ev.payload.uid);
 			say(`👋 ${name} ${name === 'You' ? 'were' : 'was'} removed from the room.`);
+		} else if (kind === 'game-ended') {
+			// the board vanishing is the only other signal, and it looks identical to
+			// a game that simply finished — say who did it and that it was cut short
+			const name = who(ev.senderUid);
+			say(`🛑 ${name} ended the game — back to the lobby.`);
+		} else if (kind === 'role-changed') {
+			// the player who lost their seat is the one who has to be told: the role
+			// chip flips in a list they may not be looking at, and they'd otherwise
+			// find out by tapping a board that no longer responds
+			const seat = (uid, role) => {
+				const name = who(uid);
+				say(`↕️ ${name} ${name === 'You' ? 'are' : 'is'} now a ${role}.`);
+			};
+			seat(ev.payload.uid, ev.payload.role);
+			if (ev.payload.demotedUid) seat(ev.payload.demotedUid, 'spectator');
 		}
 	});
 	onDestroy(() => clearTimeout(noticeTimer));
@@ -239,7 +273,14 @@
 				<span class="chip chip--accent">{gameLabel(room.gameType)}</span>
 				<span class="chip">{room.status}</span>
 			</div>
-			<button class="btn btn--ghost btn--sm" onclick={leaveRoom}>Leave</button>
+			<div class="head-actions">
+				{#if isHost && room.status === 'playing'}
+					<button class="btn btn--ghost btn--sm" onclick={endGame} disabled={ending}>
+						{ending ? 'Ending…' : 'End game'}
+					</button>
+				{/if}
+				<button class="btn btn--ghost btn--sm" onclick={leaveRoom}>Leave</button>
+			</div>
 		</header>
 
 		{#if error}<p class="error-text">{error}</p>{/if}
@@ -307,6 +348,12 @@
 		align-items: center;
 		justify-content: space-between;
 		margin-bottom: 16px;
+	}
+	.head-actions {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-shrink: 0;
 	}
 	.room-notice {
 		display: inline-block;

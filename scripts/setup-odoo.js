@@ -46,9 +46,11 @@ async function ensureModel(model, name) {
 	return id;
 }
 
-// vals: { name, ttype, relation?, selection?, groupIds? }
+// vals: { name, ttype, relation?, selection?, groupIds?, on_delete? }
 //   selection is [[value, label], ...] for ttype:'selection'
 //   groupIds restricts the field to those res.groups (secrecy mechanism)
+//   anything else (relation_table/column1/column2 for many2many, required, …)
+//   rides the ...rest spread below straight into ir.model.fields.create
 async function ensureField(modelId, model, vals) {
 	const found = await x('ir.model.fields', 'search', [
 		[['model_id', '=', modelId], ['name', '=', vals.name]]
@@ -168,7 +170,21 @@ async function main() {
 		{ name: 'x_studio_draws_total', ttype: 'integer' },
 		// SECRET-BEARING: thief-finder roles live in this JSON. Field-level group
 		// restriction means internal users can't read it even with direct RPC.
-		{ name: 'x_studio_state', ttype: 'text', groupIds: [adminGid] }
+		{ name: 'x_studio_state', ttype: 'text', groupIds: [adminGid] },
+		// Private rooms. NOTE: existing rows get NULL here, not 'public' — every
+		// check must test for 'private' explicitly and treat anything else as open,
+		// or a re-run would hide every room that already exists.
+		{ name: 'x_studio_visibility', ttype: 'selection', selection: [['public', 'Public'], ['private', 'Private']] },
+		// Who may see and auto-join a private room. The one many2many in the schema;
+		// it has to be a real relational field rather than a list inside
+		// x_studio_state because the browse list filters on it in an Odoo domain.
+		// relation_table/column1/column2 are named explicitly: whether Odoo derives
+		// them for MANUAL m2m fields is version-dependent.
+		{
+			name: 'x_studio_allowed_user_ids', ttype: 'many2many', relation: 'res.users',
+			relation_table: 'x_gameroom_allowed_users_rel',
+			column1: 'x_gameroom_id', column2: 'user_id'
+		}
 	]) await ensureField(roomModel, 'x_gameroom', f);
 
 	const memberModel = await ensureModel('x_room_member', 'Room Member');

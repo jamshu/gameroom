@@ -111,8 +111,9 @@ test('re-seated roles arrive with the switch response, not a later poll', async 
 	await page.getByRole('button', { name: 'Switch' }).click();
 
 	await expect(page.locator('.chip--green')).toHaveCount(2);
-	await expect(page.getByText('spectator')).toHaveCount(2);
-	await expect(page.getByText('Needs exactly 2 players. 2 players ready.')).toBeVisible();
+	// exact: the host's per-row seat toggle also reads "Make spectator"
+	await expect(page.getByText('spectator', { exact: true })).toHaveCount(2);
+	await expect(page.getByText('Needs exactly 2 players. 2 of 2 seats taken.')).toBeVisible();
 });
 
 test('a poll held open across the switch does not revert it', async ({ page }) => {

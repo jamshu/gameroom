@@ -41,7 +41,10 @@ export function httpError(status, message, code) {
 export async function getRoom(roomId) {
 	const [room] = await adminExecute(ROOM, 'read', [[Number(roomId)]], {
 		fields: ['x_name', 'x_studio_game_type', 'x_studio_status', 'x_studio_host_id',
-			'x_studio_max_players', 'x_studio_draws_total', 'x_studio_state']
+			'x_studio_max_players', 'x_studio_draws_total', 'x_studio_state',
+			// every private-room gate reads these off the row getRoom returns; leave
+			// them out and `isPrivate` is silently false everywhere
+			'x_studio_visibility', 'x_studio_allowed_user_ids']
 	});
 	if (!room) throw httpError(404, 'Room not found');
 	return room;
@@ -78,6 +81,10 @@ export async function requireMember(cookies, roomId) {
 function judgeMembership(uid, room, members) {
 	const mine = members.find((m) => m.x_studio_user_id?.[0] === uid);
 	if (!mine || mine.x_studio_status !== 'accepted') {
+		// `banned` marks "removed by the host", not a permanent ban: it is what makes
+		// this 403 terminal AND accurate, so the removed player's poll stops and they
+		// land on the room list with the real reason rather than a generic
+		// "not a member". Requesting to join again clears the marker (see `join`).
 		if ((parseState(room)?.banned || []).includes(uid)) {
 			throw httpError(403, 'The host removed you from this room', 'removed');
 		}
@@ -304,9 +311,47 @@ export async function reseatRoles(members, gameType, maxPlayers) {
 }
 
 /**
+ * Apply EXPLICIT role changes — the host seating someone by hand, as opposed to
+ * reseatRoles' recompute from join order.
+ *
+ * These two must stay separate. reseatRoles derives the whole seating from
+ * lowest-member-id slicing, so routing a manual promotion through it would
+ * immediately re-demote the promoted spectator (their id is by definition higher
+ * than the incumbents'). This one moves exactly who it was told to and nobody
+ * else, which is what makes "swap this spectator in for that player" expressible.
+ *
+ * Same write shape and same in-hand mutation contract as reseatRoles: at most one
+ * batched Odoo write per target role, and the caller's rows updated so a
+ * following publicMembers/pushRoster is accurate. `changes` is [{ id, role }];
+ * entries whose row is already in that role are dropped, so it is idempotent.
+ */
+export async function setRoles(members, changes) {
+	const byId = new Map(members.map((m) => [m.id, m]));
+	const moving = changes
+		.map(({ id, role }) => ({ row: byId.get(Number(id)), role }))
+		.filter(({ row, role }) => row && row.x_studio_status === 'accepted' && row.x_studio_role !== role);
+
+	const toPlayer = moving.filter((c) => c.role === 'player').map((c) => c.row);
+	const toSpectator = moving.filter((c) => c.role === 'spectator').map((c) => c.row);
+	await Promise.all([
+		toPlayer.length
+			? adminExecute(MEMBER, 'write', [toPlayer.map((m) => m.id), { x_studio_role: 'player' }])
+			: null,
+		toSpectator.length
+			? adminExecute(MEMBER, 'write', [toSpectator.map((m) => m.id), { x_studio_role: 'spectator' }])
+			: null
+	].filter(Boolean));
+
+	for (const m of toPlayer) m.x_studio_role = 'player';
+	for (const m of toSpectator) m.x_studio_role = 'spectator';
+	return { promoted: toPlayer.length, demoted: toSpectator.length };
+}
+
+/**
  * Clear a finished round so the room can play another: scores back to 0, the
- * chess colour swap armed, the game dropped. Shared by `rematch` and the
- * game-type switch so the two can't drift — the caller persists `state`.
+ * chess colour swap armed, the game dropped. Shared by `rematch`, the host's
+ * `end` (abort mid-game) and the game-type switch so the three can't drift —
+ * the caller persists `state`.
  */
 export async function resetRound(state, members) {
 	const accepted = members.filter((m) => m.x_studio_status === 'accepted');
