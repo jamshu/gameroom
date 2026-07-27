@@ -51,11 +51,13 @@ test('host passes the room to another member and loses the controls', async ({ p
 	// no handover button against myself
 	await expect(myRow.getByRole('button', { name: /Make host/ })).toHaveCount(0);
 
-	await page.getByRole('button', { name: /Make host/ }).click();
+	// the actions now live behind a ⋮ menu on Bee's row
+	const beeRow = page.locator('.member-row', { has: page.locator('.member-name', { hasText: /^Bee$/ }) });
+	await beeRow.locator('.kebab > summary').click();
+	await beeRow.getByRole('button', { name: /Make host/ }).click();
 	expect(sent).toEqual({ uid: 101 });
 
 	// the POST response alone moves the badge — no poll round trip needed
-	const beeRow = page.locator('.member-row', { has: page.locator('.member-name', { hasText: /^Bee$/ }) });
 	await expect(beeRow.locator('.chip--amber')).toHaveText('host');
 	// and the controls are gone for the ex-host
 	await expect(page.getByRole('button', { name: 'Start', exact: true })).toHaveCount(0);

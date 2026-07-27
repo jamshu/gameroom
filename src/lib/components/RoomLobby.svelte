@@ -14,6 +14,19 @@
 	let swapFor = $state(null); // member id waiting for a player to swap out
 	let switching = $state(false);
 
+	// ⋮ menus close the open one on any tap outside it — native <details> won't.
+	// ponytail: one global listener closes all kebabs; fine for a short member list.
+	$effect(() => {
+		function onDown(e) {
+			for (const d of document.querySelectorAll('details.kebab[open]')) {
+				if (!d.contains(e.target)) d.open = false;
+			}
+		}
+		document.addEventListener('pointerdown', onDown);
+		return () => document.removeEventListener('pointerdown', onDown);
+	});
+	const closeMenu = (e) => e.currentTarget.closest('details')?.removeAttribute('open');
+
 	const accepted = $derived(members.filter((m) => m.status === 'accepted'));
 	const pending = $derived(members.filter((m) => m.status === 'pending'));
 	const players = $derived(accepted.filter((m) => m.role === 'player'));
@@ -63,8 +76,15 @@
 	// switches, or when our own POST fails.
 	let pick = $state(untrack(() => room.gameType));
 	let pickDraws = $state(untrack(() => room.drawsTotal) || 5);
+	// only follow the truth when it actually changes — a background poll re-ingesting
+	// the same gameType must not wipe an in-progress selection (native mobile <select>
+	// stays open across a poll tick).
+	let lastGameType = untrack(() => room.gameType);
 	$effect(() => {
-		pick = room.gameType;
+		if (room.gameType !== lastGameType) {
+			lastGameType = room.gameType;
+			pick = room.gameType;
+		}
 	});
 	const reseat = $derived.by(() => {
 		if (pick === room.gameType) return null;
@@ -195,43 +215,57 @@
 			<span class="chip {m.role === 'player' ? 'chip--green' : ''}">{m.role}</span>
 			<span class="dot {m.online ? 'dot--on' : ''}" title={m.online ? 'online' : 'offline'}></span>
 			{#if isHost}
-				<!-- The seat toggle is the one control that also applies to the host's
-				     OWN row: in chess the host holds one of the two seats, so sitting
-				     out is how they free it for someone waiting. Host stays host. -->
-				<button
-					class="btn btn--ghost btn--sm seat-btn"
-					onclick={() => setRole(m, m.role === 'player' ? 'spectator' : 'player')}
-					disabled={reseating === m.id}
-					title={m.role === 'player'
-						? `Move ${m.name} to the spectators`
-						: `Give ${m.name} a player seat`}
-				>
-					{#if reseating === m.id}
-						…
-					{:else if m.role === 'player'}
-						▼ Make spectator
-					{:else}
-						▲ Make player
-					{/if}
-				</button>
-			{/if}
-			{#if isHost && m.uid !== room.hostUid}
-				<button
-					class="btn btn--ghost btn--sm"
-					onclick={() => makeHost(m)}
-					disabled={promoting === m.id}
-					title="Make {m.name} the host of this room"
-				>
-					{promoting === m.id ? '…' : '👑 Make host'}
-				</button>
-				<button
-					class="btn btn--ghost btn--sm"
-					onclick={() => remove(m)}
-					disabled={removing === m.id}
-					title="Remove {m.name} from this room"
-				>
-					{removing === m.id ? '…' : 'Remove'}
-				</button>
+				<details class="kebab">
+					<summary class="btn btn--ghost btn--sm" title="Actions" aria-label="Actions">⋮</summary>
+					<div class="kebab-panel">
+						<!-- The seat toggle is the one control that also applies to the host's
+						     OWN row: in chess the host holds one of the two seats, so sitting
+						     out is how they free it for someone waiting. Host stays host. -->
+						<button
+							class="btn btn--ghost btn--sm"
+							onclick={(e) => {
+								closeMenu(e);
+								setRole(m, m.role === 'player' ? 'spectator' : 'player');
+							}}
+							disabled={reseating === m.id}
+							title={m.role === 'player'
+								? `Move ${m.name} to the spectators`
+								: `Give ${m.name} a player seat`}
+						>
+							{#if reseating === m.id}
+								…
+							{:else if m.role === 'player'}
+								▼ Make spectator
+							{:else}
+								▲ Make player
+							{/if}
+						</button>
+						{#if m.uid !== room.hostUid}
+							<button
+								class="btn btn--ghost btn--sm"
+								onclick={(e) => {
+									closeMenu(e);
+									makeHost(m);
+								}}
+								disabled={promoting === m.id}
+								title="Make {m.name} the host of this room"
+							>
+								{promoting === m.id ? '…' : '👑 Make host'}
+							</button>
+							<button
+								class="btn btn--ghost btn--sm"
+								onclick={(e) => {
+									closeMenu(e);
+									remove(m);
+								}}
+								disabled={removing === m.id}
+								title="Remove {m.name} from this room"
+							>
+								{removing === m.id ? '…' : 'Remove'}
+							</button>
+						{/if}
+					</div>
+				</details>
 			{/if}
 		</div>
 		{#if swapFor === m.id}
@@ -351,10 +385,38 @@
 	.member-name {
 		font-weight: 500;
 	}
-	/* first of the host controls, so it takes the slack and lines the whole
-	   trailing group up on the right */
-	.seat-btn {
+	/* ⋮ menu takes the slack so it lines up on the right of the row */
+	.kebab {
 		margin-left: auto;
+		position: relative;
+	}
+	.kebab > summary {
+		list-style: none;
+		cursor: pointer;
+		line-height: 1;
+	}
+	.kebab > summary::-webkit-details-marker {
+		display: none;
+	}
+	.kebab-panel {
+		position: absolute;
+		right: 0;
+		top: 100%;
+		z-index: 10;
+		margin-top: 4px;
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		padding: 6px;
+		min-width: 150px;
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: 10px;
+		box-shadow: var(--shadow-sm);
+	}
+	.kebab-panel .btn {
+		justify-content: flex-start;
+		width: 100%;
 	}
 	.invite-btn {
 		margin-left: auto;

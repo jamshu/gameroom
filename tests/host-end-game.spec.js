@@ -147,6 +147,7 @@ test('host seats a waiting spectator when a seat is free', async ({ page }) => {
 	await expect(page.getByText('2 of 4 seats taken.')).toBeVisible();
 
 	const ceeRow = page.locator('.member-row', { has: page.locator('.member-name', { hasText: /^Cee$/ }) });
+	await ceeRow.locator('.kebab > summary').click();
 	await ceeRow.getByRole('button', { name: /Make player/ }).click();
 
 	expect(sent).toEqual({ memberId: 3, role: 'player' });
@@ -169,6 +170,7 @@ test('a full chess table asks who steps down before seating anyone', async ({ pa
 	await expect(page.getByText('2 of 2 seats taken.')).toBeVisible();
 
 	const ceeRow = page.locator('.member-row', { has: page.locator('.member-name', { hasText: /^Cee$/ }) });
+	await ceeRow.locator('.kebab > summary').click();
 	await ceeRow.getByRole('button', { name: /Make player/ }).click();
 
 	// nothing was posted yet — a full table needs the host to name the substitution
@@ -201,6 +203,7 @@ test('the host can sit out to free their own seat', async ({ page }) => {
 	await expect(myRow.getByRole('button', { name: /Make host/ })).toHaveCount(0);
 	await expect(myRow.getByRole('button', { name: 'Remove' })).toHaveCount(0);
 
+	await myRow.locator('.kebab > summary').click();
 	await myRow.getByRole('button', { name: /Make spectator/ }).click();
 	expect(sent).toEqual({ memberId: 1, role: 'spectator' });
 
