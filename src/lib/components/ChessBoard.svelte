@@ -599,10 +599,12 @@
 		gap: 8px;
 		background: var(--bg);
 		/* the ancestor's safe-area padding doesn't follow us into the top layer.
-		   Horizontal padding is kept minimal so the board can go near full-width
-		   on phones — width is what caps it in portrait. */
-		padding: calc(8px + env(safe-area-inset-top)) calc(4px + env(safe-area-inset-right))
-			calc(8px + env(safe-area-inset-bottom)) calc(4px + env(safe-area-inset-left));
+		   Zero horizontal padding (only the notch inset) so the board reaches the
+		   true screen edges like chess.com — width is what caps it in portrait. */
+		padding: calc(8px + env(safe-area-inset-top)) env(safe-area-inset-right)
+			calc(8px + env(safe-area-inset-bottom)) env(safe-area-inset-left);
+		/* vertical budget reserved for the pinned clock strips */
+		--fs-reserve: 72px;
 	}
 	/* chess.com layout: each player's clock on their own side — opponent pinned to
 	   the top, me to the bottom — with ONLY the board centred in between, so it
@@ -643,10 +645,13 @@
 	}
 	.board-wrap--fs .board {
 		flex: 0 1 auto;
-		/* reserve keeps the centred board clear of the pinned clock strips */
-		width: min(100%, calc(100svh - 108px));
-		max-width: min(100%, calc(100svh - 108px));
-		max-height: calc(100svh - 108px);
+		/* fill the viewport edge-to-edge; --fs-reserve keeps the board clear of the
+		   pinned clock strips. On a tall phone width wins → board = full 100vw. */
+		width: min(100vw, calc(100svh - var(--fs-reserve)));
+		max-width: min(100vw, calc(100svh - var(--fs-reserve)));
+		max-height: calc(100svh - var(--fs-reserve));
+		border: none;
+		border-radius: 0;
 	}
 	/* square colours come from the chosen board theme (--sq-l / --sq-d, set on
 	   .board), with a fallback so the board is never unstyled */
