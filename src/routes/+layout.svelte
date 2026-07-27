@@ -7,8 +7,24 @@
 	import { goto } from '$app/navigation';
 	import { user, checkSession, logout } from '$lib/stores/auth.js';
 	import Avatar from '$lib/components/Avatar.svelte';
+	import { pushSupported, currentSubscription, subscribePush } from '$lib/push.js';
 
 	let { children } = $props();
+
+	// 🔔 shows only when the browser supports push but isn't subscribed yet.
+	let pushState = $state('unknown'); // 'unknown' | 'off' | 'on'
+	async function refreshPushState() {
+		if (!pushSupported()) return;
+		pushState = (await currentSubscription()) ? 'on' : 'off';
+	}
+	async function enablePush() {
+		try {
+			await subscribePush();
+			pushState = 'on';
+		} catch (e) {
+			alert(e.message);
+		}
+	}
 
 	const PUBLIC_ROUTES = ['/login', '/signup'];
 	const isPublic = (path) => PUBLIC_ROUTES.some((p) => path.startsWith(p));
@@ -23,6 +39,7 @@
 	onMount(() => {
 		checkSession();
 		if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+		refreshPushState();
 		document.addEventListener('visibilitychange', pingIfVisible);
 		const t = setInterval(pingIfVisible, KEEPALIVE_MS);
 		return () => {
@@ -50,6 +67,9 @@
 		<header class="topbar">
 			<a class="brand" href="/">🎲 Gamerooms</a>
 			<div class="topbar-right">
+				{#if pushState === 'off'}
+					<button class="btn btn--ghost btn--sm" title="Enable notifications" onclick={enablePush}>🔔</button>
+				{/if}
 				<a href="/profile" class="profile-link" title="Profile">
 					<Avatar uid={$user.uid} name={$user.name} size={30} />
 					<span class="profile-name">{$user.name}</span>

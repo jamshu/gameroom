@@ -206,6 +206,19 @@ async function main() {
 		{ name: 'x_studio_target_uid', ttype: 'integer' }
 	]) await ensureField(eventModel, 'x_room_event', f);
 
+	// Follow graph: a self many2many on the core res.users. "Users I follow".
+	// Followers of X = users who have X in their list, so the room-create push
+	// finds a host's followers with search [['x_studio_following_ids','in',[host]]].
+	// res.users is core (state:'base'); ensureModel just resolves its id here.
+	// relation_table/column1/column2 named explicitly — same reason as the
+	// x_gameroom m2m: Odoo derives them inconsistently for manual fields.
+	const usersModel = await ensureModel('res.users', 'Users');
+	await ensureField(usersModel, 'res.users', {
+		name: 'x_studio_following_ids', ttype: 'many2many', relation: 'res.users',
+		relation_table: 'x_user_following_rel',
+		column1: 'user_id', column2: 'following_user_id'
+	});
+
 	/* --------------------------- access rights ----------------------------- */
 	// Players (internal users): NO direct access. All reads AND writes go
 	// through the app proxy with the admin key after app-level authorization.

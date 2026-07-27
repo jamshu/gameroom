@@ -1,11 +1,15 @@
 <script>
-	import { untrack } from 'svelte';
+	import { untrack, onMount } from 'svelte';
 	import Avatar from './Avatar.svelte';
 	import UserPicker from './UserPicker.svelte';
 	import { api } from '$lib/api.js';
 	import { GAMES, gameById, seatedPlayerIds, playerCapacity } from '$lib/games.js';
+	import { user } from '$lib/stores/auth.js';
+	import { following, follow } from '$lib/stores/follow.js';
 
 	let { store, members, room, isHost } = $props();
+	const myUid = $derived($user?.uid);
+	onMount(() => follow.load());
 	let error = $state('');
 	let starting = $state(false);
 	let removing = $state(null); // member id being removed
@@ -214,6 +218,16 @@
 			{#if m.uid === room.hostUid}<span class="chip chip--amber">host</span>{/if}
 			<span class="chip {m.role === 'player' ? 'chip--green' : ''}">{m.role}</span>
 			<span class="dot {m.online ? 'dot--on' : ''}" title={m.online ? 'online' : 'offline'}></span>
+			<span class="row-actions">
+			{#if m.uid !== myUid}
+				<button
+					class="btn btn--ghost btn--sm"
+					onclick={() => follow.toggle(m.uid)}
+					title={$following.has(m.uid) ? `Unfollow ${m.name}` : `Follow ${m.name}`}
+				>
+					{$following.has(m.uid) ? '✓ Following' : '+ Follow'}
+				</button>
+			{/if}
 			{#if isHost}
 				<details class="kebab">
 					<summary class="btn btn--ghost btn--sm" title="Actions" aria-label="Actions">⋮</summary>
@@ -267,6 +281,7 @@
 					</div>
 				</details>
 			{/if}
+			</span>
 		</div>
 		{#if swapFor === m.id}
 			<!-- Every seat is taken, so seating this member means unseating another.
@@ -385,9 +400,14 @@
 	.member-name {
 		font-weight: 500;
 	}
-	/* ⋮ menu takes the slack so it lines up on the right of the row */
-	.kebab {
+	/* trailing controls (Follow + host ⋮) take the slack, right-aligned */
+	.row-actions {
 		margin-left: auto;
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+	.kebab {
 		position: relative;
 	}
 	.kebab > summary {

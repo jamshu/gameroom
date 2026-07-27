@@ -1,6 +1,8 @@
 import { json } from '@sveltejs/kit';
 import { adminExecute } from '$lib/server/odoo.js';
 import { requireUser } from '$lib/server/auth.js';
+import { sendToUser } from '$lib/server/push.js';
+import { gameById } from '$lib/games.js';
 import { ROOM, MEMBER, GAME_TYPES, browseDomain, sweepAbandonedRooms, jsonError } from '$lib/server/room.js';
 
 export const prerender = false;
@@ -44,6 +46,34 @@ export async function POST({ request, cookies }) {
 			x_studio_status: 'accepted',
 			x_studio_role: 'player'
 		}]);
+
+		// Notify: private → the invited users; public → the host's followers.
+		// Best-effort — a push failure must never fail room creation, and the await
+		// matters because Amplify's Lambda freezes once the response is returned.
+		try {
+			let targets;
+			if (priv) {
+				targets = guests.filter((g) => g !== uid);
+			} else {
+				targets = await adminExecute('res.users', 'search', [
+					[['x_studio_following_ids', 'in', [uid]]]
+				]);
+				targets = targets.filter((t) => t !== uid);
+			}
+			if (targets.length) {
+				const [me] = await adminExecute('res.users', 'read', [[uid]], { fields: ['name'] });
+				const label = gameById(gameType)?.label ?? gameType;
+				const payload = {
+					title: priv ? `${me.name} invited you to a room` : `${me.name} started a room`,
+					body: `${name.trim()} · ${label}`,
+					url: `/room/${roomId}`
+				};
+				await Promise.allSettled(targets.map((t) => sendToUser(t, payload)));
+			}
+		} catch (e) {
+			console.error('[rooms] notify failed:', e?.message);
+		}
+
 		return json({ ok: true, roomId });
 	} catch (e) {
 		const { body, status } = jsonError(e);
