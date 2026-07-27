@@ -694,6 +694,34 @@
 	.play-area--fs .fs-btn {
 		margin: 0;
 	}
+	/* Landscape: the long screen side is now horizontal, so size the square board to
+	   the SHORT side (height) and put the dice/controls + exit in a column beside it.
+	   The board grows far larger than portrait (width-bound) ever allows. */
+	@media (orientation: landscape) {
+		.play-area--fs {
+			flex-direction: row;
+			gap: 20px;
+		}
+		.play-area--fs .board-wrap {
+			width: auto;
+			max-width: none;
+			height: 100%;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+		}
+		.play-area--fs .board {
+			/* square from height, capped so the ~220px controls column still fits */
+			width: min(calc(100svh - 12px), calc(100svw - 260px));
+			height: min(calc(100svh - 12px), calc(100svw - 260px));
+		}
+		.play-area--fs .controls {
+			flex-direction: column;
+			gap: 14px;
+			width: 200px;
+			flex: 0 0 auto;
+		}
+	}
 	.board {
 		position: relative;
 		width: 100%;
