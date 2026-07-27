@@ -716,12 +716,14 @@
 		background: radial-gradient(circle at 50% 42%, rgba(255, 255, 255, 0.5), transparent 68%);
 	}
 	.piece {
-		width: 100%;
-		height: 100%;
+		/* 110% so the glyph (SVGs carry transparent padding) fills the square edge-
+		   to-edge like chess.com; overflow is transparent, centred by .lift */
+		width: 110%;
+		height: 110%;
 		pointer-events: none;
 		user-select: none;
 		transform: translateZ(14px); /* lifts the piece off the square for parallax */
-		filter: drop-shadow(0 3px 4px rgba(0, 0, 0, 0.34));
+		filter: drop-shadow(0 3px 4px rgba(0, 0, 0, 0.34)) drop-shadow(0 0 1px rgba(0, 0, 0, 0.55));
 		transition:
 			transform 0.22s cubic-bezier(0.22, 0.61, 0.36, 1),
 			filter 0.22s ease;
@@ -753,7 +755,7 @@
 			transition: none;
 		}
 		.sq--occupied:hover .piece {
-			transform: translateZ(14px) scale(1.08);
+			transform: translateZ(14px) scale(1.12);
 		}
 	}
 	.sq--sel {
