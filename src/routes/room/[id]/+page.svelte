@@ -379,11 +379,11 @@
 	}
 	.room-grid {
 		display: grid;
-		grid-template-columns: 1fr 320px;
+		grid-template-columns: minmax(0, 1fr) minmax(0, 320px);
 		gap: 18px;
 		align-items: start;
 	}
-	@media (max-width: 860px) {
+	@media (max-width: 760px) {
 		.room-grid {
 			grid-template-columns: 1fr;
 		}

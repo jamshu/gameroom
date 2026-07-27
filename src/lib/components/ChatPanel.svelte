@@ -331,6 +331,13 @@
 		padding: 12px;
 		height: 380px;
 	}
+	/* stacked (single-column) layout on phones: scale to the viewport instead of a
+	   fixed 380px slab that eats half the screen */
+	@media (max-width: 760px) {
+		.chat {
+			height: clamp(260px, 55svh, 420px);
+		}
+	}
 	.chat-list {
 		flex: 1;
 		overflow-y: auto;
@@ -492,7 +499,8 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		padding: 24px;
+		padding: calc(24px + env(safe-area-inset-top)) calc(24px + env(safe-area-inset-right))
+			calc(24px + env(safe-area-inset-bottom)) calc(24px + env(safe-area-inset-left));
 		cursor: zoom-out;
 	}
 	.lightbox img {

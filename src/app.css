@@ -315,6 +315,22 @@ textarea.input {
 	outline-offset: 1px;
 }
 
+/* Touch devices: 16px inputs stop iOS focus-zoom; buttons meet a comfortable
+   tap height. Gated on coarse pointers so desktop density is unchanged. */
+@media (pointer: coarse) {
+	.input,
+	.select,
+	textarea.input {
+		font-size: 16px;
+	}
+	.btn {
+		min-height: 44px;
+	}
+	.btn--sm {
+		min-height: 40px;
+	}
+}
+
 .label {
 	display: block;
 	font-size: 0.8rem;

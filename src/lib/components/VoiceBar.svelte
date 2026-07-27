@@ -72,10 +72,16 @@
 		display: flex;
 		align-items: center;
 		gap: 5px;
+		max-width: 160px;
 		background: var(--surface);
 		border: 1px solid var(--border);
 		border-radius: 999px;
 		padding: 2px 10px 2px 2px;
 		font-size: 0.8rem;
+	}
+	.voice-name {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 </style>

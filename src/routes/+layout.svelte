@@ -125,5 +125,11 @@
 		.profile-name {
 			display: none;
 		}
+		.topbar {
+			gap: 8px;
+		}
+		.topbar-right {
+			gap: 8px;
+		}
 	}
 </style>

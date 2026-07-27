@@ -357,6 +357,14 @@
 		font-weight: 600;
 		letter-spacing: 0.01em;
 	}
+	.reveal-row .player-name,
+	.score-row .player-name {
+		flex: 1 1 auto;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
 
 	.my-card {
 		display: flex;
@@ -400,7 +408,7 @@
 
 	.envelopes {
 		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+		grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
 		gap: 12px;
 		margin: 8px 0 4px;
 	}
@@ -454,8 +462,8 @@
 	}
 
 	.suspects {
-		display: flex;
-		flex-wrap: wrap;
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
 		gap: 12px;
 	}
 	.suspect {
@@ -464,7 +472,7 @@
 		align-items: center;
 		gap: 8px;
 		padding: 14px 18px;
-		min-width: 104px;
+		min-width: 0;
 		background: var(--surface);
 		border: 1px solid var(--border);
 		border-radius: var(--radius);

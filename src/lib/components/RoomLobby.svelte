@@ -399,6 +399,11 @@
 	}
 	.member-name {
 		font-weight: 500;
+		flex: 1 1 auto;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	/* trailing controls (Follow + host ⋮) take the slack, right-aligned */
 	.row-actions {
@@ -429,6 +434,7 @@
 		gap: 4px;
 		padding: 6px;
 		min-width: 150px;
+		max-width: min(220px, calc(100vw - 24px));
 		background: var(--surface);
 		border: 1px solid var(--border);
 		border-radius: 10px;
