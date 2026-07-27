@@ -67,6 +67,7 @@
 		<header class="topbar">
 			<a class="brand" href="/">🎲 Gamerooms</a>
 			<div class="topbar-right">
+				<a href="/people" class="btn btn--ghost btn--sm" title="Find people">👥</a>
 				{#if pushState === 'off'}
 					<button class="btn btn--ghost btn--sm" title="Enable notifications" onclick={enablePush}>🔔</button>
 				{/if}

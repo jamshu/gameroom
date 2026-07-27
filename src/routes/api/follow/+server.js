@@ -12,7 +12,13 @@ export async function GET({ cookies }) {
 	try {
 		const { uid } = await requireUser(cookies);
 		const [u] = await adminExecute('res.users', 'read', [[uid]], { fields: [FOLLOWING] });
-		return json({ ok: true, following: u?.[FOLLOWING] ?? [] });
+		const ids = u?.[FOLLOWING] ?? [];
+		let people = [];
+		if (ids.length) {
+			const rows = await adminExecute('res.users', 'read', [ids], { fields: ['name'] });
+			people = rows.map((r) => ({ uid: r.id, name: r.name }));
+		}
+		return json({ ok: true, following: ids, people });
 	} catch (e) {
 		const { body, status } = jsonError(e);
 		return json(body, { status });

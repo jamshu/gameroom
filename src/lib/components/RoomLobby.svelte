@@ -222,7 +222,7 @@
 			{#if m.uid !== myUid}
 				<button
 					class="btn btn--ghost btn--sm"
-					onclick={() => follow.toggle(m.uid)}
+					onclick={() => follow.toggle(m.uid, m.name)}
 					title={$following.has(m.uid) ? `Unfollow ${m.name}` : `Follow ${m.name}`}
 				>
 					{$following.has(m.uid) ? '✓ Following' : '+ Follow'}
