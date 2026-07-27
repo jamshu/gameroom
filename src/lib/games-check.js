@@ -7,7 +7,7 @@
 // would reject it forever. Both the server (reseatRoles) and the lobby preview
 // go through seatedPlayerIds, so they can't disagree about who keeps a seat.
 import assert from 'node:assert';
-import { GAMES, GAME_TYPES, gameById, gameLabel, playerCapacity, seatedPlayerIds } from './games.js';
+import { GAMES, GAME_TYPES, gameById, gameLabel, playerCapacity, seatedPlayerIds, contendedProgress, isContendedPhase, outranksAtSameVersion } from './games.js';
 
 const rows = (n, from = 1) =>
 	Array.from({ length: n }, (_, i) => ({ id: from + i, accepted: true }));
@@ -63,6 +63,68 @@ const seatIds = (...args) => [...seatedPlayerIds(...args)].sort((a, b) => a - b)
 		assert.ok(gameLabel(id).includes(gameById(id).label));
 	}
 	assert.equal(gameById('poker'), GAMES[0], 'unknown id falls back');
+}
+
+/* ------------------- (g) equal-version ordering, contended phase -------------
+   Two players opening envelopes at the same instant both persist state.v+1 from
+   the same base, so equal versions can carry DIFFERENT claim maps. Both version
+   gates (the poll's and the store's mergeState) then fall back on this ranking
+   to decide which one is actually later. It has to be a TOTAL order: rank by
+   "the content differs" alone and the losing `picking` payload overwrites the
+   winning `guessing` one, walking the room backwards. */
+{
+	const pick = (n) => ({
+		type: 'thief_finder',
+		phase: 'picking',
+		claims: Object.fromEntries(Array.from({ length: n }, (_, i) => [i, 100 + i]))
+	});
+	// `thiefView` nulls `claims` outside picking — the ranking must survive that
+	const guessing = { type: 'thief_finder', phase: 'guessing', claims: null };
+
+	// within picking, a fuller claim map is strictly later (resolveClaims rebuilds
+	// from an append-only log, so fuller claims means a fuller log)
+	assert.ok(contendedProgress(pick(2)) > contendedProgress(pick(1)));
+	assert.equal(contendedProgress(pick(1)), contendedProgress(pick(1)), 'and is stable');
+
+	// the phase step dominates the claim count — a room cannot hold 1000 players,
+	// so the guessing flip outranks ANY picking payload, however full
+	assert.ok(contendedProgress(guessing) > contendedProgress(pick(999)),
+		'guessing can never be walked back to picking at the same version');
+
+	// phases only a single writer can reach opt out entirely: they are reached by
+	// the police guess, which bumps the version properly and needs no tiebreak
+	for (const phase of ['reveal', 'finished', 'idle']) {
+		assert.equal(contendedProgress({ type: 'thief_finder', phase, claims: {} }), null, phase);
+	}
+	// turn-serialized games never contend, so they keep the strict version rule
+	for (const type of ['chess', 'ludo', 'carroms']) {
+		assert.equal(contendedProgress({ type, phase: 'picking' }), null, type);
+	}
+	assert.equal(contendedProgress(null), null, 'no game at all');
+
+	assert.ok(isContendedPhase(pick(0)) && isContendedPhase(guessing));
+	assert.ok(!isContendedPhase({ type: 'chess' }), 'the server gate agrees with the ranking');
+
+	/* the tie-break the store's mergeState applies once its strict `<` check has
+	   passed. The reported bug IS the false case here: the second of two colliding
+	   pushes must still be applied when it is the fuller one. */
+	const outranks = outranksAtSameVersion;
+
+	assert.ok(outranks(pick(1), pick(2)), 'the fuller claim map wins, whichever arrived first');
+	assert.ok(!outranks(pick(2), pick(1)), 'and the emptier one is still rejected');
+	assert.ok(!outranks(pick(2), pick(2)), 'an identical redelivery changes nothing');
+	assert.ok(outranks(pick(3), guessing), 'the guessing flip is always later');
+	assert.ok(!outranks(guessing, pick(3)), 'and can never be undone by a late picking push');
+
+	// nothing held yet — there is no state to walk backwards over
+	assert.ok(outranks(null, pick(1)));
+	// a phase the ranking does not cover is strictly later than anything it does,
+	// so it must be left alone rather than overwritten
+	const reveal = { type: 'thief_finder', phase: 'reveal' };
+	assert.ok(!outranks(reveal, pick(3)), 'reveal is not overwritten by a stale pick');
+	assert.ok(!outranks(reveal, guessing), 'nor walked back to guessing');
+	// turn-serialized games never take this path at all
+	assert.ok(!outranks({ type: 'chess' }, { type: 'chess' }), 'chess keeps the strict rule');
 }
 
 console.log('games-check: all assertions passed');

@@ -11,9 +11,24 @@ export async function POST({ params, cookies }) {
 		const state = parseState(room);
 		const game = state?.game;
 		if (!game || game.type !== 'thief_finder') throw httpError(409, 'No thief-finder game in progress');
+		// The draw thiefDeal's phase guard was just decided against.
+		const baseDraw = game.draw;
 
 		thiefDeal(game);
-		await writeState(params.id, state);
+		// stillValid, not guardVersion: two deals racing is not contention to be
+		// ordered, it is one deal too many. Both read `phase: 'reveal'`, both clear
+		// that guard, and both write a DIFFERENT envelope→role shuffle — so the
+		// round's roles would come down to which write landed last. Ordering them
+		// only makes the room agree on a shuffle; refusing is what stops the second
+		// deal reshuffling a draw already under way. The host's auto-deal timer
+		// retries once, so this genuinely does fire.
+		//
+		// The precondition is the DRAW, not the version: another deal has advanced
+		// it, whereas a mic toggle or a chat message bumps the version without
+		// touching the game and must not cost the host their deal.
+		await writeState(params.id, state, {}, {
+			stillValid: (fresh) => (fresh?.game?.draw ?? baseDraw) === baseDraw
+		});
 		await appendEvent(params.id, 'system', {
 			kind: 'draw-dealt',
 			draw: game.draw,

@@ -47,3 +47,61 @@ export function seatedPlayerIds(members, gameType, maxPlayers) {
 		.slice(0, playerCapacity(gameType, maxPlayers));
 	return new Set(seats.map((m) => m.id));
 }
+
+/* ------------------------- contended-phase ordering -------------------------
+   Thief-finder `picking` is the one place several players write at the same
+   instant — everyone grabs an envelope at once — whereas chess, ludo and carroms
+   only ever accept a write from the player whose turn it is. Two writers reading
+   the same `state.v` both persist v+1 with DIFFERENT content, and the version
+   gates on both sides then drop one of them with no way back (see writeState's
+   guardVersion and the store's mergeState).
+
+   The escape hatch is to let equal versions through and order them by progress
+   instead. That tiebreak has to be a TOTAL order or it makes things worse: rank
+   by "different content" alone and the losing `picking` payload would overwrite
+   the winning `guessing` one, walking the room backwards.
+
+   Lives here, in the shared dependency-free module, because the poll endpoint
+   and the client store must agree exactly — the server relaxing its gate without
+   the client relaxing its own would just send bytes nobody applies. Works on the
+   raw server game AND on the filtered `thiefView` a client holds; `claims` is
+   nulled outside `picking` by that filter, which the ranking below relies on. */
+
+const PHASE_RANK = { picking: 0, guessing: 1 };
+
+/**
+ * How far a contended thief-finder game has progressed, as a single comparable
+ * number — or `null` when equal-version ordering doesn't apply (any other game,
+ * or a phase only a single writer can reach).
+ *
+ * Within `picking`, more envelopes claimed is strictly later: `resolveClaims`
+ * rebuilds from an append-only log, so a fuller claim map means a fuller log.
+ * The phase step dominates the claim count by construction — a room can't hold
+ * 1000 players — so the guessing flip always outranks any picking payload.
+ */
+export function contendedProgress(game) {
+	if (game?.type !== 'thief_finder') return null;
+	const rank = PHASE_RANK[game.phase];
+	if (rank == null) return null;
+	return rank * 1000 + Object.keys(game.claims || {}).length;
+}
+
+/** Is this game in a phase where equal versions must still be compared? */
+export const isContendedPhase = (game) => contendedProgress(game) !== null;
+
+/**
+ * At an EQUAL state version, is `incoming` genuinely later than `held`?
+ *
+ * The store's mergeState asks this after its strict `<` check. Lives here rather
+ * than as a closure in the store so the edges are assertable: `held` may be
+ * absent (nothing to lose), and an unrankable held phase — reveal, finished — is
+ * NOT a licence to overwrite, since those are strictly later than anything this
+ * ranks and would otherwise be walked backwards by a stale `picking` payload.
+ */
+export function outranksAtSameVersion(held, incoming) {
+	const next = contendedProgress(incoming);
+	if (next == null) return false;
+	if (!held) return true;
+	const now = contendedProgress(held);
+	return now != null && next > now;
+}

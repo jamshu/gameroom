@@ -1,5 +1,5 @@
 <script>
-	import { tick, onMount } from 'svelte';
+	import { tick, onMount, onDestroy } from 'svelte';
 	import { Chess } from 'chess.js';
 	import Avatar from './Avatar.svelte';
 	import { playMove, playCapture, isMuted, setMuted, arm } from '$lib/sound.js';
@@ -32,10 +32,35 @@
 	$effect(() => {
 		const serverFen = game.fen;
 		if (optimisticBaseFen != null && serverFen !== optimisticBaseFen) {
-			optimisticBaseFen = null;
-			optimisticFen = null;
+			clearOverlay();
 		}
 	});
+
+	/**
+	 * How long to hold an optimistic move whose POST never answered.
+	 *
+	 * A timeout tells us nothing about whether the server applied the move, so
+	 * dropping the overlay immediately was a coin flip that lost loudly: the piece
+	 * snapped back and then jumped forward again seconds later. Holding it instead
+	 * makes the common case (it landed) invisible — the effect above clears the
+	 * overlay the moment the server position moves off the one we played from.
+	 *
+	 * But it MUST be bounded: `myTurn` is gated on `!optimisticFen`, so an overlay
+	 * that never clears locks the player out of retrying their own move. Sized past
+	 * the store's reconcile poll (~1.2s) plus a slow Odoo round trip, so the answer
+	 * has had every chance to arrive before we give up on it.
+	 */
+	const OFFLINE_HOLD_MS = 8000;
+	let offlineHoldTimer = null;
+
+	function clearOverlay() {
+		clearTimeout(offlineHoldTimer);
+		offlineHoldTimer = null;
+		optimisticBaseFen = null;
+		optimisticFen = null;
+	}
+
+	onDestroy(() => clearTimeout(offlineHoldTimer));
 
 	/* ---- move review ------------------------------------------------------ */
 
@@ -352,9 +377,27 @@
 			try {
 				await store.post('chess/move', { from, to: sq });
 			} catch (e) {
-				optimisticBaseFen = null; // rollback — server rejected
-				optimisticFen = null;
-				error = e.message;
+				if (e?.offline) {
+					// The response never arrived, so the move may well have landed.
+					// Keep it on the board ("Sending…") and let the store's reconcile
+					// poll settle it; roll back only if nothing has answered by then.
+					//
+					// The complaint goes in the TIMER, not here: raising it now would
+					// warn about a move that is probably fine, and staying silent
+					// when the timer fires would snap the piece back with no
+					// explanation at all — worse than the banner it replaced. If the
+					// move did land, the $effect above clears this timer first, so
+					// the message is never shown. If it didn't, `game.v` hasn't moved
+					// either, so the clearedAtV effect won't wipe it.
+					clearTimeout(offlineHoldTimer);
+					offlineHoldTimer = setTimeout(() => {
+						clearOverlay();
+						error = e.message;
+					}, OFFLINE_HOLD_MS);
+				} else {
+					clearOverlay(); // the server actually rejected it
+					error = e.message;
+				}
 			}
 			return;
 		}

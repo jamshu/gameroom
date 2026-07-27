@@ -2,6 +2,7 @@ import { json } from '@sveltejs/kit';
 import { adminExecute } from '$lib/server/odoo.js';
 import { EVENT, MEMBER, requireMemberCached, parseState, publicRoom, publicMembers, writeState, jsonError } from '$lib/server/room.js';
 import { resolveClaims, filterPickRows, stateView } from '$lib/server/gamelogic.js';
+import { isContendedPhase } from '$lib/games.js';
 
 export const prerender = false;
 
@@ -79,9 +80,24 @@ export async function GET({ params, url, cookies }) {
 				['x_studio_sender_uid', 'x_studio_payload']
 			], { order: 'id asc' });
 			const rows = filterPickRows(picks, state.game);
-			if (resolveClaims(state.game, rows)) await writeState(params.id, state);
+			// guardVersion: `state` was parsed off a room row served from the 750ms
+			// snapshot cache, and writeState's invalidate only reaches THIS Lambda
+			// container — another one's pick can already have moved the version on.
+			// Without the guard this read endpoint writes a version it has already
+			// been overtaken by, which is the same wedge the pick route guards
+			// against, arriving from the one path meant to HEAL it. The extra read
+			// rides only the rare poll where resolveClaims actually found a gap.
+			if (resolveClaims(state.game, rows)) {
+				await writeState(params.id, state, {}, { guardVersion: true });
+			}
 		}
-		if (state && state.v > gv) out.state = stateView(state, uid);
+		// `v > gv` is what keeps the 60s safety poll cheap — normally there is
+		// nothing to say. The exception is the contended phase: two simultaneous
+		// picks can both land on the SAME v with different claim maps, and a client
+		// holding the emptier one sits at gv == v, so a strict `>` would never send
+		// it anything again. Equal versions go out there and mergeState decides.
+		const contended = isContendedPhase(state?.game);
+		if (state && (state.v > gv || (contended && state.v === gv))) out.state = stateView(state, uid);
 		return json(out);
 	} catch (e) {
 		const { body, status } = jsonError(e);

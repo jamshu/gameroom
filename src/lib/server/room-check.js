@@ -10,7 +10,7 @@
 import assert from 'node:assert';
 import { register } from 'node:module';
 register('./room-stub-loader.mjs', import.meta.url);
-const { reseatRoles, setRoles, resetRound, createRoomMedia, readRoomMedia, deleteRoom, pickSuccessorHost, finishRoom, publicMembers, browseDomain, seatOnAccept, dropMember } =
+const { reseatRoles, setRoles, resetRound, createRoomMedia, readRoomMedia, deleteRoom, pickSuccessorHost, finishRoom, publicMembers, browseDomain, seatOnAccept, dropMember, writeState, roomSnapshot } =
 	await import('./room.js');
 
 const member = (id, role, status = 'accepted') => ({
@@ -362,6 +362,115 @@ const writesTo = (role) =>
 	// idempotent on the marker — a second removal must not double up
 	await dropMember(target, state);
 	assert.deepEqual(state.banned, [104, 102]);
+}
+
+// 14. writeState's version guard. Two players opening envelopes at the same
+//     instant both read the same `state.v` — the pick route then spends two more
+//     Odoo round trips (appendEvent, the pick-log read) before writing, so
+//     without the guard both persist and publish the SAME v with different claim
+//     maps. The client's `state.v <= gv` gate drops whichever arrived second and
+//     the poll's `state.v > gv` gate can never re-send it: the board is stuck.
+{
+	globalThis.__odooCalls.length = 0;
+	// what the row actually holds now — another player's pick landed while we were
+	// still computing ours
+	globalThis.__odooResults = [[{ x_studio_state: JSON.stringify({ v: 9 }) }]];
+	const state = { v: 5, game: { type: 'thief_finder' } }; // our stale base
+	await writeState(7, state, {}, { guardVersion: true });
+
+	assert.equal(state.v, 10, 'bumped past the row, not past our stale base');
+	const read = globalThis.__odooCalls.find((c) => c.method === 'read');
+	assert.deepEqual(read.kw.fields, ['x_studio_state'], 'only the field it needs');
+	const write = globalThis.__odooCalls.find((c) => c.method === 'write');
+	assert.equal(JSON.parse(write.args[1].x_studio_state).v, 10, 'and persists that version');
+}
+
+// 15. The guard is opt-in: every other route is turn-serialized, and the extra
+//     read is paid against an Odoo budget the whole room shares.
+{
+	globalThis.__odooCalls.length = 0;
+	globalThis.__odooResults = [];
+	const state = { v: 5 };
+	await writeState(7, state);
+
+	assert.equal(state.v, 6, 'plain increment');
+	assert.equal(globalThis.__odooCalls.filter((c) => c.method === 'read').length, 0,
+		'no read-back when unguarded');
+}
+
+// 16. A guard that finds the row BEHIND us must not rewind. (Reads can be served
+//     stale — the row snapshot has a TTL — and a version that went backwards is
+//     the very failure this whole mechanism exists to prevent.)
+{
+	globalThis.__odooCalls.length = 0;
+	globalThis.__odooResults = [[{ x_studio_state: JSON.stringify({ v: 2 }) }]];
+	const state = { v: 5 };
+	await writeState(7, state, {}, { guardVersion: true });
+
+	assert.equal(state.v, 6, 'ours still wins when the row is behind');
+}
+
+// 17. stillValid: the OTHER meaning of a concurrent write. Two `thief/deal`
+//     calls both read `phase: 'reveal'`, both clear that guard, and both write a
+//     different envelope→role shuffle — so ordering them (guardVersion) would
+//     only make the room agree on whichever landed last. The second deal must be
+//     refused outright, or it reshuffles a draw already under way.
+//
+//     The precondition deal passes is the DRAW, which is what discriminates a
+//     rival deal from any other write.
+const dealStillValid = (baseDraw) => ({
+	stillValid: (fresh) => (fresh?.game?.draw ?? baseDraw) === baseDraw
+});
+{
+	globalThis.__odooCalls.length = 0;
+	// a rival deal already advanced the draw
+	globalThis.__odooResults = [[{ x_studio_state: JSON.stringify({ v: 6, game: { draw: 3 } }) }]];
+	const state = { v: 5, game: { type: 'thief_finder', draw: 3 } };
+
+	await assert.rejects(
+		() => writeState(7, state, {}, dealStillValid(2)),
+		(e) => e.status === 409 && e.code === 'conflict',
+		'a precondition that broke under us is a coded 409, not a silent overwrite'
+	);
+	assert.equal(globalThis.__odooCalls.filter((c) => c.method === 'write').length, 0,
+		'and nothing was written');
+}
+
+// 18. …but a write that did NOT touch the game must not cost the host their
+//     deal. Someone toggling their mic bumps the version; the draw is untouched,
+//     so this has to go through. Testing the version instead would reject it.
+{
+	globalThis.__odooCalls.length = 0;
+	globalThis.__odooResults = [
+		[{ x_studio_state: JSON.stringify({ v: 9, game: { draw: 2 }, voice: [101] }) }]
+	];
+	const state = { v: 5, game: { type: 'thief_finder', draw: 3 } };
+	await writeState(7, state, {}, dealStillValid(2));
+
+	assert.equal(state.v, 10, 'still lands above the row it read');
+	assert.equal(globalThis.__odooCalls.filter((c) => c.method === 'write').length, 1,
+		'an unrelated write is not a conflict');
+}
+
+// 19. writeState drops the room snapshot, same as pushRoster. Polls read through
+//     that cache, so without this the reconcile poll a failed write fires is
+//     served the PRE-write row, finds nothing new, and the board sits stale until
+//     the 60s safety net comes round.
+{
+	// one snapshot fetch = getRoom's read, then getMembers' search_read
+	const queueFetch = (v) => {
+		globalThis.__odooResults = [[{ id: 8, x_studio_state: JSON.stringify({ v }) }], []];
+	};
+	queueFetch(1);
+	const before = await roomSnapshot(8);
+	globalThis.__odooResults = [];
+	assert.strictEqual(await roomSnapshot(8), before, 'cached within the TTL');
+
+	await writeState(8, { v: 1 });
+	queueFetch(2);
+	const after = await roomSnapshot(8);
+	assert.notStrictEqual(after, before, 'writeState invalidated it — refetched, not the TTL');
+	assert.equal(JSON.parse(after[0].x_studio_state).v, 2, 'and the poll now sees the new row');
 }
 
 console.log('room-check: all assertions passed');

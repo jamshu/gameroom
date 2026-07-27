@@ -23,7 +23,13 @@ export async function POST({ params, request, cookies }) {
 
 		await appendEvent(params.id, 'pick', { epoch: game.epoch, draw: game.draw, envelope: k }, uid);
 		resolveClaims(game, filterPickRows(await pickRows(params.id), game));
-		await writeState(params.id, state);
+		// guardVersion: this is the ONE route several players hit at the same instant
+		// (that is the whole game), and `state.v` was read three Odoo round trips ago
+		// — before appendEvent and the pick-log read above. Without the guard, two
+		// simultaneous taps both publish the same v with different claim maps, and
+		// whichever client latched the emptier one can never be corrected. The
+		// re-read costs one call per pick; see writeState for the full reasoning.
+		await writeState(params.id, state, {}, { guardVersion: true });
 		return json({ ok: true, state: stateView(state, uid) });
 	} catch (e) {
 		const { body, status } = jsonError(e);

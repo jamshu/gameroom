@@ -9,6 +9,7 @@
 // exactly the moments that matter.
 import { writable, get } from 'svelte/store';
 import { api, POLL_TIMEOUT_MS } from '$lib/api.js';
+import { outranksAtSameVersion } from '$lib/games.js';
 
 // Budget, not preference: Odoo Online rate-limits per IP at roughly 1 req/s, and
 // every poll costs 3 Odoo calls shared across the whole room. A 4-player room at
@@ -44,6 +45,16 @@ const ERROR_QUIET_STREAK = 1;
 // signaling on the fallback path, which this work is meant to leave untouched.
 // Browsers throttle background timers anyway, so there was little to win.
 const HIDDEN_MS = 10000;
+// How long to wait after an event that implies state moved before reconciling.
+// Not 0: a five-player picking round would otherwise fire a burst of polls at
+// the shared ~1 req/s Odoo budget. Long enough for the state push that normally
+// follows the event to land first, short enough that the fallback isn't the 60s
+// safety net. Coupled to the debounce in reconcileSoon — one timer at a time.
+const EVENT_RECONCILE_MS = 1200;
+// Events the room renders entirely on their own. Everything else (`pick`,
+// `system`) means the state blob moved, so seeing one without matching state is
+// evidence we are behind.
+const SELF_CONTAINED_EVENTS = new Set(['chat', 'signal']);
 
 export function createRoomStore(roomId) {
 	const store = writable({
@@ -60,6 +71,7 @@ export function createRoomStore(roomId) {
 
 	let cursor = 0;
 	let timer = null;
+	let reconcileTimer = null; // see reconcileSoon()
 	let stopped = false;
 	let inFlight = false;
 	let pendingImmediate = false; // an immediate poll was asked for mid-flight
@@ -97,9 +109,16 @@ export function createRoomStore(roomId) {
 	 * extra round trip — but a poll that STARTED before that POST can land after
 	 * it carrying older state. The version gate is what stops the view flicking
 	 * backwards; both paths must go through here.
+	 *
+	 * Equal versions are NOT automatically stale: two players opening envelopes at
+	 * the same instant both persist v+1 from the same base, so the same version can
+	 * carry different claim maps. A plain `<=` gate dropped whichever arrived
+	 * second and the poll's own gate would never re-send it — a permanently frozen
+	 * board. outranksAtSameVersion breaks those ties by round progress instead.
 	 */
 	function mergeState(s, state) {
-		if (!state || state.v <= s.gv) return s;
+		if (!state || state.v < s.gv) return s;
+		if (state.v === s.gv && !outranksAtSameVersion(s.game, state.game)) return s;
 		return {
 			...s,
 			voice: state.voice,
@@ -111,12 +130,20 @@ export function createRoomStore(roomId) {
 	// Event ids already applied — one guard shared by the poll and the Ably push,
 	// so an event delivered by both (a poll in flight when the push lands) isn't
 	// processed twice. Bounded so it can't grow without limit.
+	// It only ever needs to hold ids ABOVE the poll cursor — anything at or below
+	// it the poll will never ask for again. Sized well past the server's 200-row
+	// page and any plausible burst between two polls, because now that the cursor
+	// advances only on a poll (see ingest) every poll refetches what the push has
+	// already delivered, and an evicted id would re-fire its system notice. Chat
+	// has its own `seenChat` guard, so this is the only exposure.
+	const APPLIED_IDS_MAX = 1000;
+	const APPLIED_IDS_EVICT = 200;
 	const appliedEventIds = new Set();
 	function rememberApplied(id) {
 		appliedEventIds.add(id);
-		if (appliedEventIds.size > 500) {
+		if (appliedEventIds.size > APPLIED_IDS_MAX) {
 			const it = appliedEventIds.values();
-			for (let i = 0; i < 100; i++) appliedEventIds.delete(it.next().value);
+			for (let i = 0; i < APPLIED_IDS_EVICT; i++) appliedEventIds.delete(it.next().value);
 		}
 	}
 
@@ -126,7 +153,23 @@ export function createRoomStore(roomId) {
 	 * (the push carries neither — presence still rides the poll).
 	 */
 	function ingest({ events = [], state, room, members }) {
-		for (const ev of events) if (ev?.id > cursor) cursor = ev.id;
+		// `cursor` is deliberately NOT advanced here — only poll() moves it, from
+		// the watermark the SERVER computed.
+		//
+		// It used to advance from any event, pushed ones included. But public
+		// events arrive on `room:{id}` and targeted ones on `room:{id}:u:{uid}`,
+		// two Ably channels with no ordering guarantee between them, while both
+		// share this one cursor. A private `signal` with id 200 delivered ahead of
+		// (or instead of) a public `chat` with id 199 pushed the cursor to 200, and
+		// the next `?since=200` then skipped 199 permanently — a chat message or a
+		// system notice silently lost, with the reconnect catch-up unable to help
+		// because it asks from the highest id ever PUSHED at us rather than the
+		// highest we actually have.
+		//
+		// The cost is that each poll refetches whatever the push already delivered
+		// since the last one. That is bounded by the poll interval and the server's
+		// 200-row limit, and appliedEventIds dedupes it — cheap next to losing a
+		// message.
 		const fresh = events.filter((ev) => ev && !appliedEventIds.has(ev.id));
 		if (!fresh.length && !state && !room && !members) return;
 		store.update((s) => {
@@ -182,9 +225,14 @@ export function createRoomStore(roomId) {
 			// Strictly: a real event row, or a state version that actually advanced.
 			// NEVER diff members/room — `online` flips purely with elapsed time, so
 			// that would pin every client at ACTIVE_MS forever and silently double
-			// the Odoo load. (The presence heartbeat writes no event row, and
-			// d.state only arrives when state.v > gv, so neither can self-re-arm.)
-			if ((d.events?.length ?? 0) > 0 || d.state) markActive();
+			// the Odoo load. (The presence heartbeat writes no event row, so it
+			// can't self-re-arm.)
+			//
+			// `d.state.v > gv`, not a bare truthiness test: the contended phase now
+			// receives state on EVERY poll, equal versions included, so `d.state`
+			// alone would re-arm activity forever — pinning an abandoned thief room
+			// at ACTIVE_MS instead of letting it decay to IDLE_MS.
+			if ((d.events?.length ?? 0) > 0 || d.state?.v > gv) markActive();
 			ingest({
 				events: d.events,
 				state: d.state,
@@ -273,6 +321,29 @@ export function createRoomStore(roomId) {
 	}
 
 	/**
+	 * An event arrived that means state moved, but no state came with it.
+	 *
+	 * `ingest` renders nothing for a `pick` — it notes the id and stops — so a
+	 * client that received the event but missed (or correctly dropped) the
+	 * matching state push knew something had changed and then sat on the 60s
+	 * safety net anyway. This closes that gap.
+	 *
+	 * Deliberately NOT cancelled when a state push does arrive: in the equal-`v`
+	 * collision the push arrives and is *rightly* rejected by mergeState, which is
+	 * exactly the case needing the poll. Deliberately not `schedule(0)` either —
+	 * five players picking would fire a burst of polls against a rate limit the
+	 * whole room shares, so it lands late enough to coalesce and is debounced to
+	 * one in flight at a time. `schedule` itself still honours the error backoff.
+	 */
+	function reconcileSoon() {
+		if (stopped || reconcileTimer) return;
+		reconcileTimer = setTimeout(() => {
+			reconcileTimer = null;
+			wake();
+		}, EVENT_RECONCILE_MS + Math.random() * 300);
+	}
+
+	/**
 	 * "Something happened — poll now", but never faster than the error backoff.
 	 *
 	 * `poll()`'s own `finally` has always honoured the backoff (see the note
@@ -317,6 +388,10 @@ export function createRoomStore(roomId) {
 			channel.subscribe('event', (msg) => {
 				markActive();
 				ingest({ events: [msg.data] });
+				// A `pick` renders nothing by itself — it is only evidence that the
+				// state blob moved. Without this the client knew something had
+				// changed and still waited out the 60s safety net.
+				if (!SELF_CONTAINED_EVENTS.has(msg.data?.type)) reconcileSoon();
 			});
 			// roster: the room row + member list, which the state push doesn't carry.
 			// Before this they refreshed only on the safety poll, so a join approval,
@@ -355,7 +430,10 @@ export function createRoomStore(roomId) {
 				// and `since=cursor` is the only way back to what we missed while
 				// away. Previously this only ran on first connect, so a returning
 				// phone waited for the safety poll; at the new 60s that would be a
-				// very visible stall.
+				// very visible stall. This is also why `cursor` tracks the last
+				// POLL and not the last push (see ingest): it has to mean "the
+				// point below which we have everything", not "the highest id
+				// anyone ever pushed at us", or the catch-up skips the gap.
 				// Deliberately schedule(0) and NOT wake(): a socket that just came up
 				// is the one hard piece of evidence the network is healthy again, so
 				// the error backoff would be answering a question already settled. It
@@ -379,6 +457,8 @@ export function createRoomStore(roomId) {
 	function close() {
 		stopped = true;
 		clearTimeout(timer);
+		clearTimeout(reconcileTimer);
+		reconcileTimer = null;
 		document.removeEventListener('visibilitychange', onVisibility);
 		try {
 			channel?.unsubscribe();
@@ -488,7 +568,15 @@ export function createRoomStore(roomId) {
 			// that did land — and a carroms shot re-applied on a retained turn would
 			// score twice. Ask the server instead and let the next authoritative state
 			// settle it; the board corrects itself either way.
-			if (e?.offline) wake();
+			// wake() asks once, immediately. reconcileSoon() asks again ~1.2s later:
+			// the first poll can be served a room snapshot from ANOTHER Lambda
+			// container, whose 750ms cache writeState's invalidate cannot reach — so
+			// a move that did land shows as nothing and the banner would otherwise
+			// sit there until the 60s safety net.
+			if (e?.offline) {
+				wake();
+				reconcileSoon();
+			}
 			throw e;
 		}
 		markActive(); // we just did something; others are likely to respond

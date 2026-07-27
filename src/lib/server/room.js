@@ -148,13 +148,58 @@ export function parseState(room) {
  * Bump the state version and persist. `extraVals` folds other x_gameroom fields
  * (e.g. status) into the SAME write — start/rematch used to write this record
  * twice in a row.
+ *
+ * This is a read-modify-write with no CAS: the base `v` came from a read at the
+ * top of the request, and two writers that read the same base both publish v+1
+ * with DIFFERENT content — whereupon the client's `state.v <= gv` gate silently
+ * drops the second, and the poll's `state.v > gv` gate can never repair it (see
+ * stores/room.js mergeState). Both options below close that by re-reading the
+ * row's CURRENT version immediately before writing, which collapses the window
+ * from the whole request to one round trip. They differ in what a concurrent
+ * write MEANS:
+ *
+ * - `guardVersion` — contention is legitimate and expected (everyone opens an
+ *   envelope at once), so just order it: land above whatever is there and let
+ *   the later writer win. Correct because the content is rebuilt from an
+ *   append-only log (resolveClaims), so the later writer saw the fuller log.
+ * - `stillValid(freshState)` — contention means the action should not happen AT
+ *   ALL (a second deal would reshuffle the envelopes under a round already in
+ *   flight). Re-checks the caller's precondition against the row as it is NOW
+ *   and throws a coded 409 instead of writing.
+ *
+ *   A predicate rather than an expected version on purpose: "the version moved"
+ *   is not the same question as "my precondition broke". Someone toggling their
+ *   mic bumps the version without touching the game, and rejecting the host's
+ *   deal for that would be a bug of its own.
+ *
+ * Both are off by default because the extra read is charged against a shared
+ * ~1 req/s Odoo budget (see the note at the top of this file). Turn-serialized
+ * routes — chess, ludo, carroms — need neither.
  */
-export async function writeState(roomId, state, extraVals = {}) {
+export async function writeState(roomId, state, extraVals = {}, { guardVersion = false, stillValid } = {}) {
+	if (guardVersion || stillValid) {
+		const [row] = await adminExecute(ROOM, 'read', [[Number(roomId)]], {
+			fields: ['x_studio_state']
+		});
+		const fresh = parseState(row);
+		if (stillValid && !stillValid(fresh)) {
+			throw httpError(409, 'Someone else just changed this — try again', 'conflict');
+		}
+		const rowV = fresh?.v || 0;
+		if (rowV > (state.v || 0)) state.v = rowV;
+	}
 	state.v = (state.v || 0) + 1;
 	await adminExecute(ROOM, 'write', [
 		[Number(roomId)],
 		{ ...extraVals, x_studio_state: JSON.stringify(state) }
 	]);
+	// Drop the snapshot the polls read through, same as pushRoster does and for
+	// the same reason: a poll issued inside the remaining 750ms TTL is served the
+	// PRE-write row, so the reconcile poll a failed write fires (store.post's
+	// catch) would find no new state and wait out the 60s safety net before
+	// trying again. `extraVals` writes room columns too, so the rows are stale
+	// either way.
+	roomCache.invalidate(Number(roomId));
 	// push the filtered new state straight to each member — no client poll needed
 	await publishState(roomId, state, roomUids.get(Number(roomId)) || []);
 	return state;
