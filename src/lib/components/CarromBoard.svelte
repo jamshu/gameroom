@@ -447,7 +447,10 @@
 	}
 	.carrom-canvas {
 		width: 100%;
-		max-width: 520px;
+		/* raised by the room page while a game is on and chat is hidden. The backing
+		   store stays BOARD.SIZE and canvasPoint() maps input through rect.width, so
+		   growing the CSS box scales the render without touching sim coordinates. */
+		max-width: var(--board-cap, 520px);
 		aspect-ratio: 1;
 		border-radius: var(--radius-sm);
 		touch-action: none;

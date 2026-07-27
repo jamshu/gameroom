@@ -648,7 +648,9 @@
 		position: relative;
 	}
 	.board-wrap {
-		max-width: 480px;
+		/* raised by the room page while a game is on and chat is hidden. Tokens are
+		   5.2% of the board, so this scales cleanly. */
+		max-width: var(--board-cap, 480px);
 		margin: 0 auto;
 	}
 	.fs-btn {

@@ -614,7 +614,10 @@
 		display: grid;
 		grid-template-columns: repeat(8, 1fr);
 		aspect-ratio: 1;
-		max-width: 520px;
+		/* the room page raises this while a game is on and chat is hidden; the
+		   fallback is the lobby/standalone size. Squares and pieces are sized in
+		   %, so the board just scales. */
+		max-width: var(--board-cap, 520px);
 		border: 2px solid var(--border);
 		border-radius: var(--radius-sm);
 		overflow: hidden;

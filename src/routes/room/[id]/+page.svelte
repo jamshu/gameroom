@@ -183,6 +183,20 @@
 	const members = $derived(accepted ? $store.members : detail?.members || []);
 	const isHost = $derived(room?.hostUid === myUid);
 
+	/* What the sidebar holds, and whether it is worth rendering at all.
+	   - Chat belongs to the lobby and the wash-up; during play it is a 260–420px
+	     slab under the board on a phone, which is the space the game wants.
+	   - Thief Finder doesn't do voice — it is a table game people play in the same
+	     room. Keyed on the room's game type rather than the phase so the bar
+	     doesn't appear and vanish as the room moves lobby → playing → finished.
+	   Both can be false at once, and an empty <aside> would still draw the grid's
+	   18px gap above the board, so the element itself is conditional. */
+	const showChat = $derived(room?.status !== 'playing');
+	// `|| inVoice` is the escape hatch: the host can switch a room to Thief Finder
+	// while someone is already talking, and hiding the bar outright would strand
+	// them in a call with no way to leave or mute.
+	const showVoice = $derived(room?.gameType !== 'thief_finder' || inVoice);
+
 	/* Room-level news that isn't visible anywhere else. A host handover mid-game
 	   changes nothing on the board, so without this the new host would only find
 	   out by noticing controls they didn't have before.
@@ -313,7 +327,7 @@
 				{/if}
 			</div>
 		{:else}
-			<div class="room-grid">
+			<div class="room-grid" class:room-grid--playing={room.status === 'playing'}>
 				<main class="room-main">
 					{#if room.status === 'finished' && !finalReveal.holding}
 						<Leaderboard {members} game={$store.game} {store} {isHost} {myUid} {room} />
@@ -331,25 +345,35 @@
 						<p class="muted">Loading game…</p>
 					{/if}
 				</main>
-				<aside class="room-side">
-					<VoiceBar
-						{members}
-						voice={$store.voice}
-						{voicePeers}
-						{inVoice}
-						{myUid}
-						onjoin={joinVoice}
-						onleave={leaveVoice}
-						onmute={(m) => mesh?.setMuted(m)}
-					/>
-					<ChatPanel
-					{store}
-					{members}
-					{myUid}
-					{roomId}
-					borrowMic={() => mesh?.micStream() ?? null}
-				/>
-				</aside>
+				<!-- see showChat / showVoice above for why each is here or not.
+				     Unmounting chat rather than hiding it is safe: the history lives in
+				     the store ($store.chat) and in-flight uploads are detached closures
+				     that still resolve into it, so nothing here is load-bearing. -->
+				{#if true}
+					<aside class="room-side">
+						{#if showVoice}
+							<VoiceBar
+								{members}
+								voice={$store.voice}
+								{voicePeers}
+								{inVoice}
+								{myUid}
+								onjoin={joinVoice}
+								onleave={leaveVoice}
+								onmute={(m) => mesh?.setMuted(m)}
+							/>
+						{/if}
+						{#if showChat}
+							<ChatPanel
+								{store}
+								{members}
+								{myUid}
+								{roomId}
+								borrowMic={() => mesh?.micStream() ?? null}
+							/>
+						{/if}
+					</aside>
+				{/if}
 			</div>
 		{/if}
 	</div>
@@ -382,6 +406,44 @@
 		grid-template-columns: minmax(0, 1fr) minmax(0, 320px);
 		gap: 18px;
 		align-items: start;
+	}
+	/* Chat is gone during play, so give the board the room.
+
+	   BOTH halves of this are needed. The app shell is capped at --maxw: 760px
+	   (app.css), so the two-column grid leaves the board a ~390px column — the
+	   board's own 520px cap never even binds on desktop. Collapsing to one column
+	   is what actually frees the width; raising the cap is what lets the board use
+	   it. Either alone is a no-op. The voice bar keeps its place in the sidebar and
+	   simply flows under the board, which is already the mobile layout.
+
+	   The clamp floor is load-bearing, not tidiness: bare `calc(100svh - 240px)`
+	   resolves to 480px at a 1280x720 viewport, which would make the board SMALLER
+	   than the 520px it is today. Floor at today's cap so this can only ever grow
+	   the board; ceiling at 720px so a tall monitor gets a board, not a wall.
+	   240px is the page header + room header + the board's own status chrome. */
+	.room-grid--playing {
+		grid-template-columns: minmax(0, 1fr);
+		--board-cap: clamp(520px, calc(100svh - 240px), 720px);
+	}
+	/* Track the board rather than the full column, and centre. Without this a
+	   floored 520px board sits inside a 728px card with ~190px of dead card to its
+	   right, which reads as broken. +42px is the game card's 20px padding either
+	   side plus its border, so the board still reaches --board-cap exactly. */
+	.room-grid--playing .room-main,
+	.room-grid--playing .room-side {
+		max-width: calc(var(--board-cap) + 42px);
+		margin-inline: auto;
+		width: 100%;
+	}
+	/* Collapsing the grid drops the sidebar BELOW the board, which on a 720px-tall
+	   screen puts the mute button ~300px past the fold — voice is meant to stay to
+	   hand during a game, so lift it above the board. It is a single compact row.
+	   Desktop only: on mobile the board is already first and pushing it down is
+	   the opposite of what hiding chat was for. */
+	@media (min-width: 761px) {
+		.room-grid--playing .room-side {
+			order: -1;
+		}
 	}
 	@media (max-width: 760px) {
 		.room-grid {
