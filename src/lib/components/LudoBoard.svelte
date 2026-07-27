@@ -672,14 +672,21 @@
 		gap: 10px;
 		overflow: auto;
 		background: var(--bg);
-		padding: calc(10px + env(safe-area-inset-top)) calc(6px + env(safe-area-inset-right))
-			calc(10px + env(safe-area-inset-bottom)) calc(6px + env(safe-area-inset-left));
+		padding: calc(6px + env(safe-area-inset-top)) calc(6px + env(safe-area-inset-right))
+			calc(6px + env(safe-area-inset-bottom)) calc(6px + env(safe-area-inset-left));
 	}
 	.play-area--fs .board-wrap {
 		width: 100%;
 		/* reserve room for the dice/controls row + exit button below the board */
-		max-width: min(100%, calc(100svh - 200px));
+		max-width: min(100%, calc(100svh - 150px));
 		margin: 0;
+	}
+	/* drop the board's inner padding/border/shadow in fullscreen so the 15×15 grid
+	   (and its tokens, sized as a % of the board) fill the wrap edge-to-edge */
+	.play-area--fs .board {
+		padding: 0;
+		border: none;
+		box-shadow: none;
 	}
 	.play-area--fs .controls {
 		margin-top: 0;

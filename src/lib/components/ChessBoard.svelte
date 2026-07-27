@@ -597,14 +597,15 @@
 		align-items: center;
 		justify-content: center;
 		gap: 8px;
+		overflow: hidden;
 		background: var(--bg);
 		/* the ancestor's safe-area padding doesn't follow us into the top layer.
 		   Zero horizontal padding (only the notch inset) so the board reaches the
 		   true screen edges like chess.com — width is what caps it in portrait. */
-		padding: calc(8px + env(safe-area-inset-top)) env(safe-area-inset-right)
-			calc(8px + env(safe-area-inset-bottom)) env(safe-area-inset-left);
+		padding: calc(4px + env(safe-area-inset-top)) env(safe-area-inset-right)
+			calc(4px + env(safe-area-inset-bottom)) env(safe-area-inset-left);
 		/* vertical budget reserved for the pinned clock strips */
-		--fs-reserve: 72px;
+		--fs-reserve: 56px;
 	}
 	/* chess.com layout: each player's clock on their own side — opponent pinned to
 	   the top, me to the bottom — with ONLY the board centred in between, so it
@@ -647,8 +648,8 @@
 		flex: 0 1 auto;
 		/* fill the viewport edge-to-edge; --fs-reserve keeps the board clear of the
 		   pinned clock strips. On a tall phone width wins → board = full 100vw. */
-		width: min(100vw, calc(100svh - var(--fs-reserve)));
-		max-width: min(100vw, calc(100svh - var(--fs-reserve)));
+		width: min(100%, calc(100svh - var(--fs-reserve)));
+		max-width: min(100%, calc(100svh - var(--fs-reserve)));
 		max-height: calc(100svh - var(--fs-reserve));
 		border: none;
 		border-radius: 0;
@@ -715,8 +716,8 @@
 		background: radial-gradient(circle at 50% 42%, rgba(255, 255, 255, 0.5), transparent 68%);
 	}
 	.piece {
-		width: 95%;
-		height: 95%;
+		width: 100%;
+		height: 100%;
 		pointer-events: none;
 		user-select: none;
 		transform: translateZ(14px); /* lifts the piece off the square for parallax */
