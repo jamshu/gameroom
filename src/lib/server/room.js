@@ -492,6 +492,14 @@ export async function deleteRoom(roomId) {
 	await adminExecute(ROOM, 'unlink', [[id]]);
 }
 
+/** Wipe a user's rooms/memberships so their res.users can be unlinked. */
+export async function purgeUserRooms(uid) {
+	const hosted = await adminExecute(ROOM, 'search', [[['x_studio_host_id', '=', uid]]]);
+	for (const id of hosted) await deleteRoom(id); // media→events→members→room
+	const mem = await adminExecute(MEMBER, 'search', [[['x_studio_user_id', '=', uid]]]);
+	if (mem.length) await adminExecute(MEMBER, 'unlink', [mem]);
+}
+
 // Lazy GC: run at most once per 60s per Lambda instance (no cron needed).
 let _lastSweep = 0;
 const SWEEP_THROTTLE_MS = 60000;

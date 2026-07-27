@@ -1,6 +1,7 @@
 <script>
 	import { user, checkSession } from '$lib/stores/auth.js';
 	import { api } from '$lib/api.js';
+	import { goto } from '$app/navigation';
 	import Avatar from '$lib/components/Avatar.svelte';
 
 	let name = $state('');
@@ -10,6 +11,9 @@
 	let error = $state('');
 	let bump = $state(0);
 	let fileInput = $state(null);
+	let confirmText = $state('');
+	let deleting = $state(false);
+	let delErr = $state('');
 
 	$effect(() => {
 		if ($user && !name) name = $user.name;
@@ -68,6 +72,19 @@
 			e.target.value = '';
 		}
 	}
+
+	async function deleteAccount() {
+		deleting = true;
+		delErr = '';
+		try {
+			await api('/api/account/delete', { method: 'POST', body: { confirm: confirmText } });
+			user.set(null);
+			goto('/signup');
+		} catch (e2) {
+			delErr = e2.message;
+			deleting = false;
+		}
+	}
 </script>
 
 <div class="fade-in" style="max-width:440px; margin:0 auto;">
@@ -94,6 +111,22 @@
 				{saving ? 'Saving…' : 'Save'}
 			</button>
 		</form>
+	</div>
+
+	<div class="card" style="padding:24px; margin-top:20px;">
+		<h2 class="section-title" style="color:var(--red);">Delete account</h2>
+		<p class="muted">Permanent. Deletes your account and any rooms you host.</p>
+		<label class="label" for="delc">Type DELETE to confirm</label>
+		<input id="delc" class="input" bind:value={confirmText} autocomplete="off" />
+		{#if delErr}<p class="error-text">{delErr}</p>{/if}
+		<button
+			class="btn btn--danger"
+			style="margin-top:14px;"
+			disabled={confirmText !== 'DELETE' || deleting}
+			onclick={deleteAccount}
+		>
+			{deleting ? 'Deleting…' : 'Delete my account'}
+		</button>
 	</div>
 </div>
 
