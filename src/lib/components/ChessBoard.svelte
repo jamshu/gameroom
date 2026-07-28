@@ -684,16 +684,24 @@
 		/* the ancestor's safe-area padding doesn't follow us into the top layer.
 		   Zero horizontal padding (only the notch inset) so the board reaches the
 		   true screen edges like chess.com — width is what caps it in portrait. */
-		padding: calc(4px + env(safe-area-inset-top)) env(safe-area-inset-right)
-			calc(4px + env(safe-area-inset-bottom)) env(safe-area-inset-left);
-		/* Vertical budget reserved for the pinned clock strips, the status line and
-		   the review/match controls. Centring makes the two bands symmetric, so this
-		   is 2x the taller band (clock strip + controls row).
+		/* The two bands are DELIBERATELY unequal, and the padding is how the board
+		   gets pushed up off the bottom one.
 
-		   On the tuned case (Pixel 5, 393x851) the board is WIDTH-bound at 393px with
-		   ~229px free above and below, so this does not shrink the board at all. It
-		   binds only where height is the smaller term — landscape and desktop. */
-		--fs-reserve: 148px;
+		   The bottom has to hold two things — the clock strip (8..36) and the
+		   review/match controls above it (46..~82) — while the top holds the clock
+		   strip and a one-line status (40..~60). Splitting the reserve evenly, which
+		   is what plain centring does, gave both 74px and the buttons sat 12px INTO
+		   the bottom rank of pieces on every height-bound viewport.
+
+		   Padding works here precisely because it does not move the controls: an
+		   absolutely positioned child anchors to the PADDING box, which padding does
+		   not shift, while the in-flow board centres inside the CONTENT box. So the
+		   board rises and everything pinned to an edge stays put. */
+		--fs-top: 78px;
+		--fs-bottom: 112px;
+		--fs-reserve: calc(var(--fs-top) + var(--fs-bottom));
+		padding: calc(var(--fs-top) + env(safe-area-inset-top)) env(safe-area-inset-right)
+			calc(var(--fs-bottom) + env(safe-area-inset-bottom)) env(safe-area-inset-left);
 	}
 	/* chess.com layout: each player's clock on their own side — opponent pinned to
 	   the top, me to the bottom — with ONLY the board centred in between, so it
@@ -732,8 +740,19 @@
 		transform: none;
 		margin: 0;
 	}
+	/* Below ~560px the controls cannot fit ⏮◀▶⏭ plus Offer draw plus Resign on one
+	   line and wrap to two, so the bottom band has to be deeper. Narrow screens are
+	   overwhelmingly tall ones, where the board is width-bound and a bigger reserve
+	   costs nothing; it only bites on a narrow AND short window, which is exactly
+	   the case that was overlapping. */
+	@media (max-width: 560px) {
+		.board-wrap--fs {
+			--fs-bottom: 158px;
+		}
+	}
 	/* Status sits under the top clock strip; controls sit above the bottom one.
-	   Both are out of flow so the board keeps its dead-centre position. */
+	   Out of flow, so they anchor to the padding box and the board's asymmetric
+	   padding lifts it clear of them without dragging them along. */
 	.board-wrap--fs .fs-status {
 		position: absolute;
 		top: calc(40px + env(safe-area-inset-top));

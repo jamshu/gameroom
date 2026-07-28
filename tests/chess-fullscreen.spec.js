@@ -88,8 +88,13 @@ test('pieces fill the square and fullscreen board is vertically centred', async 
 	// overlay fills the viewport (not a transformed ancestor's box)
 	expect(overlay.y).toBeLessThan(2);
 	expect(overlay.height).toBeGreaterThan(vh - 2);
-	// board vertically centred: top and bottom gaps within 24px of each other
-	expect(Math.abs(topGap - bottomGap)).toBeLessThan(24);
+	// The board deliberately sits ABOVE centre. This used to assert the two gaps
+	// were within 24px, but the bottom band carries two rows — the clock strip and
+	// the review/match controls — against the top's clock strip and one-line
+	// status. Splitting the space evenly put the buttons on the bottom rank of
+	// pieces. Both gaps must still be real, so the board is not jammed to an edge.
+	expect(bottomGap).toBeGreaterThan(topGap);
+	expect(topGap).toBeGreaterThan(0);
 	// opponent clock pinned at the top (above the board), my clock at the bottom
 	expect(topClock.y).toBeLessThan(topGap);
 	expect(bottomClock.y).toBeGreaterThan(board.y + board.height);

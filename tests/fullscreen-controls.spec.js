@@ -129,27 +129,47 @@ test('a finished game shows its result in fullscreen instead of just freezing', 
 	await expect(page.getByRole('button', { name: /Resign/ })).toHaveCount(0);
 });
 
-test('the board is still dead-centre with the new controls in place', async ({ page }) => {
-	// the regression guard for absolute positioning: any in-flow row added to the
-	// overlay would shift the board off centre
-	await mockBackend(page, 'chess');
-	await page.goto('/room/1');
-	await expect(page.locator('.board')).toBeVisible();
-	await enterFullscreen(page, '.board-wrap--fs');
+/**
+ * The buttons must never touch the pieces.
+ *
+ * A tall phone cannot catch this: there the board is WIDTH-bound with ~200px spare
+ * above and below, so everything clears no matter how the space is divided. The bug
+ * only appears once the board is HEIGHT-bound and the reserve is what positions it —
+ * so these run at sizes where height is the smaller term. The first two are the
+ * shapes that were overlapping by 12px and 22px respectively.
+ */
+for (const [w, h] of [
+	[900, 700],
+	[400, 500],
+	[1280, 720],
+	[851, 393],
+	[1440, 900]
+]) {
+	test(`controls clear the board at ${w}x${h}`, async ({ browser }) => {
+		const ctx = await browser.newContext({ viewport: { width: w, height: h }, isMobile: true, hasTouch: true });
+		const page = await ctx.newPage();
+		await mockBackend(page, 'chess');
+		await page.goto('/room/1');
+		await expect(page.locator('.board')).toBeVisible();
+		await enterFullscreen(page, '.board-wrap--fs');
 
-	const vh = page.viewportSize().height;
-	const board = await page.locator('.board-wrap--fs .board').boundingBox();
-	const topGap = board.y;
-	const bottomGap = vh - (board.y + board.height);
-	console.log(`topGap=${topGap.toFixed(0)} bottomGap=${bottomGap.toFixed(0)}`);
-	expect(Math.abs(topGap - bottomGap)).toBeLessThan(24);
+		const board = await page.locator('.board-wrap--fs .board').boundingBox();
+		const controls = await page.locator('.fs-controls').boundingBox();
+		const status = await page.locator('.fs-status').boundingBox();
+		const below = controls.y - (board.y + board.height);
+		const above = board.y - (status.y + status.height);
+		console.log(`${w}x${h}: board=${board.width.toFixed(0)} above=${above.toFixed(0)} below=${below.toFixed(0)}`);
 
-	// and the new rows clear the pinned strips they sit beside
-	const controls = await page.locator('.fs-controls').boundingBox();
-	const bottomClock = await page.locator('.fs-player--bottom').boundingBox();
-	expect(controls.y + controls.height).toBeLessThanOrEqual(bottomClock.y + 1);
-	expect(controls.y).toBeGreaterThan(board.y + board.height - 1);
-});
+		expect(below).toBeGreaterThan(0); // buttons off the bottom rank
+		expect(above).toBeGreaterThan(0); // status off the top rank
+		// still wholly on screen — lifting the board must not push it off an edge
+		expect(board.y).toBeGreaterThanOrEqual(0);
+		expect(board.y + board.height).toBeLessThanOrEqual(h);
+		// and lifted, not centred: the bottom band carries a row the top does not
+		expect(h - (board.y + board.height)).toBeGreaterThan(board.y);
+		await ctx.close();
+	});
+}
 
 /* ---- ludo -------------------------------------------------------------- */
 
