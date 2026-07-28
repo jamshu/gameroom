@@ -186,16 +186,22 @@
 	/* What the sidebar holds, and whether it is worth rendering at all.
 	   - Chat belongs to the lobby and the wash-up; during play it is a 260–420px
 	     slab under the board on a phone, which is the space the game wants.
-	   - Thief Finder doesn't do voice — it is a table game people play in the same
-	     room. Keyed on the room's game type rather than the phase so the bar
-	     doesn't appear and vanish as the room moves lobby → playing → finished.
-	   Both can be false at once, and an empty <aside> would still draw the grid's
-	   18px gap above the board, so the element itself is conditional. */
+	   - Thief Finder wants its table clear while it is being PLAYED, so the voice
+	     bar comes off screen — but ONLY the bar. Joining happens in the lobby, and
+	     anyone already in the call keeps talking straight through the game.
+
+	   That last part is safe rather than lucky: VoiceBar is presentational. The
+	   RTCPeerConnection mesh lives here on the page (`mesh`), the component holds
+	   nothing but a `muted` flag, and it has no onDestroy — so unmounting it cannot
+	   tear down a call. Moving voice state INTO VoiceBar would silently break this.
+
+	   Both flags can be false at once (a Thief Finder game in progress), and an
+	   empty <aside> would still draw the grid's 18px gap above the board, so the
+	   element itself is conditional. */
 	const showChat = $derived(room?.status !== 'playing');
-	// `|| inVoice` is the escape hatch: the host can switch a room to Thief Finder
-	// while someone is already talking, and hiding the bar outright would strand
-	// them in a call with no way to leave or mute.
-	const showVoice = $derived(room?.gameType !== 'thief_finder' || inVoice);
+	const showVoice = $derived(
+		!(room?.gameType === 'thief_finder' && room?.status === 'playing')
+	);
 
 	/* Room-level news that isn't visible anywhere else. A host handover mid-game
 	   changes nothing on the board, so without this the new host would only find
@@ -349,7 +355,7 @@
 				     Unmounting chat rather than hiding it is safe: the history lives in
 				     the store ($store.chat) and in-flight uploads are detached closures
 				     that still resolve into it, so nothing here is load-bearing. -->
-				{#if true}
+				{#if showVoice || showChat}
 					<aside class="room-side">
 						{#if showVoice}
 							<VoiceBar

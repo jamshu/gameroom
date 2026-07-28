@@ -94,12 +94,13 @@ test('Thief Finder has no voice bar — it is a table game, not a call', async (
 	await expect(page.locator('.room-side')).toHaveCount(0);
 });
 
-test('Thief Finder keeps chat in the lobby, still without voice', async ({ page }) => {
+test('…but the Thief Finder lobby keeps both — it is where everyone gathers', async ({ page }) => {
 	await mockBackend(page, 'lobby', 'thief_finder');
 	await page.goto('/room/1');
 
 	await expect(composer(page)).toBeVisible();
-	await expect(voiceBar(page)).toHaveCount(0);
+	// voice drops out only while the game is being PLAYED, never in the lobby
+	await expect(voiceBar(page)).toBeVisible();
 });
 
 test('voice stays above the fold once the grid collapses', async ({ browser }) => {
