@@ -11,7 +11,8 @@ import {
 	setHost,
 	resetRound,
 	pushRoster,
-	jsonError
+	jsonError,
+	syncVoiceSince
 } from '$lib/server/room.js';
 import { gameSeatUids } from '$lib/server/gamelogic.js';
 
@@ -45,6 +46,7 @@ export async function POST({ params, cookies }) {
 		// drop from voice roster if present
 		if (state.voice?.includes(uid)) {
 			state.voice = state.voice.filter((u) => u !== uid);
+			syncVoiceSince(state); // walking out can end the call, not just leave it
 			dirty = true;
 		}
 

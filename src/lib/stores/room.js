@@ -63,6 +63,8 @@ export function createRoomStore(roomId) {
 		chat: [], // {id, senderUid, text}
 		events: [], // system events (join/leave/draw results...) for the feed
 		voice: [],
+		voiceMs: null, // elapsed call time at the last server snapshot; null = no call
+		voiceAt: null, // when that snapshot arrived, so the tick can extrapolate
 		game: null,
 		gv: 0,
 		error: null,
@@ -122,6 +124,11 @@ export function createRoomStore(roomId) {
 		return {
 			...s,
 			voice: state.voice,
+			// elapsed call time as measured BY THE SERVER at serialize time, plus the
+			// moment it landed here — VoiceBar ticks forward from that pair rather
+			// than differencing an absolute stamp against a possibly-skewed clock.
+			voiceMs: state.voiceMs ?? null,
+			voiceAt: state.voiceMs == null ? null : Date.now(),
 			game: state.game ? { ...state.game, v: state.v } : null,
 			gv: state.v
 		};

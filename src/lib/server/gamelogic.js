@@ -457,7 +457,15 @@ export function gameView(game, uid) {
 /** The per-session `state` envelope shared by the poll and POST responses. */
 export function stateView(state, uid) {
 	if (!state) return null;
-	return { v: state.v, voice: state.voice || [], game: gameView(state.game, uid) };
+	return {
+		v: state.v,
+		voice: state.voice || [],
+		// elapsed-at-serialize, NOT the raw stamp — same reasoning as the chess
+		// clock above: an absolute server timestamp differenced against the
+		// client's Date.now() would show the viewer's clock skew as call duration.
+		voiceMs: state.voiceSince ? Math.max(0, Date.now() - state.voiceSince) : null,
+		game: gameView(state.game, uid)
+	};
 }
 
 /* -------------------------------- carroms --------------------------------- */

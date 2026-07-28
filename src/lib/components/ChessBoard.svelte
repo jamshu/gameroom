@@ -423,20 +423,65 @@
 
 	{@render playerBar(topColor)}
 
-	{#if game.result}
-		<p class="chip chip--green" style="margin-bottom:10px;">{resultText}</p>
-	{:else}
-		<p class="muted" style="margin-bottom:10px;">
-			{myColor
-				? myTurn
-					? 'Your move'
-					: optimisticFen
-						? 'Sending…'
-						: `Waiting for ${nameOf(chess.turn() === 'w' ? game.players.w : game.players.b)}…`
-				: `Spectating — ${nameOf(chess.turn() === 'w' ? game.players.w : game.players.b)} to move`}
-		</p>
-	{/if}
-	{#if error}<p class="error-text">{error}</p>{/if}
+	<!-- Everything below is a snippet so it can render EITHER in the card or inside
+	     the portaled .board-wrap, never both. Fullscreen moves .board-wrap to <body>
+	     and covers the card with an opaque overlay, so a second copy would not just
+	     be untidy — it would still be reachable by keyboard behind the overlay. -->
+	{#snippet statusLine()}
+		{#if game.result}
+			<p class="chip chip--green" style="margin-bottom:10px;">{resultText}</p>
+		{:else}
+			<p class="muted" style="margin-bottom:10px;">
+				{myColor
+					? myTurn
+						? 'Your move'
+						: optimisticFen
+							? 'Sending…'
+							: `Waiting for ${nameOf(chess.turn() === 'w' ? game.players.w : game.players.b)}…`
+					: `Spectating — ${nameOf(chess.turn() === 'w' ? game.players.w : game.players.b)} to move`}
+			</p>
+		{/if}
+		{#if error}<p class="error-text">{error}</p>{/if}
+	{/snippet}
+
+	{#snippet reviewBar()}
+		{#if game.moves.length}
+			<div class="review">
+				<button class="btn btn--ghost btn--sm" onclick={reviewFirst} disabled={viewIdx === 0} title="First move">⏮</button>
+				<button class="btn btn--ghost btn--sm" onclick={reviewPrev} disabled={viewIdx === 0} title="Previous move">◀</button>
+				<span class="review-pos">
+					{#if reviewPly === null}live{:else}move {viewIdx}/{liveIdx}{/if}
+				</span>
+				<button class="btn btn--ghost btn--sm" onclick={reviewNext} disabled={reviewPly === null} title="Next move">▶</button>
+				<!-- not optional: myTurn is gated on reviewPly === null, so without a way
+				     back to live a reviewing player cannot move at all -->
+				<button class="btn btn--ghost btn--sm" onclick={reviewLive} disabled={reviewPly === null} title="Back to live">⏭</button>
+			</div>
+		{/if}
+	{/snippet}
+
+	{#snippet drawOfferBlock()}
+		{#if drawOfferedToMe}
+			<div class="draw-offer">
+				<span>{nameOf(game.drawOffer)} offers a draw</span>
+				<span class="draw-actions">
+					<button class="btn btn--sm" onclick={() => respondDraw('accept')}>Accept</button>
+					<button class="btn btn--ghost btn--sm" onclick={() => respondDraw('decline')}>Decline</button>
+				</span>
+			</div>
+		{:else if drawOfferedByMe && !game.result}
+			<p class="muted" style="margin-top:10px;">Draw offered — waiting for a reply…</p>
+		{/if}
+	{/snippet}
+
+	{#snippet matchActions()}
+		{#if myColor && !game.result}
+			<button class="btn btn--ghost btn--sm" onclick={offerDraw} disabled={!!game.drawOffer}>½ Offer draw</button>
+			<button class="btn btn--ghost btn--sm btn--danger" onclick={resign}>⚑ Resign</button>
+		{/if}
+	{/snippet}
+
+	{#if !fs.isFs}{@render statusLine()}{/if}
 
 	<div class="board-wrap" class:board-wrap--fs={fs.isFs} bind:this={boardWrap} use:portal={fs.isFs}>
 		<div class="board" style={theme.style} bind:this={boardEl}>
@@ -482,39 +527,30 @@
 				</span>
 			</div>
 		{/if}
+		{#if fs.isFs}
+			<!-- All absolutely positioned. The board is dead-centre only because it is
+			     the SOLE in-flow child of this flex column; an in-flow row here would
+			     shift it and break the centring assertion in chess-fullscreen.spec.js. -->
+			<div class="fs-status">{@render statusLine()}</div>
+			<div class="fs-draw">{@render drawOfferBlock()}</div>
+			<div class="fs-controls">
+				{@render reviewBar()}
+				{@render matchActions()}
+			</div>
+		{/if}
 	</div>
 
 	{@render playerBar(bottomColor)}
 
-	{#if game.moves.length}
-		<div class="review">
-			<button class="btn btn--ghost btn--sm" onclick={reviewFirst} disabled={viewIdx === 0} title="First move">⏮</button>
-			<button class="btn btn--ghost btn--sm" onclick={reviewPrev} disabled={viewIdx === 0} title="Previous move">◀</button>
-			<span class="review-pos">
-				{#if reviewPly === null}live{:else}move {viewIdx}/{liveIdx}{/if}
-			</span>
-			<button class="btn btn--ghost btn--sm" onclick={reviewNext} disabled={reviewPly === null} title="Next move">▶</button>
-			<button class="btn btn--ghost btn--sm" onclick={reviewLive} disabled={reviewPly === null} title="Back to live">⏭</button>
-		</div>
-	{/if}
-
-	{#if drawOfferedToMe}
-		<div class="draw-offer">
-			<span>{nameOf(game.drawOffer)} offers a draw</span>
-			<span class="draw-actions">
-				<button class="btn btn--sm" onclick={() => respondDraw('accept')}>Accept</button>
-				<button class="btn btn--ghost btn--sm" onclick={() => respondDraw('decline')}>Decline</button>
-			</span>
-		</div>
-	{:else if drawOfferedByMe && !game.result}
-		<p class="muted" style="margin-top:10px;">Draw offered — waiting for a reply…</p>
+	{#if !fs.isFs}
+		{@render reviewBar()}
+		{@render drawOfferBlock()}
 	{/if}
 
 	<div class="game-actions">
-		{#if myColor && !game.result}
-			<button class="btn btn--ghost btn--sm" onclick={offerDraw} disabled={!!game.drawOffer}>½ Offer draw</button>
-			<button class="btn btn--ghost btn--sm btn--danger" onclick={resign}>⚑ Resign</button>
-		{/if}
+		<!-- Theme and mute deliberately stay card-only; they are not match controls
+		     and the fullscreen overlay has no room to spare. -->
+		{#if !fs.isFs}{@render matchActions()}{/if}
 		<button
 			class="btn btn--ghost btn--sm"
 			onclick={() => (showThemes = !showThemes)}
@@ -650,8 +686,14 @@
 		   true screen edges like chess.com — width is what caps it in portrait. */
 		padding: calc(4px + env(safe-area-inset-top)) env(safe-area-inset-right)
 			calc(4px + env(safe-area-inset-bottom)) env(safe-area-inset-left);
-		/* vertical budget reserved for the pinned clock strips */
-		--fs-reserve: 56px;
+		/* Vertical budget reserved for the pinned clock strips, the status line and
+		   the review/match controls. Centring makes the two bands symmetric, so this
+		   is 2x the taller band (clock strip + controls row).
+
+		   On the tuned case (Pixel 5, 393x851) the board is WIDTH-bound at 393px with
+		   ~229px free above and below, so this does not shrink the board at all. It
+		   binds only where height is the smaller term — landscape and desktop. */
+		--fs-reserve: 148px;
 	}
 	/* chess.com layout: each player's clock on their own side — opponent pinned to
 	   the top, me to the bottom — with ONLY the board centred in between, so it
@@ -689,6 +731,49 @@
 		left: auto;
 		transform: none;
 		margin: 0;
+	}
+	/* Status sits under the top clock strip; controls sit above the bottom one.
+	   Both are out of flow so the board keeps its dead-centre position. */
+	.board-wrap--fs .fs-status {
+		position: absolute;
+		top: calc(40px + env(safe-area-inset-top));
+		left: 12px;
+		right: 12px;
+		text-align: center;
+	}
+	/* the snippets carry their own bottom margins for the card layout — pointless
+	   here and they push the text off-centre in the band */
+	.board-wrap--fs .fs-status :global(p) {
+		margin: 0;
+	}
+	.board-wrap--fs .fs-controls {
+		position: absolute;
+		bottom: calc(46px + env(safe-area-inset-bottom));
+		left: 8px;
+		right: 8px;
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: center;
+		gap: 8px;
+	}
+	.board-wrap--fs .fs-controls :global(.review) {
+		margin-top: 0;
+	}
+	/* A draw offer is a question that needs answering, so it goes centre-screen over
+	   the board rather than into a corner. */
+	.board-wrap--fs .fs-draw {
+		position: absolute;
+		left: 12px;
+		right: 12px;
+		bottom: calc(50% - 24px);
+	}
+	.board-wrap--fs .fs-draw :global(.draw-offer),
+	.board-wrap--fs .fs-draw :global(p) {
+		margin: 0;
+		justify-content: center;
+		text-align: center;
+		box-shadow: var(--shadow-lg);
 	}
 	.board-wrap--fs .board {
 		flex: 0 1 auto;

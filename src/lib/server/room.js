@@ -388,6 +388,29 @@ const playerCapacityFor = (room) =>
  * list, because those two must have identical effects — a difference between
  * them is how you get a member who is out of the list but still in the room.
  */
+/**
+ * Keep the call-start stamp in step with the voice roster.
+ *
+ * A call only exists once there are two people in it, so the clock starts on the
+ * SECOND join and clears when the roster drops back under two — one person sitting
+ * in voice is waiting, not talking. Only writes the stamp when it is absent, so a
+ * third person joining does not restart a call already in progress.
+ *
+ * Lives here rather than beside stateView because gamelogic.js already imports
+ * from this module, and the reverse import would close a cycle. stateView needs
+ * only the field, not the function.
+ *
+ * Call from EVERY site that touches state.voice — voice join/leave, leaving the
+ * room, and being removed by the host. One helper is what stops those drifting.
+ */
+export function syncVoiceSince(state) {
+	if (!state) return state;
+	const live = (state.voice || []).length >= 2;
+	if (live) state.voiceSince = state.voiceSince || Date.now();
+	else state.voiceSince = null;
+	return state;
+}
+
 export async function dropMember(target, state) {
 	// 'left', not 'rejected': publicMembers filters `rejected` out entirely, which
 	// would retroactively degrade their name to `#uid` across chat history.
@@ -396,6 +419,7 @@ export async function dropMember(target, state) {
 	// drop them from voice so the remaining peers tear the connection down
 	// (mesh.sync already prunes anyone absent from the roster)
 	state.voice = (state.voice || []).filter((u) => u !== targetUid);
+	syncVoiceSince(state); // a kick can leave one person alone — that ends the call
 	// Marks them as removed-by-the-host rather than merely gone, which is what
 	// gives their in-flight poll a terminal 403 carrying the real reason instead
 	// of a bare "not a member". NOT a ban: `join` clears this marker. For a private

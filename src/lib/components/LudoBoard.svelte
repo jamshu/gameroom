@@ -482,18 +482,29 @@
 		/>
 	{/if}
 
-	<!-- players + turn indicator -->
-	<div class="players">
-		{#each game.players as uid (uid)}
-			<div class="pl" class:pl--now={uid === currentUid && !game.result} style="--pc:{cssColor(game.colors[uid])}">
-				<Avatar uid={Number(uid)} name={nameOf(uid)} size={30} ring={uid === game.result ? 'gold' : uid === currentUid && !game.result ? 'accent' : 'none'} glow={uid === game.result || (uid === currentUid && !game.result)} />
-				<span class="pl-name">{nameOf(uid)}{Number(uid) === myUid ? ' (you)' : ''}</span>
-				<span class="pl-dot"></span>
-			</div>
-		{/each}
-	</div>
+	<!-- players + turn indicator. A snippet so it can render EITHER here or inside
+	     .play-area, never both — `portal` moves .play-area to <body> in fullscreen,
+	     and a second copy would stay reachable by keyboard behind the overlay. -->
+	{#snippet playerStrip()}
+		<div class="players">
+			{#each game.players as uid (uid)}
+				<div class="pl" class:pl--now={uid === currentUid && !game.result} style="--pc:{cssColor(game.colors[uid])}">
+					<Avatar uid={Number(uid)} name={nameOf(uid)} size={30} ring={uid === game.result ? 'gold' : uid === currentUid && !game.result ? 'accent' : 'none'} glow={uid === game.result || (uid === currentUid && !game.result)} />
+					<span class="pl-name">{nameOf(uid)}{Number(uid) === myUid ? ' (you)' : ''}</span>
+					<span class="pl-dot"></span>
+				</div>
+			{/each}
+		</div>
+	{/snippet}
 
-	{#if error}<p class="error-text">{error}</p>{/if}
+	{#snippet errorLine()}
+		{#if error}<p class="error-text">{error}</p>{/if}
+	{/snippet}
+
+	{#if !fs.isFs}
+		{@render playerStrip()}
+		{@render errorLine()}
+	{/if}
 
 	<!-- theme vars repeated here on purpose: `portal` moves this node to <body> in
 	     fullscreen, so anything inherited from the card above is lost -->
@@ -504,6 +515,10 @@
 		bind:this={playArea}
 		use:portal={fs.isFs}
 	>
+	{#if fs.isFs}
+		{@render playerStrip()}
+		{@render errorLine()}
+	{/if}
 	<div class="board-wrap">
 		<div class="board">
 			{#each cells as cell (cell.r * N + cell.c)}
@@ -679,9 +694,19 @@
 	}
 	.play-area--fs .board-wrap {
 		width: 100%;
-		/* reserve room for the dice/controls row + exit button below the board */
-		max-width: min(100%, calc(100svh - 150px));
+		/* reserve room for the player strip above the board, and the dice/controls
+		   row + exit button below it. On a phone the board is width-bound (393px vs
+		   ~650px of height budget) so this rarely binds. */
+		max-width: min(100%, calc(100svh - 205px));
 		margin: 0;
+	}
+	/* in flow as the first child, so it sits above the board exactly as it does in
+	   the card. Centred and margin-free — the card's 14px bottom margin would fight
+	   the overlay's own gap. */
+	.play-area--fs .players {
+		margin: 0;
+		justify-content: center;
+		flex: 0 0 auto;
 	}
 	/* drop the board's inner padding/border/shadow in fullscreen so the 15×15 grid
 	   (and its tokens, sized as a % of the board) fill the wrap edge-to-edge */
@@ -713,9 +738,31 @@
 			justify-content: center;
 		}
 		.play-area--fs .board {
-			/* square from height, capped so the ~220px controls column still fits */
-			width: min(calc(100svh - 12px), calc(100svw - 260px));
-			height: min(calc(100svh - 12px), calc(100svw - 260px));
+			/* square from height, capped so the ~200px controls column AND the
+			   ~180px player column still fit */
+			width: min(calc(100svh - 12px), calc(100svw - 450px));
+			height: min(calc(100svh - 12px), calc(100svw - 450px));
+		}
+		/* The row layout would otherwise drop the strip in beside the board as a
+		   bare third column of wrapped pills. Make it a proper column and put it
+		   first, so it reads players -> board -> controls. There is room: at
+		   851x393 the board is height-bound to ~381px, leaving ~238px spare. */
+		.play-area--fs .players {
+			flex-direction: column;
+			flex-wrap: nowrap;
+			justify-content: center;
+			width: 176px;
+			/* the turn pill's glow bleeds ~14px past its box and would sit under the
+			   overlay's 6px edge padding */
+			padding-left: 6px;
+			order: -1;
+		}
+		/* a long name must ellipsis inside the fixed column, not push the dot out */
+		.play-area--fs .players .pl-name {
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+			min-width: 0;
 		}
 		.play-area--fs .controls {
 			flex-direction: column;

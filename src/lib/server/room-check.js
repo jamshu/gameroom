@@ -10,7 +10,7 @@
 import assert from 'node:assert';
 import { register } from 'node:module';
 register('./room-stub-loader.mjs', import.meta.url);
-const { reseatRoles, setRoles, resetRound, createRoomMedia, readRoomMedia, deleteRoom, pickSuccessorHost, finishRoom, publicMembers, browseDomain, seatOnAccept, dropMember, writeState, roomSnapshot } =
+const { reseatRoles, setRoles, resetRound, createRoomMedia, readRoomMedia, deleteRoom, pickSuccessorHost, finishRoom, publicMembers, browseDomain, seatOnAccept, dropMember, writeState, roomSnapshot, syncVoiceSince } =
 	await import('./room.js');
 
 const member = (id, role, status = 'accepted') => ({
@@ -362,6 +362,33 @@ const writesTo = (role) =>
 	// idempotent on the marker — a second removal must not double up
 	await dropMember(target, state);
 	assert.deepEqual(state.banned, [104, 102]);
+
+	// a kick that leaves two people still talking must not stop their clock
+	assert.ok(state.voiceSince, 'two left in the call — it is still running');
+}
+
+// The call clock. A call is two people, so one person sitting in voice is waiting
+// rather than talking, and the stamp must survive a third person arriving.
+{
+	const s = { voice: [] };
+	assert.equal(syncVoiceSince(s).voiceSince, null, 'nobody in voice');
+
+	s.voice = [101];
+	assert.equal(syncVoiceSince(s).voiceSince, null, 'one person is not a call');
+
+	s.voice = [101, 102];
+	const started = syncVoiceSince(s).voiceSince;
+	assert.ok(started > 0, 'the second join starts the clock');
+
+	s.voice = [101, 102, 103];
+	assert.equal(syncVoiceSince(s).voiceSince, started,
+		'a third person joining must NOT restart a call already in progress');
+
+	s.voice = [103];
+	assert.equal(syncVoiceSince(s).voiceSince, null, 'dropping under two ends it');
+
+	s.voice = [103, 104];
+	assert.ok(syncVoiceSince(s).voiceSince >= started, 'and a fresh call starts a fresh clock');
 }
 
 // 14. writeState's version guard. Two players opening envelopes at the same

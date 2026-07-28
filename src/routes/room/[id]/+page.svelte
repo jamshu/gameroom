@@ -361,6 +361,8 @@
 							<VoiceBar
 								{members}
 								voice={$store.voice}
+								voiceMs={$store.voiceMs}
+								voiceAt={$store.voiceAt}
 								{voicePeers}
 								{inVoice}
 								{myUid}
