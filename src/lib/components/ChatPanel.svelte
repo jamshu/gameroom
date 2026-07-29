@@ -222,6 +222,11 @@
 </script>
 
 <div class="card chat">
+	<p class="chat-safety">
+		<span class="emo">🔒</span>
+		<span>Sent over a secure connection. All chat auto-deletes forever when everyone
+			leaves the room — nothing is kept.</span>
+	</p>
 	<div class="chat-list" bind:this={listEl}>
 		{#each rows as { msg, mine, head } (msg.id)}
 			<div
@@ -337,6 +342,24 @@
 		.chat {
 			height: clamp(260px, 55svh, 420px);
 		}
+	}
+	/* Privacy reassurance — small, calm, sits above the feed. */
+	.chat-safety {
+		display: flex;
+		align-items: flex-start;
+		gap: 6px;
+		margin: 0 0 8px;
+		padding: 7px 10px;
+		border-radius: var(--radius-sm);
+		background: color-mix(in srgb, var(--green) 12%, var(--surface-2));
+		border: 1px solid color-mix(in srgb, var(--green) 35%, var(--border));
+		color: var(--text-dim);
+		font-size: 0.72rem;
+		line-height: 1.35;
+	}
+	.chat-safety .emo {
+		font-size: 0.85rem;
+		margin-top: 1px;
 	}
 	.chat-list {
 		flex: 1;
