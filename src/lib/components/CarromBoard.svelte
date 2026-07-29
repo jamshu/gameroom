@@ -2,6 +2,16 @@
 	import { onMount } from 'svelte';
 	import Avatar from './Avatar.svelte';
 	import { simulate, buildBodies, BOARD } from '$lib/games/carroms-sim.js';
+	import {
+		T_MIN,
+		T_MAX,
+		sideOfSeat,
+		strikerPos,
+		alongSide,
+		clampT,
+		viewRotation,
+		toBoard
+	} from '$lib/games/carrom-seats.js';
 	import { createFullscreen, portal } from '$lib/fullscreen.svelte.js';
 	import { createTheme, CARROM_THEMES } from '$lib/themes.svelte.js';
 	import ThemePicker from './ThemePicker.svelte';
@@ -26,6 +36,11 @@
 	let muted = $state(false);
 	const pal = $derived(theme.current.palette);
 
+	/** Matches --accent in app.css. The canvas can't read a CSS custom property
+	 *  without a getComputedStyle round trip on every frame, and this one colour
+	 *  is the whole board's "it's live" signal. */
+	const ACCENT = '#ff4d6d';
+
 	onMount(() => {
 		muted = isMuted();
 		// the AudioContext needs a gesture that has ALREADY happened — waiting until
@@ -46,14 +61,35 @@
 	const myTurn = $derived(currentUid === myUid && !game.result && !posting);
 	const myTeam = $derived(game.players.indexOf(myUid) % 2 === 0 ? 'w' : 'b');
 
+	/* ------------------------------- seating ---------------------------------
+	   Which edge each player shoots from, and the rotation that brings the
+	   viewer's own edge to the bottom of their screen so opponents sit across the
+	   board the way they would round a real one. Purely a VIEW transform: it
+	   lives in draw() and its inverse in canvasPoint(), and nothing that leaves
+	   this component — the sim, the posted positions, the broadcast striker start
+	   — ever sees it. See $lib/games/carrom-seats.js for the mapping itself. */
+	const mySeat = $derived(game.players.indexOf(myUid)); // -1 for spectators
+	const mySide = $derived(sideOfSeat(mySeat, game.players.length));
+	const currentSide = $derived(sideOfSeat(game.turnIdx, game.players.length));
+	// spectators hold no seat, so their board stays unrotated
+	const viewTheta = $derived(mySeat < 0 ? 0 : viewRotation(mySide));
+
 	// striker placement + aiming (shooter only)
-	const BASE_Y = BOARD.SIZE - 120;
-	let strikerX = $state(BOARD.SIZE / 2);
+	let strikerT = $state(BOARD.SIZE / 2);
+	let placing = $state(false); // dragging the striker along the baseline
+	let grabOffset = 0; // where on the striker it was grabbed, so it doesn't jump
 	let aiming = $state(false);
-	let aim = $state(null); // {dx, dy} drag vector
-	let animFrames = null; // precomputed sim snapshots while animating
-	let animBodies = $state(null);
-	let displayPieces = $state(null); // tween target for spectators
+	let aim = $state(null); // {dx, dy} drag vector, measured from the press point
+	let aimAnchor = null; // where the aim drag started, in board coords
+	let animBodies = $state(null); // sim snapshot currently on screen
+	let displayPieces = $state(null); // tween target on the no-replay fallback path
+
+	// a fresh placement each time the strike comes round, rather than inheriting
+	// wherever the last shot happened to leave it
+	$effect(() => {
+		currentUid;
+		strikerT = BOARD.SIZE / 2;
+	});
 
 	const POCKETS = [
 		[30, 30], [BOARD.SIZE - 30, 30], [30, BOARD.SIZE - 30], [BOARD.SIZE - 30, BOARD.SIZE - 30]
@@ -76,8 +112,8 @@
 	}
 
 	/** A disc with a top-left highlight, rim and drop shadow — the shared look for
-	 *  coins and the striker. `ring` draws an extra accent ring (the queen). */
-	function disc(ctx, x, y, r, base, ring) {
+	 *  coins and the striker. */
+	function disc(ctx, x, y, r, base) {
 		const grad = ctx.createRadialGradient(x - r * 0.35, y - r * 0.4, r * 0.1, x, y, r);
 		grad.addColorStop(0, shade(base, 0.45));
 		grad.addColorStop(0.6, base);
@@ -96,13 +132,6 @@
 		ctx.strokeStyle = shade(base, -0.45);
 		ctx.lineWidth = 2;
 		ctx.stroke();
-		if (ring) {
-			ctx.beginPath();
-			ctx.arc(x, y, r * 0.62, 0, Math.PI * 2);
-			ctx.strokeStyle = ring;
-			ctx.lineWidth = 3;
-			ctx.stroke();
-		}
 	}
 
 	function draw() {
@@ -111,6 +140,14 @@
 		const S = BOARD.SIZE;
 		const C = S / 2;
 		ctx.clearRect(0, 0, S, S);
+
+		// Everything below is drawn in ABSOLUTE board coords; this pair spins the
+		// finished board so the viewer's own side faces them. canvasPoint() undoes
+		// exactly this.
+		ctx.save();
+		ctx.translate(C, C);
+		ctx.rotate(viewTheta);
+		ctx.translate(-C, -C);
 
 		// felt — radial wood gradient, lit at the centre and deepening to the frame
 		const felt = ctx.createRadialGradient(C, C, S * 0.1, C, C, S * 0.72);
@@ -128,7 +165,7 @@
 		ctx.strokeRect(26, 26, S - 52, S - 52);
 
 		// corner → pocket "arrows": two arcs sweeping toward each corner
-		ctx.strokeStyle = shade(pal.queen, 0.05);
+		ctx.strokeStyle = shade(pal.arrow, 0.05);
 		ctx.lineWidth = 4;
 		for (const [px, py] of POCKETS) {
 			const toward = Math.atan2(C - py, C - px); // points into the board
@@ -156,17 +193,24 @@
 			ctx.fill();
 		}
 
-		// baseline + the two shooting-circles at its ends
-		ctx.strokeStyle = pal.line;
-		ctx.lineWidth = 3;
-		ctx.beginPath();
-		ctx.moveTo(150, BASE_Y);
-		ctx.lineTo(S - 150, BASE_Y);
-		ctx.stroke();
-		for (const ex of [150, S - 150]) {
+		// One baseline per side with its two shooting circles, as on a real board.
+		// The side on strike is picked out in the accent, so whose shot it is reads
+		// off the board itself and not just off a name chip.
+		for (let side = 0; side < 4; side++) {
+			const live = !game.result && side === currentSide;
+			const a = strikerPos(side, T_MIN);
+			const b = strikerPos(side, T_MAX);
+			ctx.strokeStyle = live ? ACCENT : pal.line;
+			ctx.lineWidth = live ? 6 : 3;
 			ctx.beginPath();
-			ctx.arc(ex, BASE_Y, 16, 0, Math.PI * 2);
+			ctx.moveTo(a.x, a.y);
+			ctx.lineTo(b.x, b.y);
 			ctx.stroke();
+			for (const end of [a, b]) {
+				ctx.beginPath();
+				ctx.arc(end.x, end.y, 16, 0, Math.PI * 2);
+				ctx.stroke();
+			}
 		}
 
 		// pockets — dark well with a rim
@@ -182,44 +226,58 @@
 			ctx.stroke();
 		}
 
-		// pieces (animating bodies take precedence)
+		// pieces (animating bodies take precedence). The `q` filter is for rooms
+		// that were mid-match when the red coin was removed — the server drops her
+		// on their next shot, this stops her showing as a stray black coin until then.
 		const pieces = animBodies
 			? animBodies.filter((b) => b.id !== 's' && !b.pocketed)
-			: (displayPieces || game.pieces).filter((p) => !p.pocketed);
+			: (displayPieces || game.pieces).filter((p) => !p.pocketed && p.color !== 'q');
 		for (const p of pieces) {
-			const isQ = p.color === 'q' || p.id === 'q';
-			const base = isQ ? pal.queen : colorOf(p) === 'w' ? pal.white : pal.black;
-			disc(ctx, p.x, p.y, BOARD.R, base, isQ ? '#f2c94c' : null);
+			if (colorOf(p) === 'q') continue;
+			disc(ctx, p.x, p.y, BOARD.R, colorOf(p) === 'w' ? pal.white : pal.black);
 		}
 
-		// striker
-		let sx = null, sy = null;
+		// Striker. Mine while I'm on strike, the animating one during any shot, and
+		// otherwise a dim marker on the active player's baseline — it says whose
+		// side is live, not where they have actually placed it.
+		let sx = null, sy = null, ghost = false;
 		if (animBodies) {
 			const s = animBodies.find((b) => b.id === 's');
 			if (s && !s.pocketed) { sx = s.x; sy = s.y; }
 		} else if (myTurn) {
-			sx = strikerX; sy = BASE_Y;
+			({ x: sx, y: sy } = strikerPos(mySide, strikerT));
+		} else if (!game.result) {
+			({ x: sx, y: sy } = strikerPos(currentSide, BOARD.SIZE / 2));
+			ghost = true;
 		}
 		if (sx != null) {
+			ctx.save();
+			if (ghost) ctx.globalAlpha = 0.3;
 			disc(ctx, sx, sy, BOARD.STRIKER_R, pal.striker);
-			// centre pip
-			ctx.beginPath();
-			ctx.arc(sx, sy, BOARD.STRIKER_R * 0.28, 0, Math.PI * 2);
-			ctx.fillStyle = shade(pal.striker, -0.3);
-			ctx.fill();
+			if (!ghost) {
+				// centre pip
+				ctx.beginPath();
+				ctx.arc(sx, sy, BOARD.STRIKER_R * 0.28, 0, Math.PI * 2);
+				ctx.fillStyle = shade(pal.striker, -0.3);
+				ctx.fill();
+			}
+			ctx.restore();
 		}
 
 		// aim line (slingshot: shot goes opposite the drag)
 		if (aiming && aim && myTurn) {
+			const s = strikerPos(mySide, strikerT);
 			ctx.beginPath();
-			ctx.moveTo(strikerX, BASE_Y);
-			ctx.lineTo(strikerX - aim.dx * 3, BASE_Y - aim.dy * 3);
+			ctx.moveTo(s.x, s.y);
+			ctx.lineTo(s.x - aim.dx * 3, s.y - aim.dy * 3);
 			ctx.strokeStyle = 'rgba(255,77,109,0.85)';
 			ctx.lineWidth = 5;
 			ctx.setLineDash([12, 8]);
 			ctx.stroke();
 			ctx.setLineDash([]);
 		}
+
+		ctx.restore();
 	}
 
 	function colorOf(p) {
@@ -231,54 +289,156 @@
 	// and a theme switch would leave the canvas on the old palette until the next
 	// move repainted it.
 	$effect(() => {
-		game.pieces; animBodies; strikerX; aim; displayPieces; myTurn; pal;
+		game.pieces; animBodies; strikerT; aim; displayPieces; myTurn; pal; viewTheta; currentSide;
 		draw();
 	});
 
-	// spectators/opponents: tween to new positions when a shot result lands
-	let lastV = 0;
-	$effect(() => {
-		if (game.v !== lastV) {
-			lastV = game.v;
-			// Authoritative state moved, so whatever a failed post complained about is
-			// now answered — a dropped connection whose shot actually landed would
-			// otherwise leave its warning on screen over a perfectly correct board.
-			error = '';
-			if (!animBodies) tweenTo(game.pieces);
-		}
-	});
+	/* ------------------------------ shot playback ------------------------------
+	   The shooter simulates locally and posts the settled result. Everyone ELSE
+	   used to get a 600ms straight-line slide to those positions, which read as
+	   discs passing through each other. Instead the shot's four INPUTS ride along
+	   on game.lastEvent.shot, and every other client re-runs the same
+	   deterministic sim against the positions it already holds — so the whole room
+	   watches the same shot, with the same impacts, and only then settles onto the
+	   server's numbers. */
 
-	/* ---- sound for everyone who didn't take the shot ----------------------
-	   `shoot()` only runs on the shooter's client, so without this the rest of
-	   the room watches a coin drop in silence. Same shape as ludo's: driven off
-	   the state version (poll OR push), plain `let`s so the effect doesn't
-	   depend on what it writes, and `soundReady` skips the arrival replay. */
-	let skipStateSound = false; // set by shoot(); we already sounded it live
-	let soundedV = null;
-	let soundReady = false;
+	/** Sim steps replayed per second of animation. The physics is untouched — this
+	 *  is purely how fast the recorded shot is played back. It used to be ~480
+	 *  (2 snapshots × 4 steps, once per frame), which flung the striker across the
+	 *  board in about three frames; 135 lets a full-power shot run ~1.5s. Lower is
+	 *  slower — this constant is the only knob. */
+	const SHOT_STEPS_PER_SEC = 135;
+
+	/** Two clicks closer together than this blur into one buzz on a hard break. */
+	const MIN_CLICK_GAP_MS = 28;
+
+	let lastV = 0;
+	let lastSeq = 0; // highest lastEvent.seq we've already shown
+	let prevPieces = null; // last settled positions on screen — the replay baseline
+	let shotToken = 0; // bumped by every new shot; a running playback abandons itself
+	let booted = false; // first state arrival isn't a move, so it doesn't get a sound
+
+	/** Run a shot to rest, keeping every step as an animation frame. */
+	function runShot(pieces, sx, sy, vx, vy) {
+		const bodies = buildBodies(pieces, sx, sy, vx, vy);
+		const frames = [];
+		const result = simulate(bodies, (bs) => frames.push(bs.map((b) => ({ ...b }))));
+		frames.push(bodies.map((b) => ({ ...b })));
+		return { bodies, frames, result };
+	}
+
+	/** Put a recorded shot on screen, sounding each impact as it lands. Driven off
+	 *  the clock rather than a per-tick frame counter, so the shot takes the same
+	 *  time on a 60Hz and a 144Hz screen and a dropped frame costs smoothness
+	 *  instead of slowing the whole shot down. Resolves early once `stale()` goes
+	 *  true — a newer authoritative state has landed and this playback is history. */
+	function playShot(frames, events, stale) {
+		return new Promise((resolve) => {
+			const last = frames.length - 1;
+			const start = performance.now();
+			let ev = 0;
+			let lastClickAt = 0;
+
+			/** Sound every impact up to `step`. Called each frame, then once more with
+			 *  Infinity so a pocket the final frame landed past is still heard. */
+			function sound(step) {
+				while (ev < events.length && events[ev].step <= step) {
+					const e = events[ev++];
+					const now = performance.now();
+					if (e.type === 'pocket') {
+						if (e.id === 's') playCarromFoul();
+						else playCarromPocket('coin');
+					} else if (now - lastClickAt >= MIN_CLICK_GAP_MS) {
+						lastClickAt = now;
+						if (e.type === 'hit') playCarromHit(e.speed);
+						else playCarromWall(e.speed);
+					}
+				}
+			}
+
+			function frame(t) {
+				if (stale()) { resolve(false); return; }
+				const step = ((t - start) / 1000) * SHOT_STEPS_PER_SEC;
+				const i = Math.min(Math.round(step), last);
+				animBodies = frames[i];
+				sound(step);
+				if (i < last) requestAnimationFrame(frame);
+				else {
+					sound(Infinity);
+					resolve(true);
+				}
+			}
+			requestAnimationFrame(frame);
+		});
+	}
+
+	/** Re-run someone else's shot from the positions we held before it. */
+	async function replay(shot, from) {
+		const token = shotToken;
+		const { frames, result } = runShot(from, shot.sx, shot.sy, shot.vx, shot.vy);
+		playCarromFlick(Math.hypot(shot.vx, shot.vy) / 40);
+		await playShot(frames, result.events, () => token !== shotToken);
+		// A newer state already claimed the board — don't clear ITS animation
+		if (token !== shotToken) return;
+		animBodies = null; // hand the board back to the authoritative positions
+	}
+
 	$effect(() => {
 		const v = game.v;
+		if (v === lastV) return;
+		lastV = v;
+		// Authoritative state moved, so whatever a failed post complained about is
+		// now answered — a dropped connection whose shot actually landed would
+		// otherwise leave its warning on screen over a perfectly correct board.
+		error = '';
+
 		const ev = game.lastEvent;
-		if (ev && v !== soundedV) {
-			soundedV = v;
-			if (skipStateSound) {
-				skipStateSound = false; // our own shot, already heard against the animation
-			} else if (soundReady && ev.kind === 'shot') {
-				if (ev.foul) playCarromFoul();
-				if (ev.queen) playCarromPocket('queen');
-				else if (ev.pocketed) playCarromPocket('coin');
-			}
+		const from = prevPieces;
+		const first = !booted;
+		// `game.v` is the whole ROOM's version — the store stamps it from the state
+		// envelope, so a voice join, a member change or a game-type switch bumps it
+		// with no shot behind it. Only an unseen shot seq means a shot happened;
+		// gating on the version instead would re-animate the last shot off an
+		// already-settled board every time someone picked up the mic.
+		const shotIsNew = (ev?.seq ?? 0) !== lastSeq;
+		lastSeq = ev?.seq ?? 0;
+		booted = true;
+		prevPieces = game.pieces.map((p) => ({ ...p }));
+		if (!shotIsNew) return; // board unchanged — leave whatever is on screen alone
+
+		// A new shot supersedes anything still running: pocket one of your own and
+		// the retained turn can deliver a second shot mid-animation, and silently
+		// dropping it would leave the board a shot behind.
+		shotToken++;
+
+		if (ev.uid === myUid) {
+			// our own shot — the local sim already animated it and settled here
+			animBodies = null;
+			displayPieces = null;
+			return;
 		}
-		soundReady = true;
+		if (!first && ev.shot && from) {
+			displayPieces = null; // drop any fallback tween still in flight
+			replay(ev.shot, from);
+			return;
+		}
+		// No baseline to replay from — a reload, a mid-game join, a shot posted by
+		// a client too old to send its inputs. Slide to the settled positions and
+		// play the one-line summary the server sent, so it isn't silent.
+		animBodies = null;
+		tweenTo(from || game.pieces, game.pieces);
+		if (!first) {
+			if (ev.foul) playCarromFoul();
+			else if (ev.pocketed) playCarromPocket('coin');
+		}
 	});
 
-	function tweenTo(target) {
-		const from = (displayPieces || target).map((p) => ({ ...p }));
+	function tweenTo(from, target) {
 		const start = performance.now();
 		const DUR = 600;
 		function frame(t) {
 			const k = Math.min(1, (t - start) / DUR);
-			// Spectators only receive settled positions, so this path is a straight
+			// This path has no simulated trajectory behind it, so it's a straight
 			// line, not the real one — easing it out lands the coins softly instead
 			// of stopping them dead. Kept short for the same reason: the longer a
 			// fake path is on screen, the more it reads as discs sliding through
@@ -294,33 +454,51 @@
 		requestAnimationFrame(frame);
 	}
 
+	/* --------------------------------- input ---------------------------------- */
+
 	function canvasPoint(e) {
 		const rect = canvas.getBoundingClientRect();
-		const cx = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
-		const cy = (e.touches ? e.touches[0].clientY : e.clientY) - rect.top;
-		return { x: (cx / rect.width) * BOARD.SIZE, y: (cy / rect.height) * BOARD.SIZE };
+		const src = e.touches?.[0] || e;
+		// Undo the view rotation draw() applied, so every handler below reasons in
+		// absolute board coords — the same space the sim and the server use.
+		return toBoard(
+			((src.clientX - rect.left) / rect.width) * BOARD.SIZE,
+			((src.clientY - rect.top) / rect.height) * BOARD.SIZE,
+			viewTheta
+		);
 	}
 
 	function down(e) {
 		if (!myTurn || animBodies) return;
 		const p = canvasPoint(e);
-		if (Math.hypot(p.x - strikerX, p.y - BASE_Y) < BOARD.STRIKER_R * 2.5) {
+		const s = strikerPos(mySide, strikerT);
+		if (Math.hypot(p.x - s.x, p.y - s.y) < BOARD.STRIKER_R * 2.5) {
+			// Grabbing the striker slides it along the baseline. The offset keeps the
+			// disc under the point it was grabbed by instead of snapping its centre
+			// to the finger.
+			placing = true;
+			grabOffset = alongSide(mySide, p) - strikerT;
+		} else {
+			// Anywhere else pulls a slingshot. The vector is measured from the PRESS
+			// point rather than from the striker — measured from the striker, a tap
+			// near a far corner would be a full-power shot with no drag at all.
 			aiming = true;
+			aimAnchor = p;
 			aim = { dx: 0, dy: 0 };
-		} else if (Math.abs(p.y - BASE_Y) < 60) {
-			strikerX = Math.max(150, Math.min(BOARD.SIZE - 150, p.x));
 		}
 		e.preventDefault();
 	}
 
 	function move(e) {
-		if (!aiming) return;
+		if (!placing && !aiming) return;
 		const p = canvasPoint(e);
-		aim = { dx: p.x - strikerX, dy: p.y - BASE_Y };
+		if (placing) strikerT = clampT(alongSide(mySide, p) - grabOffset);
+		else aim = { dx: p.x - aimAnchor.x, dy: p.y - aimAnchor.y };
 		e.preventDefault();
 	}
 
 	function up() {
+		placing = false; // a released placement drag is never a shot
 		if (!aiming || !aim) return;
 		aiming = false;
 		const power = Math.hypot(aim.dx, aim.dy);
@@ -336,70 +514,19 @@
 		shoot(vx, vy);
 	}
 
-	/** Two clicks closer together than this blur into one buzz on a hard break. */
-	const MIN_CLICK_GAP_MS = 28;
+	async function shoot(vxRaw, vyRaw) {
+		const start = strikerPos(mySide, strikerT);
+		// Round to exactly what the server will broadcast, so the replay everyone
+		// else runs starts from the same four numbers this animation did.
+		const sx = Math.round(start.x);
+		const sy = Math.round(start.y);
+		const vx = Math.round(vxRaw * 1000) / 1000;
+		const vy = Math.round(vyRaw * 1000) / 1000;
 
-	/** Sim steps replayed per second of animation. The physics is untouched — this
-	 *  is purely how fast the recorded shot is played back. It used to be ~480
-	 *  (2 snapshots × 4 steps, once per frame), which flung the striker across the
-	 *  board in about three frames; 135 lets a full-power shot run ~1.5s. Lower is
-	 *  slower — this constant is the only knob. */
-	const SHOT_STEPS_PER_SEC = 135;
-
-	async function shoot(vx, vy) {
-		const bodies = buildBodies(game.pieces, strikerX, BASE_Y, vx, vy);
-		const frames = [];
-		const result = simulate(bodies, (bs) => frames.push(bs.map((b) => ({ ...b }))));
-		frames.push(bodies.map((b) => ({ ...b })));
-		animFrames = frames;
-
+		const token = ++shotToken;
+		const { bodies, frames, result } = runShot(game.pieces, sx, sy, vx, vy);
 		playCarromFlick(Math.hypot(vx, vy) / 40);
-		// we sound our own shot against the animation below; suppress the echo the
-		// state effect would otherwise play a round trip later
-		skipStateSound = true;
-
-		// play animation, sounding each impact as it comes on screen, then post the
-		// settled result
-		await new Promise((resolve) => {
-			const events = result.events || [];
-			const last = animFrames.length - 1;
-			const start = performance.now();
-			let ev = 0;
-			let lastClickAt = 0;
-
-			/** Sound every impact up to `step`. Called each frame, then once more with
-			 *  Infinity so a pocket the final frame landed past is still heard. */
-			function sound(step) {
-				while (ev < events.length && events[ev].step <= step) {
-					const e = events[ev++];
-					const now = performance.now();
-					if (e.type === 'pocket') {
-						if (e.id === 's') playCarromFoul();
-						else playCarromPocket(e.id === 'q' ? 'queen' : 'coin');
-					} else if (now - lastClickAt >= MIN_CLICK_GAP_MS) {
-						lastClickAt = now;
-						if (e.type === 'hit') playCarromHit(e.speed);
-						else playCarromWall(e.speed);
-					}
-				}
-			}
-
-			// driven off the clock rather than a per-tick frame counter, so the shot
-			// takes the same time on a 60Hz and a 144Hz screen and a dropped frame
-			// costs smoothness instead of slowing the whole shot down
-			function frame(t) {
-				const step = ((t - start) / 1000) * SHOT_STEPS_PER_SEC;
-				const i = Math.min(Math.round(step), last);
-				animBodies = animFrames[i];
-				sound(step);
-				if (i < last) requestAnimationFrame(frame);
-				else {
-					sound(Infinity);
-					resolve();
-				}
-			}
-			requestAnimationFrame(frame);
-		});
+		await playShot(frames, result.events, () => token !== shotToken);
 
 		posting = true;
 		error = '';
@@ -407,14 +534,14 @@
 			await store.post('carroms/shot', {
 				positions: bodies.filter((b) => b.id !== 's' && !b.pocketed).map((b) => ({ id: b.id, x: b.x, y: b.y })),
 				pocketed: result.pocketed,
-				strikerPocketed: result.strikerPocketed
+				strikerPocketed: result.strikerPocketed,
+				shot: { sx, sy, vx, vy }
 			});
 		} catch (e) {
 			error = e.message;
 		} finally {
 			posting = false;
 			animBodies = null;
-			animFrames = null;
 		}
 	}
 
@@ -423,6 +550,25 @@
 	// myTeam. Drives the fullscreen turn highlight.
 	const currentTeam = $derived(game.turnIdx % 2 === 0 ? 'w' : 'b');
 </script>
+
+<!-- One definition, rendered EITHER inline or inside the fullscreen portal, never
+     both — a second copy would stay reachable by keyboard behind the overlay. -->
+{#snippet playerStrip()}
+	<div class="turn-row">
+		{#each game.players as uid, i (uid)}
+			<span class="turn-chip" class:turn-chip--now={uid === currentUid && !game.result}>
+				<Avatar
+					{uid}
+					name={nameOf(uid)}
+					size={22}
+					ring={uid === game.result ? 'gold' : uid === currentUid && !game.result ? 'accent' : 'none'}
+					glow={uid === currentUid && !game.result}
+				/>
+				{nameOf(uid)}{uid === myUid ? ' (you)' : ''} {i % 2 === 0 ? '⚪' : '⚫'}
+			</span>
+		{/each}
+	</div>
+{/snippet}
 
 <div class="card" style="padding:20px;">
 	<div class="carrom-head">
@@ -472,9 +618,8 @@
 	{:else}
 		<p class="muted" style="margin:8px 0;">
 			{myTurn
-				? `Your shot (${myTeam === 'w' ? '⚪ white' : '⚫ black'}) — drag the striker sideways to place, pull back to aim, release to shoot.`
+				? `Your shot (${myTeam === 'w' ? '⚪ white' : '⚫ black'}) — drag the striker along your line to place it, then pull back anywhere on the board and release to shoot.`
 				: `${nameOf(currentUid)}'s turn…`}
-			{#if game.coverPending}<span class="chip chip--amber">queen needs cover!</span>{/if}
 		</p>
 	{/if}
 	{#if error}<p class="error-text">{error}</p>{/if}
@@ -485,6 +630,7 @@
 			width={BOARD.SIZE}
 			height={BOARD.SIZE}
 			class="carrom-canvas"
+			class:carrom-canvas--live={myTurn}
 			onmousedown={down}
 			onmousemove={move}
 			onmouseup={up}
@@ -501,14 +647,7 @@
 			{fs.isFs ? '✕ Exit' : '⛶ Fullscreen'}
 		</button>
 		{#if fs.isFs}
-			<div class="fs-players">
-				{#each game.players as uid, i (uid)}
-					<span class="turn-chip {i === game.turnIdx ? 'turn-chip--now' : ''}">
-						<Avatar {uid} name={nameOf(uid)} size={22} />
-						{nameOf(uid)} {i % 2 === 0 ? '⚪' : '⚫'}
-					</span>
-				{/each}
-			</div>
+			<div class="fs-players">{@render playerStrip()}</div>
 			<div class="fs-status">
 				<span class="chip {currentTeam === 'w' ? 'chip--green' : ''}">⚪ {game.scores.w} · {remaining('w')} left</span>
 				<span class="fs-turn">
@@ -525,14 +664,7 @@
 		{/if}
 	</div>
 
-	<div class="turn-row">
-		{#each game.players as uid, i (uid)}
-			<span class="turn-chip {i === game.turnIdx ? 'turn-chip--now' : ''}">
-				<Avatar {uid} name={nameOf(uid)} size={22} />
-				{nameOf(uid)} {i % 2 === 0 ? '⚪' : '⚫'}
-			</span>
-		{/each}
-	</div>
+	{#if !fs.isFs}{@render playerStrip()}{/if}
 </div>
 
 <style>
@@ -560,6 +692,22 @@
 		border-radius: var(--radius-sm);
 		touch-action: none;
 		display: block;
+	}
+	/* Your shot: the board itself breathes. CSS rather than a canvas rAF loop —
+	   draw() is $effect-driven, and a second persistent loop would fight the one
+	   playing back shots. */
+	.carrom-canvas--live {
+		animation: board-live 2s ease-in-out infinite;
+	}
+	@keyframes board-live {
+		0%, 100% { box-shadow: 0 0 0 2px var(--accent), 0 0 10px -4px var(--accent); }
+		50% { box-shadow: 0 0 0 2px var(--accent), 0 0 22px 0 var(--accent); }
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.carrom-canvas--live {
+			animation: none;
+			box-shadow: 0 0 0 2px var(--accent);
+		}
 	}
 	.fs-btn {
 		margin-top: 10px;
@@ -603,6 +751,10 @@
 		gap: 8px;
 		order: -2;
 	}
+	.fs-players .turn-row {
+		margin-top: 0;
+		justify-content: center;
+	}
 	.fs-status {
 		display: flex;
 		align-items: center;
@@ -635,5 +787,6 @@
 	.turn-chip--now {
 		border-color: var(--accent);
 		background: var(--surface);
+		box-shadow: 0 0 0 1px var(--accent), 0 0 14px -4px var(--accent);
 	}
 </style>

@@ -12,6 +12,7 @@
 		"check:api": "node src/lib/api-check.js",
 		"check:media": "node src/lib/media-check.js",
 		"check:sim": "node src/lib/games/carroms-sim-check.js",
+		"check:carrom": "node src/lib/server/carrom-check.js",
 		"check:games": "node src/lib/games-check.js",
 		"check:room": "node --import ./src/lib/server/room-stub-loader.mjs src/lib/server/room-check.js",
 		"check:thief": "node src/lib/server/thief-claims-check.js",

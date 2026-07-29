@@ -34,10 +34,9 @@ export function initGame(gameType, playerUids, room) {
 			players: playerUids, // turn order; teams: even idx = white, odd idx = black
 			turnIdx: 0,
 			pieces: initialCarromPieces(),
-			queenPocketedBy: null, // team ('w'|'b') that pocketed the queen
-			coverPending: false,
 			scores: { w: 0, b: 0 },
-			lastEvent: null, // {kind,...} drives client sound, read off game.v
+			shotSeq: 0, // monotonic; lastEvent.seq is how a client spots a NEW shot
+			lastEvent: null, // {kind,...} drives client replay + sound
 			result: null
 		};
 	}
@@ -477,7 +476,9 @@ export const CARROM = { SIZE: 1000, R: 26, STRIKER_R: 30, POCKET_R: 42, CENTER: 
 
 export function initialCarromPieces() {
 	const c = CARROM.CENTER;
-	const pieces = [{ id: 'q', color: 'q', x: c, y: c, pocketed: false }];
+	// Two alternating rings, 9 white + 9 black, centre spot left empty — there is
+	// no queen in this variant, so nothing sits on it.
+	const pieces = [];
 	const ring1 = 2 * CARROM.R + 2; // touching ring
 	const ring2 = 2 * ring1;
 	let n = 0;
@@ -504,13 +505,24 @@ export function carromTeamOf(game, uid) {
  * ids. Server verifies the piece set is conserved, then applies scoring/turn
  * rules. // ponytail: no shot replay verification — casual game, shooter trusted.
  */
-export function carromsApplyShot(game, uid, { positions = [], pocketed = [], strikerPocketed = false }) {
+export function carromsApplyShot(game, uid, { positions = [], pocketed = [], strikerPocketed = false, shot = null }) {
 	if (game.result) throw httpError(409, 'Game is finished');
 	const team = carromTeamOf(game, uid);
 
+	// The queen was removed from the game; a room that was already mid-match when
+	// that shipped still has her in its persisted pieces. Drop her here rather
+	// than at read time so one shot migrates the board for good — and so the win
+	// check below never has to ask about a piece that no longer exists.
+	game.pieces = game.pieces.filter((p) => p.color !== 'q');
+	delete game.queenPocketedBy;
+	delete game.coverPending;
+
 	const live = game.pieces.filter((p) => !p.pocketed);
 	const liveIds = new Set(live.map((p) => p.id));
-	const pocketedSet = new Set(pocketed);
+	// `q` is filtered above, so a client still running the pre-removal build could
+	// report pocketing a piece the server no longer knows — ignore it instead of
+	// rejecting an otherwise legal shot.
+	const pocketedSet = new Set(pocketed.filter((id) => id !== 'q'));
 	const posMap = new Map(positions.map((p) => [p.id, p]));
 	// conservation: every previously-live piece is either newly pocketed or has a position
 	for (const p of live) {
@@ -531,25 +543,10 @@ export function carromsApplyShot(game, uid, { positions = [], pocketed = [], str
 	}
 
 	let ownPocketed = 0;
-	let queenPocketed = false;
 	for (const id of pocketedSet) {
 		const piece = game.pieces.find((p) => p.id === id);
-		if (piece.color === 'q') queenPocketed = true;
-		else {
-			game.scores[piece.color] += 1;
-			if (piece.color === team) ownPocketed++;
-		}
-	}
-
-	// queen + cover (simplified): queen pends until the shooter pockets an own
-	// piece in the same or their next shot; otherwise she returns to center.
-	if (queenPocketed) {
-		game.queenPocketedBy = team;
-		game.coverPending = true;
-	}
-	if (game.coverPending && game.queenPocketedBy === team && ownPocketed > 0) {
-		game.coverPending = false;
-		game.scores[team] += 3; // queen covered
+		game.scores[piece.color] += 1;
+		if (piece.color === team) ownPocketed++;
 	}
 
 	let foul = false;
@@ -565,35 +562,42 @@ export function carromsApplyShot(game, uid, { positions = [], pocketed = [], str
 		}
 	}
 
-	// uncovered queen returns to center when the turn passes
 	const continueTurn = ownPocketed > 0 && !foul;
-	if (!continueTurn && game.coverPending) {
-		const q = game.pieces.find((p) => p.color === 'q');
-		q.pocketed = false;
-		q.x = CARROM.CENTER;
-		q.y = CARROM.CENTER;
-		game.coverPending = false;
-		game.queenPocketedBy = null;
-	}
 	if (!continueTurn) game.turnIdx = (game.turnIdx + 1) % game.players.length;
 
-	// What the shot sounded like, for everyone who didn't take it. The shooter
-	// runs the sim locally and hears each impact against their own animation;
-	// opponents and spectators only ever receive this settled result, so without
-	// it they watch a coin drop into a pocket in silence.
+	// How the shot was taken, for everyone who didn't take it. The shooter runs
+	// the sim locally and watches/hears each impact against their own animation;
+	// opponents and spectators receive only this. `shot` carries the four sim
+	// INPUTS — striker start and flick velocity — so every other client can
+	// re-run the same deterministic simulation against the positions it already
+	// holds and replay the real shot, instead of sliding the coins along fake
+	// straight lines to the settled result.
 	game.lastEvent = {
 		kind: 'shot',
+		// Monotonic per game. The client can't use the state version to spot a new
+		// shot: `v` belongs to the whole room envelope and a voice join or a member
+		// change bumps it too, which would replay this shot a second time off an
+		// already-settled board. A seq it hasn't seen is the only honest signal.
+		seq: (game.shotSeq = (game.shotSeq || 0) + 1),
 		uid,
 		pocketed: pocketedSet.size,
-		queen: queenPocketed,
-		foul
+		foul,
+		shot: shot
+			? {
+					sx: Math.round(shot.sx),
+					sy: Math.round(shot.sy),
+					// velocities are small and fractional — rounding them to integers
+					// would visibly bend the replayed path away from the shooter's
+					vx: Math.round(shot.vx * 1000) / 1000,
+					vy: Math.round(shot.vy * 1000) / 1000
+				}
+			: null
 	};
 
-	// end: a color fully pocketed (and queen settled)
-	const queenDown = game.pieces.find((p) => p.color === 'q').pocketed;
+	// end: a color fully pocketed
 	for (const color of ['w', 'b']) {
 		const remaining = game.pieces.filter((p) => p.color === color && !p.pocketed).length;
-		if (remaining === 0 && queenDown) game.result = color;
+		if (remaining === 0) game.result = color;
 	}
-	return { foul, continueTurn, queenPocketed };
+	return { foul, continueTurn };
 }

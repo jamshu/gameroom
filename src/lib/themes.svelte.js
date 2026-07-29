@@ -28,7 +28,7 @@ export const CARROM_THEMES = [
 		label: 'Maple',
 		palette: {
 			felt: '#e9d3a3', frame: '#8a5a2b', line: '#c09a5a', pocket: '#3a2410',
-			white: '#f7f1e1', black: '#2d2a26', queen: '#c0392b', striker: '#4a6fa5'
+			white: '#f7f1e1', black: '#2d2a26', arrow: '#c0392b', striker: '#4a6fa5'
 		}
 	},
 	{
@@ -36,7 +36,7 @@ export const CARROM_THEMES = [
 		label: 'Walnut',
 		palette: {
 			felt: '#d8b98c', frame: '#4e2f18', line: '#a67c47', pocket: '#241407',
-			white: '#faf3e3', black: '#211f1c', queen: '#b03a2e', striker: '#2f6f6f'
+			white: '#faf3e3', black: '#211f1c', arrow: '#b03a2e', striker: '#2f6f6f'
 		}
 	},
 	{
@@ -44,7 +44,7 @@ export const CARROM_THEMES = [
 		label: 'Slate',
 		palette: {
 			felt: '#cfd6dd', frame: '#2f3b47', line: '#8fa0b0', pocket: '#16202a',
-			white: '#ffffff', black: '#1b2430', queen: '#e05252', striker: '#7c3aed'
+			white: '#ffffff', black: '#1b2430', arrow: '#e05252', striker: '#7c3aed'
 		}
 	},
 	{
@@ -52,7 +52,7 @@ export const CARROM_THEMES = [
 		label: 'Emerald',
 		palette: {
 			felt: '#cfe4d2', frame: '#1f4d33', line: '#7fae90', pocket: '#10251a',
-			white: '#fbfff9', black: '#16241c', queen: '#d94f4f', striker: '#d99b30'
+			white: '#fbfff9', black: '#16241c', arrow: '#d94f4f', striker: '#d99b30'
 		}
 	}
 ];
