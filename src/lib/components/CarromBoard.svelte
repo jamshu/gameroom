@@ -501,6 +501,14 @@
 			{fs.isFs ? '✕ Exit' : '⛶ Fullscreen'}
 		</button>
 		{#if fs.isFs}
+			<div class="fs-players">
+				{#each game.players as uid, i (uid)}
+					<span class="turn-chip {i === game.turnIdx ? 'turn-chip--now' : ''}">
+						<Avatar {uid} name={nameOf(uid)} size={22} />
+						{nameOf(uid)} {i % 2 === 0 ? '⚪' : '⚫'}
+					</span>
+				{/each}
+			</div>
 			<div class="fs-status">
 				<span class="chip {currentTeam === 'w' ? 'chip--green' : ''}">⚪ {game.scores.w} · {remaining('w')} left</span>
 				<span class="fs-turn">
@@ -584,6 +592,16 @@
 	.board-wrap--fs .fs-btn {
 		margin-top: 0;
 		flex: 0 0 auto;
+	}
+	/* Fullscreen stack order (flex column): players (-2) then counts+turn (-1)
+	   above the board, controls below. */
+	.fs-players {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex-wrap: wrap;
+		gap: 8px;
+		order: -2;
 	}
 	.fs-status {
 		display: flex;
