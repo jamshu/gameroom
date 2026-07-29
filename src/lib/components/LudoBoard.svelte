@@ -781,9 +781,11 @@
 		gap: 0;
 		padding: 8px;
 		border-radius: var(--radius);
-		background: var(--bg-soft);
-		border: 1px solid var(--border);
-		box-shadow: var(--shadow);
+		/* recessed felt: lit centre deepening to the frame */
+		background:
+			radial-gradient(circle at 50% 42%, color-mix(in srgb, var(--surface) 60%, var(--bg-soft)), var(--bg-soft) 70%);
+		border: 3px solid var(--border);
+		box-shadow: var(--shadow), inset 0 2px 8px rgba(0, 0, 0, 0.35);
 	}
 	.cell {
 		position: relative;
@@ -793,23 +795,44 @@
 	}
 	/* the neutral shared-track squares */
 	.cell--track {
-		background: var(--surface-2);
+		background: linear-gradient(160deg, color-mix(in srgb, var(--surface) 88%, #fff), var(--surface-2));
 		box-shadow: inset 0 0 0 1px var(--border);
+		border-radius: 3px;
 	}
-	/* a coloured start/safe/home-lane square */
-	.cell--track[style] { background: color-mix(in srgb, var(--cc, var(--surface-2)) 30%, var(--surface-2)); }
+	/* a coloured start/safe/home-lane square — gradient tint + inset ring so it pops */
+	.cell--track[style] {
+		background: linear-gradient(
+			160deg,
+			color-mix(in srgb, var(--cc) 55%, var(--surface-2)),
+			color-mix(in srgb, var(--cc) 32%, var(--surface-2))
+		);
+		box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cc) 50%, var(--border));
+	}
 	.cell--safe {
-		background: color-mix(in srgb, var(--cc, var(--accent)) 22%, var(--surface-2));
+		background: radial-gradient(
+			circle at 50% 42%,
+			color-mix(in srgb, var(--cc, var(--accent)) 40%, var(--surface-2)),
+			color-mix(in srgb, var(--cc, var(--accent)) 18%, var(--surface-2))
+		);
+		box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cc, var(--accent)) 45%, var(--border));
 	}
-	.cell--home { background: color-mix(in srgb, var(--cc) 55%, var(--surface)); }
-	.cell--yard { background: color-mix(in srgb, var(--cc) 20%, var(--surface)); }
-	.cell--center { background: color-mix(in srgb, var(--cc, var(--surface)) 65%, var(--surface)); }
+	.cell--home {
+		background: linear-gradient(160deg, color-mix(in srgb, var(--cc) 72%, #fff), color-mix(in srgb, var(--cc) 55%, var(--surface)));
+	}
+	/* home quadrants: glossy coloured base (light top-left → colour) */
+	.cell--yard {
+		background: linear-gradient(150deg, color-mix(in srgb, var(--cc) 34%, var(--surface)), color-mix(in srgb, var(--cc) 16%, var(--surface)));
+		box-shadow: inset 1px 1px 0 color-mix(in srgb, #fff 12%, transparent);
+	}
+	.cell--center {
+		background: radial-gradient(circle at 50% 45%, color-mix(in srgb, var(--cc, var(--surface)) 85%, #fff), color-mix(in srgb, var(--cc, var(--surface)) 58%, var(--surface)));
+	}
 	.cell--gap { background: transparent; }
 	.star {
-		font-size: 0.7em;
+		font-size: 0.82em;
 		line-height: 1;
-		color: color-mix(in srgb, var(--cc, var(--gold)) 70%, var(--text));
-		opacity: 0.9;
+		color: color-mix(in srgb, var(--cc, var(--gold)) 78%, #fff);
+		text-shadow: 0 0 4px color-mix(in srgb, var(--cc, var(--gold)) 60%, transparent);
 	}
 
 	/* tokens sit on an overlay, positioned by % so CSS can glide them */
@@ -819,9 +842,15 @@
 		height: 5.2%;
 		transform: translate(-50%, -50%);
 		border-radius: 50%;
-		background: radial-gradient(circle at 35% 30%, color-mix(in srgb, var(--tc) 55%, #fff), var(--tc) 70%);
-		border: 2px solid rgba(255, 255, 255, 0.9);
-		box-shadow: 0 2px 5px rgba(0, 0, 0, 0.45);
+		/* rounded glossy pawn: bright specular top-left → colour → darker rim */
+		background: radial-gradient(
+			circle at 34% 28%,
+			color-mix(in srgb, var(--tc) 30%, #fff),
+			var(--tc) 58%,
+			color-mix(in srgb, var(--tc) 62%, #000) 100%
+		);
+		border: 2px solid rgba(255, 255, 255, 0.92);
+		box-shadow: 0 3px 6px rgba(0, 0, 0, 0.5), inset 0 -2px 3px rgba(0, 0, 0, 0.3);
 		padding: 0;
 		cursor: default;
 		/* Without this WebKit holds every tap for the double-tap-zoom window, so the
@@ -831,23 +860,51 @@
 		transition: top 0.32s cubic-bezier(0.34, 1.2, 0.5, 1), left 0.32s cubic-bezier(0.34, 1.2, 0.5, 1);
 		z-index: 2;
 	}
+	/* glossy specular highlight (top-left) — pure decoration, never intercepts taps */
+	.token::before {
+		content: '';
+		position: absolute;
+		inset: 14% 42% 55% 14%;
+		border-radius: 50%;
+		background: radial-gradient(circle at 40% 40%, rgba(255, 255, 255, 0.9), transparent 70%);
+		pointer-events: none;
+	}
+	/* inset base ring for depth */
+	.token::after {
+		content: '';
+		position: absolute;
+		inset: 18%;
+		border-radius: 50%;
+		box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--tc) 70%, #000);
+		opacity: 0.5;
+		pointer-events: none;
+	}
 	.token--movable {
 		cursor: pointer;
 		z-index: 3;
-		box-shadow: 0 0 0 3px color-mix(in srgb, var(--tc) 55%, transparent), 0 2px 6px rgba(0, 0, 0, 0.5);
-		animation: bob 0.9s ease-in-out infinite;
+		box-shadow: 0 0 0 3px color-mix(in srgb, var(--tc) 60%, transparent), 0 3px 7px rgba(0, 0, 0, 0.5);
+		animation: bob 0.9s ease-in-out infinite, token-glow 1.4s ease-in-out infinite;
 	}
 	.token--movable:hover { filter: brightness(1.12); }
+	/* your own tokens carry a thin bright outline so they read at a glance */
+	.token--mine {
+		border-color: #fff;
+	}
 	/* Two of one colour on a cell is a wall opponents can't land on OR cross. Read
 	   as one solid object: a dark rim binds the fanned pair together, so a refused
 	   move has a visible cause. */
 	.token--block {
 		border-color: rgba(15, 20, 40, 0.92);
-		box-shadow: 0 0 0 2px rgba(15, 20, 40, 0.55), 0 2px 5px rgba(0, 0, 0, 0.5);
+		box-shadow: 0 0 0 2px rgba(15, 20, 40, 0.55), 0 3px 6px rgba(0, 0, 0, 0.5);
 	}
 	@keyframes bob {
 		0%, 100% { transform: translate(-50%, -50%) scale(1); }
 		50% { transform: translate(-50%, -62%) scale(1.06); }
+	}
+	/* glow pulse for movable tokens — animates the ring only, leaving bob to own transform */
+	@keyframes token-glow {
+		0%, 100% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--tc) 55%, transparent), 0 3px 7px rgba(0, 0, 0, 0.5); }
+		50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--tc) 30%, transparent), 0 3px 9px rgba(0, 0, 0, 0.55); }
 	}
 
 	.controls {
