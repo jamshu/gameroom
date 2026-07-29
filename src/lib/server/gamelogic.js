@@ -470,8 +470,10 @@ export function stateView(state, uid) {
 
 /* -------------------------------- carroms --------------------------------- */
 
-// Board is normalized 0..1000, center (500,500). Piece radius 18, striker 24.
-export const CARROM = { SIZE: 1000, R: 18, STRIKER_R: 24, POCKET_R: 34, CENTER: 500 };
+// Board is normalized 0..1000, center (500,500). Piece radius 26, striker 30.
+// ponytail: mirror of BOARD in src/lib/games/carroms-sim.js — keep R/STRIKER_R/
+// POCKET_R equal to it, or the opening layout and the rendered coin size disagree.
+export const CARROM = { SIZE: 1000, R: 26, STRIKER_R: 30, POCKET_R: 42, CENTER: 500 };
 
 export function initialCarromPieces() {
 	const c = CARROM.CENTER;

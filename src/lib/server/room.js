@@ -287,6 +287,36 @@ export function publicMembers(members) {
 		}));
 }
 
+/** Uids of members currently online (last_seen within the presence window). */
+export function onlineUids(members) {
+	const now = Date.now();
+	const set = new Set();
+	for (const m of members) {
+		const ls = m.x_studio_last_seen;
+		if (ls && now - new Date(ls.replace(' ', 'T') + 'Z').getTime() < PRESENCE_WINDOW_MS) {
+			set.add(m.x_studio_user_id?.[0]);
+		}
+	}
+	return set;
+}
+
+/**
+ * Drop voice-roster members who have gone offline — closed the tab, crashed, or
+ * navigated away without the (best-effort) leave beacon landing. Returns true if
+ * it removed anyone; the caller persists via writeState so the cleaned roster
+ * reaches the room. The polling member always counts as online (it just
+ * heartbeated), so this never prunes the caller itself.
+ */
+export function pruneStaleVoice(state, members) {
+	if (!state?.voice?.length) return false;
+	const live = onlineUids(members);
+	const kept = state.voice.filter((u) => live.has(u));
+	if (kept.length === state.voice.length) return false;
+	state.voice = kept;
+	syncVoiceSince(state);
+	return true;
+}
+
 /**
  * Serialize and push the two rows every client renders. Call this after ANY
  * write that changes them — the Ably push otherwise carries only state and

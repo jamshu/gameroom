@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import { adminExecute } from '$lib/server/odoo.js';
-import { EVENT, MEMBER, requireMemberCached, parseState, publicRoom, publicMembers, writeState, jsonError } from '$lib/server/room.js';
+import { EVENT, MEMBER, requireMemberCached, parseState, publicRoom, publicMembers, pruneStaleVoice, writeState, jsonError } from '$lib/server/room.js';
 import { resolveClaims, filterPickRows, stateView } from '$lib/server/gamelogic.js';
 import { isContendedPhase } from '$lib/games.js';
 
@@ -72,6 +72,15 @@ export async function GET({ params, url, cookies }) {
 		};
 
 		const state = parseState(room);
+		// Prune voice-roster ghosts (offline members). writeState bumps the version
+		// and pushes the cleaned roster to everyone; the `state.v > gv` gate below
+		// then also serves it. Only writes when something is actually stale, so a
+		// healthy all-online roster costs nothing.
+		// ponytail: if two clients prune the same ghost inside the 750ms cache window
+		// they both write — harmless, they filter to the same result.
+		if (state && pruneStaleVoice(state, members)) {
+			await writeState(params.id, state, {});
+		}
 		// Self-heal: rebuild claims from the pick log so a lost blob write recovers
 		// and the picking→guessing flip still fires if the final picks raced.
 		if (state?.game?.type === 'thief_finder' && state.game.phase === 'picking') {

@@ -4,7 +4,11 @@
 // ponytail: custom sim, not matter.js — homogeneous discs on a square need ~120
 // lines; swap to a real engine only if collision feel proves unacceptable.
 
-export const BOARD = { SIZE: 1000, R: 18, STRIKER_R: 24, POCKET_R: 34 };
+// ponytail: mirror of CARROM in src/lib/server/gamelogic.js — the two MUST stay
+// equal (R especially). This block drives client render + physics; that one lays
+// out the opening ring. If R here exceeds R there, coins render bigger than their
+// setup spacing and shove each other apart on the first frame.
+export const BOARD = { SIZE: 1000, R: 26, STRIKER_R: 30, POCKET_R: 42 };
 
 const FRICTION = 0.985; // per-step velocity retention
 const STOP_V = 2; // below this speed a body is considered stopped

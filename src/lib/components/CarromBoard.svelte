@@ -59,51 +59,137 @@
 		[30, 30], [BOARD.SIZE - 30, 30], [30, BOARD.SIZE - 30], [BOARD.SIZE - 30, BOARD.SIZE - 30]
 	];
 
+	/** Lighten (amt>0, toward white) or darken (amt<0, toward black) a #hex by 0..1.
+	 *  Lets the canvas derive highlight/shadow tints straight from the theme palette. */
+	function shade(hex, amt) {
+		const h = (hex || '#888').replace('#', '');
+		const n = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
+		let r = parseInt(n.slice(0, 2), 16);
+		let g = parseInt(n.slice(2, 4), 16);
+		let b = parseInt(n.slice(4, 6), 16);
+		const t = amt < 0 ? 0 : 255;
+		const p = Math.min(1, Math.abs(amt));
+		r = Math.round(r + (t - r) * p);
+		g = Math.round(g + (t - g) * p);
+		b = Math.round(b + (t - b) * p);
+		return `rgb(${r},${g},${b})`;
+	}
+
+	/** A disc with a top-left highlight, rim and drop shadow — the shared look for
+	 *  coins and the striker. `ring` draws an extra accent ring (the queen). */
+	function disc(ctx, x, y, r, base, ring) {
+		const grad = ctx.createRadialGradient(x - r * 0.35, y - r * 0.4, r * 0.1, x, y, r);
+		grad.addColorStop(0, shade(base, 0.45));
+		grad.addColorStop(0.6, base);
+		grad.addColorStop(1, shade(base, -0.18));
+		ctx.save();
+		ctx.shadowColor = 'rgba(0,0,0,0.45)';
+		ctx.shadowBlur = 9;
+		ctx.shadowOffsetY = 4;
+		ctx.beginPath();
+		ctx.arc(x, y, r, 0, Math.PI * 2);
+		ctx.fillStyle = grad;
+		ctx.fill();
+		ctx.restore();
+		ctx.beginPath();
+		ctx.arc(x, y, r, 0, Math.PI * 2);
+		ctx.strokeStyle = shade(base, -0.45);
+		ctx.lineWidth = 2;
+		ctx.stroke();
+		if (ring) {
+			ctx.beginPath();
+			ctx.arc(x, y, r * 0.62, 0, Math.PI * 2);
+			ctx.strokeStyle = ring;
+			ctx.lineWidth = 3;
+			ctx.stroke();
+		}
+	}
+
 	function draw() {
 		if (!canvas) return;
 		const ctx = canvas.getContext('2d');
 		const S = BOARD.SIZE;
+		const C = S / 2;
 		ctx.clearRect(0, 0, S, S);
-		// board
-		ctx.fillStyle = pal.felt;
+
+		// felt — radial wood gradient, lit at the centre and deepening to the frame
+		const felt = ctx.createRadialGradient(C, C, S * 0.1, C, C, S * 0.72);
+		felt.addColorStop(0, shade(pal.felt, 0.1));
+		felt.addColorStop(1, shade(pal.felt, -0.16));
+		ctx.fillStyle = felt;
 		ctx.fillRect(0, 0, S, S);
+
+		// frame + inner hairline
 		ctx.strokeStyle = pal.frame;
 		ctx.lineWidth = 14;
 		ctx.strokeRect(7, 7, S - 14, S - 14);
-		// center circle
-		ctx.beginPath();
-		ctx.arc(S / 2, S / 2, 110, 0, Math.PI * 2);
+		ctx.strokeStyle = shade(pal.line, 0.1);
+		ctx.lineWidth = 2;
+		ctx.strokeRect(26, 26, S - 52, S - 52);
+
+		// corner → pocket "arrows": two arcs sweeping toward each corner
+		ctx.strokeStyle = shade(pal.queen, 0.05);
+		ctx.lineWidth = 4;
+		for (const [px, py] of POCKETS) {
+			const toward = Math.atan2(C - py, C - px); // points into the board
+			for (const rr of [150, 178]) {
+				ctx.beginPath();
+				ctx.arc(px, py, rr, toward - 0.7, toward + 0.7);
+				ctx.stroke();
+			}
+		}
+
+		// centre design — outer circle, inner ring, six petals
 		ctx.strokeStyle = pal.line;
 		ctx.lineWidth = 3;
+		ctx.beginPath();
+		ctx.arc(C, C, 110, 0, Math.PI * 2);
 		ctx.stroke();
-		// pockets
-		for (const [px, py] of POCKETS) {
+		ctx.beginPath();
+		ctx.arc(C, C, 70, 0, Math.PI * 2);
+		ctx.stroke();
+		ctx.fillStyle = shade(pal.line, 0.05);
+		for (let i = 0; i < 6; i++) {
+			const a = (Math.PI / 3) * i;
 			ctx.beginPath();
-			ctx.arc(px, py, BOARD.POCKET_R, 0, Math.PI * 2);
-			ctx.fillStyle = pal.pocket;
+			ctx.arc(C + 90 * Math.cos(a), C + 90 * Math.sin(a), 9, 0, Math.PI * 2);
 			ctx.fill();
 		}
-		// baseline
+
+		// baseline + the two shooting-circles at its ends
 		ctx.strokeStyle = pal.line;
 		ctx.lineWidth = 3;
 		ctx.beginPath();
 		ctx.moveTo(150, BASE_Y);
 		ctx.lineTo(S - 150, BASE_Y);
 		ctx.stroke();
+		for (const ex of [150, S - 150]) {
+			ctx.beginPath();
+			ctx.arc(ex, BASE_Y, 16, 0, Math.PI * 2);
+			ctx.stroke();
+		}
+
+		// pockets — dark well with a rim
+		for (const [px, py] of POCKETS) {
+			ctx.beginPath();
+			ctx.arc(px, py, BOARD.POCKET_R, 0, Math.PI * 2);
+			ctx.fillStyle = pal.pocket;
+			ctx.fill();
+			ctx.beginPath();
+			ctx.arc(px, py, BOARD.POCKET_R, 0, Math.PI * 2);
+			ctx.strokeStyle = shade(pal.pocket, 0.35);
+			ctx.lineWidth = 3;
+			ctx.stroke();
+		}
 
 		// pieces (animating bodies take precedence)
 		const pieces = animBodies
 			? animBodies.filter((b) => b.id !== 's' && !b.pocketed)
 			: (displayPieces || game.pieces).filter((p) => !p.pocketed);
 		for (const p of pieces) {
-			ctx.beginPath();
-			ctx.arc(p.x, p.y, BOARD.R, 0, Math.PI * 2);
-			ctx.fillStyle =
-				p.color === 'q' || p.id === 'q' ? pal.queen : colorOf(p) === 'w' ? pal.white : pal.black;
-			ctx.fill();
-			ctx.strokeStyle = 'rgba(0,0,0,0.35)';
-			ctx.lineWidth = 2;
-			ctx.stroke();
+			const isQ = p.color === 'q' || p.id === 'q';
+			const base = isQ ? pal.queen : colorOf(p) === 'w' ? pal.white : pal.black;
+			disc(ctx, p.x, p.y, BOARD.R, base, isQ ? '#f2c94c' : null);
 		}
 
 		// striker
@@ -115,13 +201,12 @@
 			sx = strikerX; sy = BASE_Y;
 		}
 		if (sx != null) {
+			disc(ctx, sx, sy, BOARD.STRIKER_R, pal.striker);
+			// centre pip
 			ctx.beginPath();
-			ctx.arc(sx, sy, BOARD.STRIKER_R, 0, Math.PI * 2);
-			ctx.fillStyle = pal.striker;
+			ctx.arc(sx, sy, BOARD.STRIKER_R * 0.28, 0, Math.PI * 2);
+			ctx.fillStyle = shade(pal.striker, -0.3);
 			ctx.fill();
-			ctx.strokeStyle = '#fff';
-			ctx.lineWidth = 3;
-			ctx.stroke();
 		}
 
 		// aim line (slingshot: shot goes opposite the drag)
@@ -129,7 +214,7 @@
 			ctx.beginPath();
 			ctx.moveTo(strikerX, BASE_Y);
 			ctx.lineTo(strikerX - aim.dx * 3, BASE_Y - aim.dy * 3);
-			ctx.strokeStyle = 'rgba(124,58,237,0.8)';
+			ctx.strokeStyle = 'rgba(255,77,109,0.85)';
 			ctx.lineWidth = 5;
 			ctx.setLineDash([12, 8]);
 			ctx.stroke();
@@ -334,6 +419,9 @@
 	}
 
 	const remaining = $derived((c) => game.pieces.filter((p) => p.color === c && !p.pocketed).length);
+	// Which team is on strike now — the current player's seat parity, same rule as
+	// myTeam. Drives the fullscreen turn highlight.
+	const currentTeam = $derived(game.turnIdx % 2 === 0 ? 'w' : 'b');
 </script>
 
 <div class="card" style="padding:20px;">
@@ -414,8 +502,17 @@
 		</button>
 		{#if fs.isFs}
 			<div class="fs-status">
-				<span class="chip {myTeam === 'w' ? 'chip--green' : ''}">⚪ {game.scores.w}</span>
-				<span class="chip {myTeam === 'b' ? 'chip--green' : ''}">⚫ {game.scores.b}</span>
+				<span class="chip {currentTeam === 'w' ? 'chip--green' : ''}">⚪ {game.scores.w} · {remaining('w')} left</span>
+				<span class="fs-turn">
+					{#if game.result}
+						{game.result === 'w' ? '⚪ White' : '⚫ Black'} wins 🏆
+					{:else if myTurn}
+						🎯 Your shot ({myTeam === 'w' ? '⚪' : '⚫'})
+					{:else}
+						{nameOf(currentUid)}'s turn {currentTeam === 'w' ? '⚪' : '⚫'}
+					{/if}
+				</span>
+				<span class="chip {currentTeam === 'b' ? 'chip--green' : ''}">⚫ {game.scores.b} · {remaining('b')} left</span>
 			</div>
 		{/if}
 	</div>
@@ -490,8 +587,17 @@
 	}
 	.fs-status {
 		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex-wrap: wrap;
 		gap: 10px;
-		order: -1; /* score chips above the board in fullscreen */
+		order: -1; /* turn + counts above the board in fullscreen */
+	}
+	.fs-turn {
+		font-family: var(--font-display);
+		font-weight: 600;
+		font-size: 0.9rem;
+		color: var(--text);
 	}
 	.turn-row {
 		display: flex;

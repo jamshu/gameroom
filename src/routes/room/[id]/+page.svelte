@@ -101,6 +101,20 @@
 		if (inVoice && mesh) mesh.sync($store.voice);
 	});
 
+	// Self-heal a stale roster entry. Leaving via browser/home nav can lose the
+	// best-effort beforeunload beacon, so on returning we mount fresh (inVoice
+	// false) while the server still lists us in the call. Post one leave to drop
+	// the ghost — it bumps the state version and pushes the cleaned roster to
+	// everyone, so our name disappears for the whole room. Once per mount.
+	let voiceSelfHealed = false;
+	$effect(() => {
+		if (voiceSelfHealed || !accepted || inVoice || myUid == null) return;
+		if ($store.voice.includes(myUid)) {
+			voiceSelfHealed = true;
+			store.post('voice', { action: 'leave' }).catch(() => {});
+		}
+	});
+
 	// 1s polling while any voice pair is still negotiating — signaling rides the
 	// poll, so this roughly halves connect time; back to 2s once settled
 	$effect(() => {
