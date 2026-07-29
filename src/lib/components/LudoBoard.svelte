@@ -525,7 +525,7 @@
 				<div
 					class="cell cell--{cell.kind}"
 					class:cell--safe={cell.safe}
-					style={cell.color ? `--cc:${cssColor(cell.color)}` : ''}
+					style={cell.color ? `--cc:${cssColor(cell.color)}` : undefined}
 				>
 					{#if cell.safe}<span class="star">★</span>{/if}
 				</div>
@@ -793,28 +793,32 @@
 		align-items: center;
 		justify-content: center;
 	}
-	/* the neutral shared-track squares */
+	/* the neutral shared-track squares — a LIGHT classic-ludo path so each square
+	   stands out on the dark board, with a dark grid line separating every cell so
+	   players can see and count them. Tiles seamlessly (no radius). */
 	.cell--track {
-		background: linear-gradient(160deg, color-mix(in srgb, var(--surface) 88%, #fff), var(--surface-2));
-		box-shadow: inset 0 0 0 1px var(--border);
-		border-radius: 3px;
+		background: linear-gradient(160deg, #f4f2fb, #e2dfee);
+		box-shadow: inset 0 0 0 1px rgba(18, 14, 30, 0.32);
 	}
-	/* a coloured start/safe/home-lane square — gradient tint + inset ring so it pops */
+	/* a coloured start/safe/home-lane square — bright tint on the light board.
+	   --cc fallbacks are load-bearing: an empty style attribute still matches this
+	   [style] selector, and an unset var() with no fallback is invalid-at-computed-
+	   value-time → the background would compute to transparent (black board shows). */
 	.cell--track[style] {
 		background: linear-gradient(
 			160deg,
-			color-mix(in srgb, var(--cc) 55%, var(--surface-2)),
-			color-mix(in srgb, var(--cc) 32%, var(--surface-2))
+			color-mix(in srgb, var(--cc, #f4f2fb) 60%, #fff),
+			color-mix(in srgb, var(--cc, #e2dfee) 40%, #fff)
 		);
-		box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cc) 50%, var(--border));
+		box-shadow: inset 0 0 0 1px rgba(18, 14, 30, 0.3);
 	}
 	.cell--safe {
 		background: radial-gradient(
 			circle at 50% 42%,
-			color-mix(in srgb, var(--cc, var(--accent)) 40%, var(--surface-2)),
-			color-mix(in srgb, var(--cc, var(--accent)) 18%, var(--surface-2))
+			color-mix(in srgb, var(--cc, var(--accent)) 48%, #fff),
+			color-mix(in srgb, var(--cc, var(--accent)) 24%, #fff)
 		);
-		box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cc, var(--accent)) 45%, var(--border));
+		box-shadow: inset 0 0 0 1px rgba(18, 14, 30, 0.3);
 	}
 	.cell--home {
 		background: linear-gradient(160deg, color-mix(in srgb, var(--cc) 72%, #fff), color-mix(in srgb, var(--cc) 55%, var(--surface)));
@@ -831,15 +835,15 @@
 	.star {
 		font-size: 0.82em;
 		line-height: 1;
-		color: color-mix(in srgb, var(--cc, var(--gold)) 78%, #fff);
-		text-shadow: 0 0 4px color-mix(in srgb, var(--cc, var(--gold)) 60%, transparent);
+		/* darker colour so the star reads on the now-light safe cell */
+		color: color-mix(in srgb, var(--cc, var(--gold)) 72%, #000);
 	}
 
 	/* tokens sit on an overlay, positioned by % so CSS can glide them */
 	.token {
 		position: absolute;
-		width: 5.2%;
-		height: 5.2%;
+		width: 6.2%;
+		height: 6.2%;
 		transform: translate(-50%, -50%);
 		border-radius: 50%;
 		/* rounded glossy pawn: bright specular top-left → colour → darker rim */
@@ -972,21 +976,25 @@
 		0% { transform: translateY(-4px) scale(1.06, 0.94); }
 		100% { transform: none; }
 	}
+	/* your-turn emphasis: a strong accent glow so it's obvious the die is waiting */
 	.dice3d--live {
-		filter: drop-shadow(0 0 7px color-mix(in srgb, var(--accent) 65%, transparent));
+		filter: drop-shadow(0 0 13px color-mix(in srgb, var(--accent) 85%, transparent));
 	}
 	.dice3d--live::after {
 		content: '';
 		position: absolute;
-		inset: -6px;
-		border-radius: 18px;
-		border: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
-		animation: dpulse 1.4s ease-in-out infinite;
+		inset: -7px;
+		border-radius: 20px;
+		border: 3px solid color-mix(in srgb, var(--accent) 90%, transparent);
+		box-shadow:
+			0 0 16px color-mix(in srgb, var(--accent) 60%, transparent),
+			inset 0 0 10px color-mix(in srgb, var(--accent) 35%, transparent);
+		animation: dpulse 1.1s ease-in-out infinite;
 		pointer-events: none;
 	}
 	@keyframes dpulse {
-		0%, 100% { opacity: 0.35; transform: scale(0.96); }
-		50% { opacity: 0.9; transform: scale(1.04); }
+		0%, 100% { opacity: 0.5; transform: scale(0.9); }
+		50% { opacity: 1; transform: scale(1.14); }
 	}
 	.cube {
 		width: 60px;

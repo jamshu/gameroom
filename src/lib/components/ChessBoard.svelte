@@ -654,8 +654,14 @@
 		   fallback is the lobby/standalone size. Squares and pieces are sized in
 		   %, so the board just scales. */
 		max-width: var(--board-cap, 520px);
-		border: 2px solid var(--border);
+		/* Premium framed board: a dark inner edge, an outer ring, a lift shadow.
+		   Tones derived from theme vars so it suits any board palette. */
+		border: 3px solid color-mix(in srgb, var(--border) 55%, #000);
 		border-radius: var(--radius-sm);
+		box-shadow:
+			0 0 0 3px color-mix(in srgb, var(--surface-2) 88%, #000),
+			0 0 0 4px color-mix(in srgb, #fff 8%, transparent),
+			var(--shadow-lg);
 		overflow: hidden;
 	}
 	.fs-btn {
@@ -812,14 +818,24 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		background: var(--sq-l, #ebecd0);
+		/* faint top-lit gradient off the theme colour for gentle depth — no radius,
+		   squares still tile as one continuous surface */
+		background: linear-gradient(
+			160deg,
+			color-mix(in srgb, var(--sq-l, #ebecd0) 90%, #fff),
+			var(--sq-l, #ebecd0)
+		);
 		border: none;
 		cursor: pointer;
 		padding: 0;
 		perspective: 460px; /* gives the hover tilt its depth */
 	}
 	.sq--dark {
-		background: var(--sq-d, #779556);
+		background: linear-gradient(
+			160deg,
+			color-mix(in srgb, var(--sq-d, #779556) 88%, #fff),
+			color-mix(in srgb, var(--sq-d, #779556) 97%, #000)
+		);
 	}
 	/* hover tilt layers — see tiltMove()/tiltLeave() in the script */
 	.lift {
@@ -855,6 +871,8 @@
 		mix-blend-mode: screen;
 		pointer-events: none;
 		transition: opacity 0.25s;
+		/* glossy specular that appears as the piece lifts on hover */
+		background: radial-gradient(circle at 42% 30%, rgba(255, 255, 255, 0.6), transparent 62%);
 	}
 	/* soft pool of light under the cursor's piece */
 	.glow {
@@ -892,6 +910,9 @@
 		.sq--occupied:hover .glow {
 			opacity: 1;
 		}
+		.sq--occupied:hover .sheen {
+			opacity: 0.85;
+		}
 		.sq--occupied:hover .contact {
 			opacity: 0.45;
 			width: 66%;
@@ -908,28 +929,33 @@
 			transform: translateZ(14px) scale(1.12);
 		}
 	}
+	/* Highlights sit OVER the theme square colour (glassy) rather than replacing it,
+	   so the board palette always shows through. */
 	.sq--sel {
-		background: #f5f682;
+		box-shadow: inset 0 0 0 4px color-mix(in srgb, var(--accent) 88%, #fff);
 	}
-	.sq--dark.sq--sel {
-		background: #b9ca43;
+	/* last move played — soft warm wash over the from/to squares */
+	.sq--last {
+		box-shadow: inset 0 0 0 100px color-mix(in srgb, var(--accent-2, #ffcc33) 22%, transparent);
 	}
-	.sq--hint {
-		box-shadow: inset 0 0 0 100px rgba(0, 0, 0, 0.14);
+	/* selection wins over last-move when both land on one square */
+	.sq--last.sq--sel {
+		box-shadow:
+			inset 0 0 0 100px color-mix(in srgb, var(--accent-2, #ffcc33) 18%, transparent),
+			inset 0 0 0 4px color-mix(in srgb, var(--accent) 88%, #fff);
 	}
+	/* legal move onto an empty square — a tidy accent dot */
 	.sq--hint:not(:has(.piece))::after {
 		content: '';
 		width: 30%;
 		height: 30%;
 		border-radius: 50%;
-		background: rgba(0, 0, 0, 0.22);
+		background: color-mix(in srgb, var(--accent) 55%, rgba(0, 0, 0, 0.45));
+		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
 	}
-	/* last move played — tint the from/to squares (both board colours) */
-	.sq--last {
-		background: #f6eb72;
-	}
-	.sq--dark.sq--last {
-		background: #c9c94a;
+	/* legal capture — a ring hugging the target piece (chess.com style) */
+	.sq--hint.sq--occupied {
+		box-shadow: inset 0 0 0 6px color-mix(in srgb, var(--accent) 45%, transparent);
 	}
 
 	.review {
