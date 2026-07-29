@@ -61,6 +61,27 @@
 		}
 	}
 
+	// Screen Wake Lock: keep the display on during a call so the phone's auto-lock
+	// never fires — a lock suspends the page, which drops the mic + peer mesh.
+	// Best-effort: unsupported browsers (older iOS) just no-op. The OS releases the
+	// sentinel whenever the page is hidden, so it is re-acquired on visibility.
+	let wakeLock = null;
+	async function acquireWake() {
+		if (wakeLock || !inVoice) return;
+		try {
+			wakeLock = await navigator.wakeLock?.request('screen');
+			wakeLock?.addEventListener?.('release', () => (wakeLock = null));
+		} catch {
+			wakeLock = null;
+		}
+	}
+	function releaseWake() {
+		try {
+			wakeLock?.release?.();
+		} catch {}
+		wakeLock = null;
+	}
+
 	async function joinVoice() {
 		joining = true;
 		try {
@@ -84,6 +105,7 @@
 			}
 			inVoice = true;
 			mesh.sync($store.voice);
+			acquireWake();
 		} catch (e) {
 			error = e.message;
 			inVoice = false;
@@ -95,6 +117,7 @@
 	async function leaveVoice() {
 		inVoice = false;
 		voicePeers = [];
+		releaseWake();
 		store.setFast(false);
 		mesh?.leave();
 		await store.post('voice', { action: 'leave' }).catch(() => {});
@@ -164,11 +187,35 @@
 			if (inVoice) navigator.sendBeacon?.(`/api/rooms/${roomId}/voice`, JSON.stringify({ action: 'leave' }));
 		};
 		window.addEventListener('beforeunload', bye);
-		return () => window.removeEventListener('beforeunload', bye);
+
+		// Coming back from a lock/background: the wake-lock sentinel was released and
+		// the mesh may have stalled while the page was suspended. Re-acquire the lock,
+		// pull a fresh roster and re-sync so any dropped peer is rebuilt.
+		const onVisible = async () => {
+			if (document.visibilityState !== 'visible' || !inVoice || joining) return;
+			acquireWake();
+			// Auto-rejoin: if the OS ended the mic while suspended (typical on iOS
+			// screen-lock), the peers carry dead audio. Tear the mesh down and rejoin
+			// to re-open the mic + rebuild the connections — no manual tap needed.
+			if (mesh && !mesh.micLive()) {
+				mesh.leave();
+				await joinVoice();
+				return;
+			}
+			store.pollNow?.();
+			mesh?.sync($store.voice);
+		};
+		document.addEventListener('visibilitychange', onVisible);
+
+		return () => {
+			window.removeEventListener('beforeunload', bye);
+			document.removeEventListener('visibilitychange', onVisible);
+		};
 	});
 
 	onDestroy(() => {
 		clearInterval(detailTimer);
+		releaseWake();
 		mesh?.leave();
 		store.close();
 	});

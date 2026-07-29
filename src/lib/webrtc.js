@@ -200,5 +200,12 @@ export function createVoiceMesh({ myUid, sendSignal, onPeersChange }) {
 		return localStream?.getAudioTracks().some((t) => t.enabled) ? localStream : null;
 	}
 
-	return { join, leave, sync, handleSignal, setMuted, micStream, get joined() { return joined; } };
+	/** Is the capture still live? A phone that suspended the page on screen-lock can
+	 *  end the mic track (readyState 'ended'); the stream object lingers but carries
+	 *  no audio, so the caller re-arms by rejoining. */
+	function micLive() {
+		return !!localStream && localStream.getAudioTracks().some((t) => t.readyState === 'live');
+	}
+
+	return { join, leave, sync, handleSignal, setMuted, micStream, micLive, get joined() { return joined; } };
 }
