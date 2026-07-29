@@ -27,6 +27,7 @@
 	let mesh = null;
 	let voicePeers = $state([]); // [{uid, state}] from the mesh
 	let inVoice = $state(false);
+	let joining = $state(false); // a join is mid-flight (mic perm + roster POST)
 	let detailTimer = null;
 
 	const myUid = $derived($user?.uid);
@@ -61,6 +62,7 @@
 	}
 
 	async function joinVoice() {
+		joining = true;
 		try {
 			if (!mesh) {
 				mesh = createVoiceMesh({
@@ -85,6 +87,8 @@
 		} catch (e) {
 			error = e.message;
 			inVoice = false;
+		} finally {
+			joining = false;
 		}
 	}
 
@@ -108,7 +112,7 @@
 	// everyone, so our name disappears for the whole room. Once per mount.
 	let voiceSelfHealed = false;
 	$effect(() => {
-		if (voiceSelfHealed || !accepted || inVoice || myUid == null) return;
+		if (voiceSelfHealed || !accepted || inVoice || joining || myUid == null) return;
 		if ($store.voice.includes(myUid)) {
 			voiceSelfHealed = true;
 			store.post('voice', { action: 'leave' }).catch(() => {});
