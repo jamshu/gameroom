@@ -1,5 +1,5 @@
 <script>
-	import '@fontsource-variable/fraunces';
+	import '@fontsource-variable/fredoka';
 	import '@fontsource-variable/inter';
 	import '../app.css';
 	import { onMount } from 'svelte';
@@ -100,11 +100,19 @@
 		padding: 14px 0 18px;
 	}
 	.brand {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
 		font-family: var(--font-display);
-		font-size: 1.25rem;
+		font-size: 1.4rem;
 		font-weight: 700;
+		letter-spacing: -0.02em;
 		color: var(--text);
 		text-decoration: none;
+		padding: 4px 12px;
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--accent) 14%, transparent);
+		border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
 	}
 	.topbar-right {
 		display: flex;

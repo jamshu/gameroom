@@ -3,7 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { user } from '$lib/stores/auth.js';
 	import { api } from '$lib/api.js';
-	import { GAMES, gameLabel } from '$lib/games.js';
+	import { GAMES, gameLabel, gameById } from '$lib/games.js';
 	import UserPicker from '$lib/components/UserPicker.svelte';
 
 	/** Focus the node on mount — fires each time the create form opens. */
@@ -206,12 +206,22 @@
 			<form class="create-form" onsubmit={createRoom}>
 				<label class="label" for="rname">Room name</label>
 				<input id="rname" class="input" bind:value={name} required maxlength="60" use:autofocus />
-				<label class="label" for="rgame">Game</label>
-				<select id="rgame" class="select" bind:value={gameType}>
+				<span class="label">Game</span>
+				<div class="game-tiles" role="radiogroup" aria-label="Game">
 					{#each GAMES as g (g.id)}
-						<option value={g.id}>{g.emoji} {g.label}</option>
+						<button
+							type="button"
+							class="game-tile"
+							class:game-tile--on={gameType === g.id}
+							role="radio"
+							aria-checked={gameType === g.id}
+							onclick={() => (gameType = g.id)}
+						>
+							<span class="game-tile-emoji emo">{g.emoji}</span>
+							<span class="game-tile-label">{g.label}</span>
+						</button>
 					{/each}
-				</select>
+				</div>
 				{#if gameType === 'thief_finder'}
 					<label class="label" for="rdraws">Number of draws</label>
 					<select id="rdraws" class="select" bind:value={drawsTotal}>
@@ -260,7 +270,8 @@
 	{/if}
 	{#each shown as r (r.id)}
 		<div class="card card--interactive room-row">
-			<div>
+			<span class="game-badge emo" aria-hidden="true">{gameById(r.gameType).emoji}</span>
+			<div class="room-meta">
 				<strong>{r.name}</strong>
 				<span class="chip chip--accent">{gameLabel(r.gameType)}</span>
 				{#if r.visibility === 'private'}<span class="chip" title="Invite only">🔒 private</span>{/if}
@@ -281,7 +292,8 @@
 	{/if}
 	{#each myRooms as r (r.id)}
 		<a class="card card--interactive room-row" href={`/room/${r.id}`}>
-			<div>
+			<span class="game-badge emo" aria-hidden="true">{gameById(r.gameType).emoji}</span>
+			<div class="room-meta">
 				<strong>{r.name}</strong>
 				<span class="chip chip--accent">{gameLabel(r.gameType)}</span>
 				{#if r.visibility === 'private'}<span class="chip" title="Invite only">🔒 private</span>{/if}
@@ -342,14 +354,71 @@
 	.room-row {
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
+		gap: 14px;
 		padding: 14px 18px;
-		margin-bottom: 10px;
+		margin-bottom: 12px;
 		text-decoration: none;
 		color: var(--text);
 	}
+	.room-meta {
+		flex: 1;
+		min-width: 0;
+	}
 	.room-row .chip {
 		margin: 0 8px;
+	}
+	/* Big game emoji in a rounded tile — makes each room read at a glance. */
+	.game-badge {
+		flex-shrink: 0;
+		width: 52px;
+		height: 52px;
+		display: grid;
+		place-items: center;
+		font-size: 1.7rem;
+		border-radius: var(--radius-sm);
+		background: color-mix(in srgb, var(--accent) 12%, var(--surface-2));
+		border: 2px solid var(--border);
+	}
+
+	/* Visual game picker — chunky selectable tiles instead of a dropdown. */
+	.game-tiles {
+		display: grid;
+		grid-template-columns: repeat(2, 1fr);
+		gap: 10px;
+		margin: 2px 0 4px;
+	}
+	.game-tile {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		padding: 12px 14px;
+		border-radius: var(--radius-sm);
+		border: 2px solid var(--border);
+		background: var(--surface-2);
+		color: var(--text);
+		font-family: var(--font-display);
+		font-size: 0.95rem;
+		font-weight: 600;
+		transition:
+			transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1),
+			border-color 0.15s ease,
+			background 0.15s ease;
+	}
+	.game-tile:hover {
+		border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+	}
+	.game-tile--on {
+		border-color: var(--accent);
+		background: color-mix(in srgb, var(--accent) 16%, var(--surface-2));
+		transform: translateY(-2px);
+	}
+	.game-tile-emoji {
+		font-size: 1.6rem;
+	}
+	@media (max-width: 420px) {
+		.game-tiles {
+			grid-template-columns: 1fr;
+		}
 	}
 
 	/* Column layout + a growing spacer keep the credit pinned to the bottom of
@@ -373,17 +442,18 @@
 		text-align: center;
 	}
 	.credit::before {
-		content: '✦';
+		content: '';
 		display: block;
-		margin-bottom: 8px;
-		color: var(--ornament);
-		font-size: 0.55rem;
-		letter-spacing: 0.4em;
+		width: 40px;
+		height: 4px;
+		margin: 0 auto 12px;
+		border-radius: 999px;
+		background: linear-gradient(90deg, var(--accent), var(--accent-2));
 	}
 	.credit-line {
 		margin: 0;
 		font-family: var(--font-display);
-		font-size: 0.72rem;
+		font-size: 0.8rem;
 		font-weight: 500;
 		color: var(--text-dim);
 		letter-spacing: 0.01em;

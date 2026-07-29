@@ -152,21 +152,43 @@
 		align-items: center;
 		gap: 8px;
 		margin: 4px auto 20px;
-		padding: 18px 24px;
-		background: color-mix(in srgb, var(--gold) 12%, transparent);
-		border: 1px solid var(--gold);
+		padding: 22px 28px;
+		background: linear-gradient(
+			160deg,
+			color-mix(in srgb, var(--accent-2) 22%, transparent),
+			color-mix(in srgb, var(--accent) 16%, transparent)
+		);
+		border: 2px solid var(--accent-2);
 		border-radius: var(--radius);
+		box-shadow: 0 0 30px -6px color-mix(in srgb, var(--accent-2) 55%, transparent);
+		animation: winner-pop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+	}
+	@keyframes winner-pop {
+		from {
+			opacity: 0;
+			transform: scale(0.8);
+		}
+		to {
+			opacity: 1;
+			transform: scale(1);
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.winner-box {
+			animation: none;
+		}
 	}
 	.winner-label {
-		font-size: 0.72rem;
+		font-family: var(--font-display);
+		font-size: 0.74rem;
 		font-weight: 700;
 		letter-spacing: 0.12em;
 		text-transform: uppercase;
-		color: var(--gold);
+		color: var(--accent-2);
 	}
 	.winner-name {
 		font-family: var(--font-display);
-		font-size: 1.3rem;
+		font-size: 1.5rem;
 	}
 	.winner-avatars {
 		display: flex;

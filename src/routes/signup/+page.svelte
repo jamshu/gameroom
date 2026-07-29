@@ -187,13 +187,9 @@
 	.divider::after {
 		content: '';
 		flex: 1;
-		height: 1px;
-		background: linear-gradient(
-			90deg,
-			transparent,
-			color-mix(in srgb, var(--ornament) 55%, transparent),
-			transparent
-		);
+		height: 2px;
+		border-radius: 999px;
+		background: var(--border);
 	}
 	.signin {
 		width: 100%;

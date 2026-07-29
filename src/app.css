@@ -1,38 +1,40 @@
 :root {
 	/* Base palette = `midnight` theme. Every component styles ONLY against these
 	   variables — a new theme is just another :root[data-theme='<id>'] block. */
-	--bg: #0b1120;
-	--bg-soft: #0f172a;
-	--surface: #111c33;
-	--surface-2: #16243f;
-	--border: #243149;
-	--text: #e6edf6;
-	--text-dim: #93a4bd;
-	--text-faint: #64748b;
+	--bg: #16131f;
+	--bg-soft: #1c1826;
+	--surface: #241f30;
+	--surface-2: #2c2740;
+	--border: #3a3450;
+	--text: #f5f0ff;
+	--text-dim: #b0a8c8;
+	--text-faint: #7d7594;
 
-	/* --accent is the primary accent (buttons, slider thumbs, focus states). */
-	--accent: #14b8a6;
-	--accent-deep: #0f766e;
-	--gold: #d6a64a;
-	--green: #34d399;
-	--red: #f87171;
-	--amber: #f59e0b;
+	/* --accent is the primary arcade accent (buttons, focus, highlights).
+	   --accent-2 is the playful secondary (dual-tone glows, celebration). */
+	--accent: #ff4d6d;
+	--accent-deep: #d62d51;
+	--accent-2: #ffcc33;
+	--gold: #ffcc33;
+	--green: #2ce69b;
+	--red: #ff5470;
+	--amber: #ff9f1c;
 
-	/* Background ambience glow (top-right, bottom-left). Per-theme. */
-	--bg-glow-a: rgba(20, 184, 166, 0.12);
-	--bg-glow-b: rgba(214, 166, 74, 0.08);
+	/* Background ambience glow (top-right coral, bottom-left gold). Per-theme. */
+	--bg-glow-a: rgba(255, 77, 109, 0.16);
+	--bg-glow-b: rgba(255, 204, 51, 0.1);
 
-	--radius: 18px;
-	--radius-sm: 12px;
-	--radius-lg: 24px;
-	--shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
-	--shadow-sm: 0 2px 10px rgba(0, 0, 0, 0.25);
-	--shadow-lg: 0 24px 60px -18px rgba(0, 0, 0, 0.55);
+	--radius: 22px;
+	--radius-sm: 14px;
+	--radius-lg: 26px;
+	--shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+	--shadow-sm: 0 2px 10px rgba(0, 0, 0, 0.3);
+	--shadow-lg: 0 24px 60px -18px rgba(0, 0, 0, 0.6);
 	--maxw: 760px;
 
 	/* Typography — a variable serif for display gives character; a clean
 	   sans for body/controls. Install: @fontsource-variable/fraunces + inter. */
-	--font-display: 'Fraunces Variable', Georgia, 'Times New Roman', serif;
+	--font-display: 'Fredoka Variable', 'Inter Variable', system-ui, sans-serif;
 	--font-body: 'Inter Variable', system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial,
 		sans-serif;
 
@@ -41,11 +43,11 @@
 
 	/* On-colors — text/icon color when sitting on a solid accent fill. Per-theme
 	   so light accents get dark text and dark accents get light text. */
-	--on-accent: #042f2a;
+	--on-accent: #3a0518;
 	--on-green: #04261c;
 	--on-gold: #2a1e05;
 	--on-amber: #3a2600;
-	--on-red: #fff;
+	--on-red: #3a0512;
 
 	/* Ludo player colours — vivid and constant across themes (like a chess/carrom
 	   board surface, the Ludo board commits to these four hues). */
@@ -53,64 +55,6 @@
 	--ludo-green: #30a46c;
 	--ludo-yellow: #f5c518;
 	--ludo-blue: #3b82f6;
-}
-
-/* ── Themes ─────────────────────────────────────────────────────────────
-   Each block overrides only palette + glow vars; structural vars
-   (radius/maxw/fonts) stay global. Add more themes as new blocks. */
-
-/* Anthropic Claude — warm ivory, clay/coral accent. */
-:root[data-theme='claude'] {
-	--bg: #faf9f5;
-	--bg-soft: #f0eee6;
-	--surface: #ffffff;
-	--surface-2: #f5f4ee;
-	--border: #e3e1d9;
-	--text: #141413;
-	--text-dim: #6b6a63;
-	--text-faint: #97958d;
-	--accent: #c15f3c;
-	--accent-deep: #a84a2c;
-	--gold: #b8860b;
-	--green: #2f7a4f;
-	--red: #bc4040;
-	--bg-glow-a: rgba(193, 95, 60, 0.07);
-	--bg-glow-b: rgba(184, 134, 11, 0.05);
-	--shadow: 0 8px 24px rgba(20, 20, 19, 0.08);
-	--shadow-sm: 0 2px 8px rgba(20, 20, 19, 0.06);
-	--shadow-lg: 0 20px 50px -18px rgba(20, 20, 19, 0.16);
-	--on-accent: #fff;
-	--on-green: #fff;
-	--on-gold: #fff;
-	--amber: #b45309;
-	--on-amber: #fff;
-}
-
-/* Catppuccin Latte — cool porcelain white, vibrant mauve accent. */
-:root[data-theme='catppuccin-latte'] {
-	--bg: #eff1f5;
-	--bg-soft: #e6e9ef;
-	--surface: #ffffff;
-	--surface-2: #e6e9ef;
-	--border: #ccd0da;
-	--text: #4c4f69;
-	--text-dim: #6c6f85;
-	--text-faint: #8c8fa1;
-	--accent: #8839ef;
-	--accent-deep: #7326d3;
-	--gold: #df8e1d;
-	--green: #40a02b;
-	--red: #d20f39;
-	--bg-glow-a: rgba(136, 57, 239, 0.07);
-	--bg-glow-b: rgba(254, 100, 11, 0.05);
-	--shadow: 0 8px 24px rgba(76, 79, 105, 0.1);
-	--shadow-sm: 0 2px 8px rgba(76, 79, 105, 0.07);
-	--shadow-lg: 0 20px 50px -18px rgba(76, 79, 105, 0.18);
-	--on-accent: #fff;
-	--on-green: #fff;
-	--on-gold: #fff;
-	--amber: #fe640b;
-	--on-amber: #fff;
 }
 
 * {
@@ -134,19 +78,6 @@ body {
 	min-height: 100dvh;
 }
 
-/* Fine grain overlay — adds tactile, paper-like depth over the gradient glows.
-   Fixed full-viewport, sits behind content, theme-agnostic (blends both ways). */
-body::before {
-	content: '';
-	position: fixed;
-	inset: 0;
-	z-index: -1;
-	pointer-events: none;
-	opacity: 0.035;
-	mix-blend-mode: overlay;
-	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-}
-
 button {
 	font-family: inherit;
 	cursor: pointer;
@@ -160,10 +91,8 @@ h2,
 h3 {
 	margin: 0;
 	font-family: var(--font-display);
-	font-weight: 700;
-	font-optical-sizing: auto;
-	font-variation-settings: 'SOFT' 30, 'WONK' 0;
-	letter-spacing: -0.015em;
+	font-weight: 600;
+	letter-spacing: -0.01em;
 }
 
 .app--wide {
@@ -178,58 +107,51 @@ h3 {
 		calc(64px + env(safe-area-inset-bottom, 0px)) calc(16px + env(safe-area-inset-left, 0px));
 }
 
-/* Editorial section divider — serif label with a hairline gold rule trailing off.
-   Reads like a printed almanac heading. */
+/* Arcade section heading — chunky rounded label with a short thick accent
+   underbar. Bold and playful, not editorial. */
 .section-title {
-	display: flex;
+	display: inline-flex;
 	align-items: center;
-	gap: 12px;
+	gap: 10px;
 	font-family: var(--font-display);
-	font-size: 1.06rem;
+	font-size: 1.2rem;
 	font-weight: 600;
-	font-variation-settings: 'SOFT' 40, 'WONK' 0;
 	letter-spacing: -0.01em;
 	color: var(--text);
-	margin: 30px 4px 14px;
+	margin: 30px 4px 16px;
+	padding-bottom: 8px;
+	border-bottom: 4px solid var(--accent);
+	border-radius: 2px;
 }
 .section-title .emo {
 	font-size: 0.92em;
 	opacity: 0.9;
 }
-.section-title::after {
-	content: '';
-	flex: 1;
-	height: 1px;
-	background: linear-gradient(
-		90deg,
-		color-mix(in srgb, var(--ornament) 55%, transparent),
-		transparent
-	);
-}
 
 .card {
 	position: relative;
 	background: linear-gradient(180deg, var(--surface-2), var(--surface));
-	border: 1px solid var(--border);
+	border: 2px solid var(--border);
 	border-radius: var(--radius);
 	/* outer depth + a 1px inner top highlight for a lit, dimensional edge */
 	box-shadow:
-		inset 0 1px 0 color-mix(in srgb, var(--text) 7%, transparent),
+		inset 0 1px 0 color-mix(in srgb, var(--text) 8%, transparent),
 		var(--shadow-lg);
 }
 
+/* Bouncy, springy lift on interactive cards — reads as tactile/playful. */
 .card--interactive {
 	transition:
-		transform 0.18s ease,
-		box-shadow 0.18s ease,
-		border-color 0.18s ease;
+		transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1),
+		box-shadow 0.2s ease,
+		border-color 0.2s ease;
 }
 .card--interactive:hover {
-	transform: translateY(-2px);
-	border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+	transform: translateY(-3px) scale(1.015);
+	border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
 }
 .card--interactive:active {
-	transform: scale(0.995);
+	transform: translateY(-1px) scale(0.99);
 }
 
 /* Gentle accent tint on any card under a real pointer — keeps touch untouched. */
@@ -240,7 +162,7 @@ h3 {
 			box-shadow 0.2s ease;
 	}
 	.card:hover {
-		border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+		border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
 	}
 }
 
@@ -257,20 +179,33 @@ h3 {
 
 /* ── Controls ─────────────────────────────────────────────────────────── */
 
+/* Chunky, pressable arcade buttons. A solid colored "under-edge" (box-shadow
+   offset below) makes them read as physical; pressing squishes them down onto
+   that edge. */
 .btn {
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
 	gap: 8px;
-	padding: 10px 18px;
+	padding: 11px 20px;
 	border-radius: var(--radius-sm);
-	border: 1px solid var(--border);
+	border: 2px solid var(--border);
 	background: var(--surface);
 	color: var(--text);
-	font-family: var(--font-body);
-	font-size: 0.92rem;
+	font-family: var(--font-display);
+	font-size: 0.94rem;
 	font-weight: 600;
-	transition: border-color 0.15s ease, background 0.15s ease, opacity 0.15s ease;
+	box-shadow: 0 4px 0 color-mix(in srgb, var(--border) 80%, #000);
+	transform: translateY(0);
+	transition:
+		transform 0.1s ease,
+		box-shadow 0.1s ease,
+		background 0.15s ease,
+		opacity 0.15s ease;
+}
+.btn:not(:disabled):active {
+	transform: translateY(4px);
+	box-shadow: 0 0 0 color-mix(in srgb, var(--border) 80%, #000);
 }
 .btn:disabled {
 	opacity: 0.5;
@@ -280,20 +215,32 @@ h3 {
 	background: var(--accent);
 	border-color: var(--accent);
 	color: var(--on-accent);
+	box-shadow: 0 4px 0 var(--accent-deep);
 }
 .btn--primary:not(:disabled):hover {
-	background: var(--accent-deep);
+	background: color-mix(in srgb, var(--accent) 88%, #fff);
+}
+.btn--primary:not(:disabled):active {
+	box-shadow: 0 0 0 var(--accent-deep);
 }
 .btn--ghost {
 	background: transparent;
+	box-shadow: none;
+}
+.btn--ghost:not(:disabled):active {
+	transform: translateY(2px);
 }
 .btn--danger {
 	color: var(--red);
-	border-color: color-mix(in srgb, var(--red) 40%, var(--border));
+	border-color: color-mix(in srgb, var(--red) 45%, var(--border));
 }
 .btn--sm {
-	padding: 6px 12px;
-	font-size: 0.84rem;
+	padding: 6px 13px;
+	font-size: 0.85rem;
+	box-shadow: 0 3px 0 color-mix(in srgb, var(--border) 80%, #000);
+}
+.btn--sm.btn--primary {
+	box-shadow: 0 3px 0 var(--accent-deep);
 }
 
 .input,
@@ -302,7 +249,7 @@ textarea.input {
 	width: 100%;
 	padding: 11px 14px;
 	border-radius: var(--radius-sm);
-	border: 1px solid var(--border);
+	border: 2px solid var(--border);
 	background: var(--bg-soft);
 	color: var(--text);
 	font-family: var(--font-body);
@@ -311,8 +258,9 @@ textarea.input {
 .input:focus,
 .select:focus,
 .richtext:focus {
-	outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+	outline: 3px solid color-mix(in srgb, var(--accent) 60%, transparent);
 	outline-offset: 1px;
+	border-color: var(--accent);
 }
 
 /* Touch devices: 16px inputs stop iOS focus-zoom; buttons meet a comfortable
@@ -345,12 +293,13 @@ textarea.input {
 	display: inline-flex;
 	align-items: center;
 	gap: 6px;
-	padding: 4px 12px;
+	padding: 4px 13px;
 	border-radius: 999px;
+	font-family: var(--font-display);
 	font-size: 0.8rem;
 	font-weight: 600;
 	background: var(--surface-2);
-	border: 1px solid var(--border);
+	border: 2px solid var(--border);
 	color: var(--text-dim);
 }
 .chip--accent {
