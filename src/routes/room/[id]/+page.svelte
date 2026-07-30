@@ -229,10 +229,24 @@
 	// give a player who polled late only the leftover slice of it. Counting from
 	// when *this* client received the result gives everyone the full window.
 	const FINAL_REVEAL_MS = 5000;
+	// The board games swap to the leaderboard the instant a winner is set, so the
+	// winning move (checkmate, last token home, the winning shot) is never seen —
+	// the board unmounts before its move-animation effect can play. Holding keeps
+	// the board mounted long enough to animate the final move first. Per-game
+	// because a carrom shot replays for up to ~2s while a chess slide is 210ms.
+	const REPLAY_MS = { chess: 1400, ludo: 1400, carroms: 2600 };
 	const finalReveal = createHold(() => {
 		const g = $store.game;
-		const showing = g?.type === 'thief_finder' && g.phase === 'finished';
-		return { key: showing ? `final-${g.draw}` : null, ms: FINAL_REVEAL_MS };
+		if (!g) return { key: null };
+		if (g.type === 'thief_finder') {
+			const showing = g.phase === 'finished';
+			return { key: showing ? `final-${g.draw}` : null, ms: FINAL_REVEAL_MS };
+		}
+		// Skip resign / agreed-draw — no move to replay, so don't delay the board.
+		// A constant key is fine: `result` is null between games, so the hold resets
+		// through null on a rematch and re-fires on the next win.
+		const replay = g.result && !(g.endReason === 'resign' || g.endReason === 'draw-agreed');
+		return { key: replay ? 'win' : null, ms: REPLAY_MS[g.type] || 1600 };
 	});
 
 	// The poll gave up because we're no longer in this room (removed, or the room
