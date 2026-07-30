@@ -87,6 +87,20 @@ export async function publishEvent(roomId, event, targetUid = null) {
 	}
 }
 
+/**
+ * Push a live striker/aim cursor on the PUBLIC channel. Ephemeral — no Odoo
+ * write, no event id, no state version. Best-effort like the rest.
+ */
+export async function publishAim(roomId, data) {
+	try {
+		const rest = await ablyRest();
+		if (!rest) return;
+		await rest.channels.get(roomChannel(roomId)).publish('aim', data);
+	} catch (e) {
+		console.error('publishAim failed:', e?.message);
+	}
+}
+
 /** A signed token request scoped to this room + user, for the browser's authUrl. */
 export async function roomTokenRequest(roomId, uid) {
 	const rest = await ablyRest();

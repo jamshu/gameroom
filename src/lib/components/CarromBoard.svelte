@@ -46,6 +46,10 @@
 		// the AudioContext needs a gesture that has ALREADY happened — waiting until
 		// the first shot would silence it (the flick's own pointerup is too late)
 		arm();
+		// live striker/aim of whoever is on strike — ignore the echo of our own.
+		store.onAim?.((d) => {
+			if (d.uid !== myUid) remoteAim = d;
+		});
 	});
 
 	function toggleMute() {
@@ -84,11 +88,18 @@
 	let animBodies = $state(null); // sim snapshot currently on screen
 	let displayPieces = $state(null); // tween target on the no-replay fallback path
 
+	// live striker/aim of the player currently on strike, pushed over Ably while
+	// they place and aim. { uid, strikerT, aim } — null until the first push, and
+	// cleared each turn so a stale cursor never lingers on the next player's side.
+	let remoteAim = $state(null);
+	let lastAimSent = 0; // throttle gate for our own broadcasts
+
 	// a fresh placement each time the strike comes round, rather than inheriting
 	// wherever the last shot happened to leave it
 	$effect(() => {
 		currentUid;
 		strikerT = BOARD.SIZE / 2;
+		remoteAim = null;
 	});
 
 	const POCKETS = [
@@ -247,7 +258,10 @@
 		} else if (myTurn) {
 			({ x: sx, y: sy } = strikerPos(mySide, strikerT));
 		} else if (!game.result) {
-			({ x: sx, y: sy } = strikerPos(currentSide, BOARD.SIZE / 2));
+			// follow the shooter's live striker if we've heard from them this turn,
+			// otherwise a marker at centre saying only whose side is live
+			const rt = remoteAim?.uid === currentUid ? remoteAim.strikerT : BOARD.SIZE / 2;
+			({ x: sx, y: sy } = strikerPos(currentSide, rt));
 			ghost = true;
 		}
 		if (sx != null) {
@@ -277,6 +291,19 @@
 			ctx.setLineDash([]);
 		}
 
+		// the shooter's live aim line, mirrored to everyone else and drawn fainter
+		if (!myTurn && !game.result && remoteAim?.aim && remoteAim.uid === currentUid) {
+			const s = strikerPos(currentSide, remoteAim.strikerT);
+			ctx.beginPath();
+			ctx.moveTo(s.x, s.y);
+			ctx.lineTo(s.x - remoteAim.aim.dx * 3, s.y - remoteAim.aim.dy * 3);
+			ctx.strokeStyle = 'rgba(255,77,109,0.5)';
+			ctx.lineWidth = 5;
+			ctx.setLineDash([12, 8]);
+			ctx.stroke();
+			ctx.setLineDash([]);
+		}
+
 		ctx.restore();
 	}
 
@@ -289,7 +316,7 @@
 	// and a theme switch would leave the canvas on the old palette until the next
 	// move repainted it.
 	$effect(() => {
-		game.pieces; animBodies; strikerT; aim; displayPieces; myTurn; pal; viewTheta; currentSide;
+		game.pieces; animBodies; strikerT; aim; displayPieces; myTurn; pal; viewTheta; currentSide; remoteAim;
 		draw();
 	});
 
@@ -494,23 +521,38 @@
 		const p = canvasPoint(e);
 		if (placing) strikerT = clampT(alongSide(mySide, p) - grabOffset);
 		else aim = { dx: p.x - aimAnchor.x, dy: p.y - aimAnchor.y };
+		broadcastAim();
 		e.preventDefault();
+	}
+
+	/** Stream our striker position + aim to the room, throttled. `force` fires the
+	 *  trailing update on release so the ghost rests on the true spot / the aim
+	 *  line clears, without waiting out the gate. Fire-and-forget; a dropped cursor
+	 *  frame just means one skipped redraw on the other boards. */
+	function broadcastAim(force = false) {
+		const now = performance.now();
+		if (!force && now - lastAimSent < 120) return;
+		lastAimSent = now;
+		store.post('carroms/aim', { strikerT, aim }).catch(() => {});
 	}
 
 	function up() {
 		placing = false; // a released placement drag is never a shot
-		if (!aiming || !aim) return;
-		aiming = false;
-		const power = Math.hypot(aim.dx, aim.dy);
-		if (power < 15) {
-			aim = null;
+		if (!aiming || !aim) {
+			// settle the ghost on the placed spot / drop any half-pulled aim line
+			broadcastAim(true);
 			return;
 		}
+		aiming = false;
+		const v = aim; // keep the pulled vector; `aim` itself is about to be cleared
+		aim = null; // drop our own line, then tell the room to drop its mirror
+		broadcastAim(true);
+		const power = Math.hypot(v.dx, v.dy);
+		if (power < 15) return;
 		const scale = Math.min(power, 260) / 260;
 		const speed = 10 + scale * 30; // sim velocity units
-		const vx = (-aim.dx / power) * speed;
-		const vy = (-aim.dy / power) * speed;
-		aim = null;
+		const vx = (-v.dx / power) * speed;
+		const vy = (-v.dy / power) * speed;
 		shoot(vx, vy);
 	}
 
@@ -697,11 +739,11 @@
 	   draw() is $effect-driven, and a second persistent loop would fight the one
 	   playing back shots. */
 	.carrom-canvas--live {
-		animation: board-live 2s ease-in-out infinite;
+		animation: board-live 1s steps(1, end) infinite;
 	}
 	@keyframes board-live {
-		0%, 100% { box-shadow: 0 0 0 2px var(--accent), 0 0 10px -4px var(--accent); }
-		50% { box-shadow: 0 0 0 2px var(--accent), 0 0 22px 0 var(--accent); }
+		0%, 49% { box-shadow: 0 0 0 2px var(--accent), 0 0 24px 0 var(--accent); }
+		50%, 100% { box-shadow: 0 0 0 2px transparent, 0 0 4px -2px var(--accent); }
 	}
 	@media (prefers-reduced-motion: reduce) {
 		.carrom-canvas--live {

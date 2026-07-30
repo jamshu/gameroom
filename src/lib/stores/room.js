@@ -86,6 +86,7 @@ export function createRoomStore(roomId) {
 	let tempSeq = 0;
 	let signalHandler = null; // webrtc manager subscribes here
 	let systemHandler = null;
+	let aimHandler = null; // carroms live striker/aim subscribes here
 	let ably = null; // Ably Realtime client (null until/unless push is enabled)
 	let channel = null;
 	let pushConnected = false; // true while the wake-bell is live → poll backs off
@@ -102,6 +103,9 @@ export function createRoomStore(roomId) {
 	}
 	function onSystem(fn) {
 		systemHandler = fn;
+	}
+	function onAim(fn) {
+		aimHandler = fn;
 	}
 
 	/**
@@ -400,6 +404,9 @@ export function createRoomStore(roomId) {
 				// changed and still waited out the 60s safety net.
 				if (!SELF_CONTAINED_EVENTS.has(msg.data?.type)) reconcileSoon();
 			});
+			// carroms live striker/aim — ephemeral, no state behind it, so it must
+			// NOT markActive/reconcile. Just hand the cursor data to whoever listens.
+			channel.subscribe('aim', (msg) => aimHandler?.(msg.data));
 			// roster: the room row + member list, which the state push doesn't carry.
 			// Before this they refreshed only on the safety poll, so a join approval,
 			// a role change or a host handover took up to 8s to show.
@@ -552,7 +559,7 @@ export function createRoomStore(roomId) {
 	// `chat` inserts optimistically, so its echo poll would fetch a message we
 	// already have. `signal` keeps its echo on purpose: it's how the sender picks
 	// up the peer's reply, and voice negotiation is worth the extra request.
-	const NO_ECHO_POLL = new Set(['chat']);
+	const NO_ECHO_POLL = new Set(['chat', 'carroms/aim']);
 
 	/**
 	 * POST to a room sub-route. If the response carried our new state (and/or a
@@ -607,6 +614,7 @@ export function createRoomStore(roomId) {
 		post,
 		onSignal,
 		onSystem,
+		onAim,
 		setFast,
 		pushLocalChat,
 		pushLocalMedia,
