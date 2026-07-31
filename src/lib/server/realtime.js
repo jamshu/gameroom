@@ -40,7 +40,15 @@ async function ablyRest() {
 export async function publishState(roomId, state, memberUids = []) {
 	try {
 		const rest = await ablyRest();
-		if (!rest || !memberUids.length) return;
+		if (!rest) return; // realtime not configured — polling carries the room
+		// Deliberately NOT merged with the guard above: "Ably is off" is a config
+		// choice, but "a state write had no members to push to" is a bug, and it
+		// degrades silently — everyone else waits out the 60s safety poll. Callers
+		// re-read before reaching here (see writeState), so this should be dead code.
+		if (!memberUids.length) {
+			console.error(`publishState: no member uids for room ${roomId} — state push dropped`);
+			return;
+		}
 		await Promise.all(
 			memberUids.map((uid) =>
 				rest.channels.get(userChannel(roomId, uid)).publish('state', stateView(state, uid))

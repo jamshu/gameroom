@@ -32,13 +32,29 @@ export async function GET({ cookies }) {
 				body: JSON.stringify({ ttl: TTL })
 			}
 		);
-		if (!res.ok) throw new Error(`Cloudflare TURN ${res.status}`);
+		if (!res.ok) {
+			const body = await res.text().catch(() => '');
+			throw new Error(`Cloudflare TURN ${res.status} ${body.slice(0, 160)}`);
+		}
 		const data = await res.json();
 		// two API shapes: {iceServers:[...]} (generate-ice-servers) or
 		// {iceServers:{urls,username,credential}} (older generate endpoint)
 		const ice = Array.isArray(data.iceServers) ? data.iceServers : [data.iceServers];
-		return json({ ok: true, iceServers: [...STUN_ONLY, ...ice], turn: true });
+		// Cloudflare's own set ONLY — Google's STUN is deliberately not prepended
+		// here. Cloudflare already returns STUN (3478 and 53) from the same anycast
+		// network as its TURN relays, so its candidates resolve nearer and pair
+		// better. Mixing in a second provider just adds candidates to gather, which
+		// slows ICE and delays the moment voice actually connects.
+		//
+		// The list it returns is the whole point of using them: alongside 3478 it
+		// offers TURN over 53/udp, 80/tcp and 443/tls — ports that survive
+		// restrictive mobile carriers and corporate firewalls where 3478 is
+		// blocked outright, which is exactly the case STUN alone cannot rescue.
+		return json({ ok: true, iceServers: ice, turn: true });
 	} catch (e) {
+		// Deliberately still ok:true with STUN — voice degrades rather than dies.
+		// But `turn:false` is the signal that a relay-needing pair WILL fail, so
+		// it is logged loudly and returned for the client to surface.
 		console.error('TURN credential mint failed:', e.message);
 		return json({ ok: true, iceServers: STUN_ONLY, turn: false });
 	}

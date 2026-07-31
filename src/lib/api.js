@@ -14,9 +14,16 @@ import { user } from '$lib/stores/auth.js';
 export const WRITE_TIMEOUT_MS = 20000;
 export const POLL_TIMEOUT_MS = 10000;
 
+/**
+ * `onMeta` is optional and exists only for the Stage 0 beacon: it hands back the
+ * server's own X-Dur-Ms so a round trip can be split into server time vs
+ * network. That split is the whole comparison for a platform migration — total
+ * RTT alone can't tell a slow backend from a slow link. Nothing else uses it,
+ * and it can never affect the request.
+ */
 export async function api(
 	path,
-	{ method = 'GET', body, redirectOn401 = true, timeoutMs = WRITE_TIMEOUT_MS } = {}
+	{ method = 'GET', body, redirectOn401 = true, timeoutMs = WRITE_TIMEOUT_MS, onMeta } = {}
 ) {
 	const opts = { method, headers: {} };
 	if (body !== undefined) {
@@ -60,6 +67,16 @@ export async function api(
 		throw err;
 	} finally {
 		clearTimeout(timer);
+	}
+	if (onMeta) {
+		// Before the status checks on purpose — a 500 that took 9s is exactly the
+		// datapoint worth having. Never allowed to affect the outcome.
+		try {
+			const ms = Number(res.headers.get('X-Dur-Ms'));
+			onMeta({ serverMs: Number.isFinite(ms) ? ms : null });
+		} catch {
+			/* instrumentation is never load-bearing */
+		}
 	}
 	if (res.status === 401 && redirectOn401) {
 		// Holding a user means their session expired mid-play → send them to sign

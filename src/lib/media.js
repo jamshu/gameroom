@@ -10,6 +10,26 @@ export const AUDIO_MIMES = new Set(['audio/webm', 'audio/mp4']);
 export const MAX_BASE64 = 1_500_000;
 export const MAX_VOICE_MS = 60_000;
 
+/**
+ * base64 → bytes, without `Buffer`.
+ *
+ * Buffer does not exist on a Workers runtime, and enabling nodejs_compat purely
+ * for two decodes would also make the bundler more likely to resolve OTHER
+ * packages to their Node builds (Ably ships one that pulls `https`/`got`/`ws`).
+ * `atob` is present on every runtime this app targets.
+ *
+ * The whitespace strip is load-bearing, not defensive noise: Buffer.from
+ * silently ignored newlines in a base64 string, and atob throws on them. Odoo
+ * returns binary fields base64-encoded over JSON-RPC and is entitled to wrap
+ * them, so dropping this would turn a working avatar into a 500 at runtime.
+ */
+export function b64ToBytes(b64) {
+	const bin = atob(String(b64 || '').replace(/\s+/g, ''));
+	const out = new Uint8Array(bin.length);
+	for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+	return out;
+}
+
 /** The mime a `kind` is allowed to carry. Pure — shared by client and server. */
 export function mimeAllowed(kind, mime) {
 	if (kind === 'image') return IMAGE_MIMES.has(mime);

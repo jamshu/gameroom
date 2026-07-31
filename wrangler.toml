@@ -1,0 +1,87 @@
+name = "gameroom"
+# This path is written by adapter-cloudflare, then rewritten by
+# scripts/wrap-worker.mjs (run from `npm run build`) to add a `scheduled` handler
+# the adapter's template does not provide. Do NOT point `main` at a hand-written
+# file: the adapter copies its own worker to whatever `main` says and would
+# silently overwrite it every build.
+main = ".svelte-kit/cloudflare/_worker.js"
+compatibility_date = "2026-07-01"
+# Required by SvelteKit itself, not by this app's code: @sveltejs/kit's
+# internal/event.js imports node:async_hooks (AsyncLocalStorage). `wrangler
+# deploy --dry-run` warns that the Worker "may throw errors at runtime" without
+# it. Do not remove it on the assumption that app code is Node-free — it is.
+#
+# The app's OWN Node dependencies were still worth removing rather than shimming:
+# the two Buffer decodes are now atob/Uint8Array (src/lib/media.js b64ToBytes)
+# and web-push is now WebCrypto (src/lib/server/push.js). That keeps the Node
+# surface to one well-understood import instead of a transitive http/stream/ECDH
+# stack, and it is why `ably` still resolves to its WebCrypto build — that
+# resolution happens in the Vite build, which this flag does not affect. Verified
+# by grepping the bundle for `ably-node` / `got` / `ws`; re-check after upgrades.
+compatibility_flags = ["nodejs_compat"]
+
+# Custom domain. MUST stay above the first [table] header — in TOML every key
+# after a header belongs to that table, so putting this lower down silently
+# parses as e.g. `observability.routes` and wrangler ignores it. The domain then
+# never binds and nothing tells you; the deploy still reports success.
+#
+# `deedapp.net` is the only zone on this Cloudflare account, so it is the only
+# hostname usable as a Workers custom domain without adding a zone first
+# (siafadates.com is NOT on this account). With custom_domain = true Cloudflare
+# creates the DNS record and certificate itself — no manual CNAME.
+routes = [
+	{ pattern = "game.deedapp.net", custom_domain = true }
+]
+
+[assets]
+directory = ".svelte-kit/cloudflare"
+binding = "ASSETS"
+# LOAD-BEARING. /room/[id] is never prerendered (ssr=false + handleUnseenRoutes:
+# 'ignore'), so the runtime has to hand back the SPA shell for it. The Amplify
+# adapter did this implicitly. Without this line, every hard refresh or shared
+# link to /room/123 returns 404 — and it 404s silently, because normal in-app
+# navigation works fine and only a direct hit shows it.
+not_found_handling = "single-page-application"
+# EQUALLY LOAD-BEARING, and the pair only works together. Without this, every
+# request reaches the Worker first; SvelteKit then matches /room/[id], finds it
+# was never prerendered (+layout.js sets `prerender = true`, and a dynamic route
+# cannot be), and answers 404 — serving the right HTML under the wrong status.
+# Verified against `wrangler dev`: 404 before this line, 200 after.
+#
+# The `routes` option in svelte.config.js does NOT do this: adapter-cloudflare
+# only emits _routes.json when building for Cloudflare PAGES (index.js:156), so
+# on Workers it is silently ignored.
+#
+# `/_app/env.js` is NOT a file — SvelteKit generates it at request time to carry
+# $env/dynamic/public to the browser, and the boot script `import()`s it BEFORE
+# it calls kit.start(). Leave it out of this list and the asset router answers
+# with the SPA shell (HTML, status 200) instead; the dynamic import then fails to
+# parse as a module, the promise never resolves, start() never runs, and the page
+# renders as a BLANK SCREEN with no console 404 and a 200 in the network tab.
+# Everything else under /_app (immutable/, version.json) is a real static file.
+run_worker_first = ["/api/*", "/_app/env.js"]
+
+# Room reaping used to ride on GET /api/rooms and /api/rooms/mine. That loop is
+# unbounded — one deleteRoom is 4-7 sequential Odoo calls — which on Workers
+# risks the subrequest cap on a request that is merely listing rooms. Its old
+# 60s throttle was per-process and is meaningless across many short-lived
+# isolates anyway, so a real schedule is strictly better than the "no cron
+# needed" trick it replaces.
+[triggers]
+crons = ["*/5 * * * *"]
+
+[observability]
+enabled = true
+
+# NOTE: `routes` lives near the top of this file, above [assets]. It cannot go
+# here — see the comment there.
+
+# Secrets are NOT set here — use `wrangler secret put <NAME>` (or the dashboard).
+# Required: ODOO_URL, ODOO_DB, ODOO_USERNAME, ODOO_API_KEY
+# Optional: ABLY_API_KEY, CF_TURN_KEY_ID, CF_TURN_API_TOKEN,
+#           VAPID_SUBJECT, VAPID_PRIVATE_KEY, VAPID_PUBLIC_KEY,
+#           PUBLIC_VAPID_PUBLIC_KEY, METRICS_SINK
+#
+# PUBLIC_VAPID_PUBLIC_KEY is the awkward one: it is read server-side via
+# $env/dynamic/public AND baked into the prerendered shell at build time, so it
+# must exist BOTH as a secret here and in the CI build environment.

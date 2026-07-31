@@ -200,8 +200,34 @@ export async function writeState(roomId, state, extraVals = {}, { guardVersion =
 	// trying again. `extraVals` writes room columns too, so the rows are stale
 	// either way.
 	roomCache.invalidate(Number(roomId));
-	// push the filtered new state straight to each member — no client poll needed
-	await publishState(roomId, state, roomUids.get(Number(roomId)) || []);
+	// Push the filtered new state straight to each member — no client poll needed.
+	//
+	// `roomUids` is warm by the time any mutation gets here, but only by
+	// coincidence: every auth path runs getMembers() — requireMember directly,
+	// requireMemberCached through the snapshot cache, whose loader is
+	// Promise.all([getRoom, getMembers]) — and the map has no TTL, so a cache HIT
+	// implies a miss already filled it in this process. Nothing enforces that.
+	//
+	// Re-read rather than push to nobody if it ever stops holding. An empty list
+	// makes publishState return early, which is SILENT: no error, no log, and
+	// every other player sits out the 60s push safety net before seeing the move.
+	// One extra Odoo read on a path that should never run beats that failure mode.
+	// The re-read is best-effort like the publish it feeds: it must never turn a
+	// successful write into a failed request. The state is already persisted by
+	// this point, so the worst case is the pre-existing one — clients fall back to
+	// the safety poll.
+	let uids = roomUids.get(Number(roomId));
+	if (!uids?.length) {
+		console.warn(`[realtime] roomUids cold for room ${roomId} — re-reading members before publish`);
+		try {
+			await getMembers(roomId); // repopulates roomUids as a side effect
+			uids = roomUids.get(Number(roomId)) || [];
+		} catch (e) {
+			console.error(`[realtime] member re-read failed for room ${roomId}:`, e?.message);
+			uids = [];
+		}
+	}
+	await publishState(roomId, state, uids);
 	return state;
 }
 
@@ -599,15 +625,28 @@ export async function purgeUserRooms(uid) {
 	if (mem.length) await adminExecute(MEMBER, 'unlink', [mem]);
 }
 
-// Lazy GC: run at most once per 60s per Lambda instance (no cron needed).
-let _lastSweep = 0;
-const SWEEP_THROTTLE_MS = 60000;
-const ABANDON_MIN = 10; // minutes with every member offline → abandoned
+// Minutes with every member offline → abandoned. Coupled to the presence
+// heartbeat: HEARTBEAT_AFTER_MS (45s) and PRESENCE_WINDOW_MS (90s) both have to
+// stay far under this, or a room full of people polling exactly as designed gets
+// deleted out from under them.
+const ABANDON_MIN = 10;
+// Ceiling per cron tick. Each deleteRoom is 4-7 sequential Odoo calls, and a
+// Workers invocation has a subrequest budget — so an unbounded backlog must
+// drain over several ticks rather than blowing one up. At 5-minute ticks this
+// clears 240 rooms/hour, far beyond any plausible accumulation.
+const SWEEP_BATCH = 20;
 
-/** Best-effort deletion of rooms whose every member has been offline > 10min. */
+/**
+ * Best-effort deletion of rooms whose every member has been offline > 10min.
+ *
+ * Runs on a Cron Trigger (see wrangler.toml), NOT on a request. It used to be
+ * lazy GC hung off GET /api/rooms and /api/rooms/mine, throttled to once per 60s
+ * by a module-scope timestamp. That throttle assumed one long-lived process; on
+ * Workers there are many short-lived isolates, so it would have fired far more
+ * often while a user merely listed rooms — each time doing an unbounded serial
+ * delete loop. A schedule is both cheaper and honest about what this is.
+ */
 export async function sweepAbandonedRooms() {
-	if (Date.now() - _lastSweep < SWEEP_THROTTLE_MS) return;
-	_lastSweep = Date.now();
 	try {
 		const cutoff = new Date(Date.now() - ABANDON_MIN * 60000)
 			.toISOString()
@@ -624,11 +663,13 @@ export async function sweepAbandonedRooms() {
 			[['create_date', '<', cutoff]],
 			['id']
 		]);
-		for (const r of rooms) {
-			if (!liveRoomIds.has(r.id)) await deleteRoom(r.id);
-		}
+		const dead = rooms.filter((r) => !liveRoomIds.has(r.id)).slice(0, SWEEP_BATCH);
+		for (const r of dead) await deleteRoom(r.id);
+		if (dead.length) console.log(`sweepAbandonedRooms: deleted ${dead.length} room(s)`);
+		return dead.length;
 	} catch (e) {
 		console.error('sweepAbandonedRooms failed:', e.message);
+		return 0;
 	}
 }
 

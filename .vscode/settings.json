@@ -1,0 +1,18 @@
+{
+  // Build output only. Watching it does nothing useful and is one of the things
+  // that holds a Windows file handle on .svelte-kit/cloudflare at the exact
+  // moment adapter-cloudflare tries to delete it — the EBUSY that fails a build.
+  // scripts/clean-cf.mjs already retries around this; these exclusions remove a
+  // cause rather than tolerating it, and they speed up the editor besides.
+  "files.watcherExclude": {
+    "**/.svelte-kit/**": true,
+    "**/.wrangler/**": true,
+    "**/node_modules/**": true,
+    "**/build/**": true
+  },
+  "search.exclude": {
+    "**/.svelte-kit": true,
+    "**/.wrangler": true,
+    "**/build": true
+  }
+}

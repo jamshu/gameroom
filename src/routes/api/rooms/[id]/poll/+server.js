@@ -26,7 +26,7 @@ const HEARTBEAT_AFTER_MS = 45000;
  * members + presence, room status, and the per-session game view when the
  * state version advanced past the client's `gv`.
  */
-export async function GET({ params, url, cookies }) {
+export async function GET({ params, url, cookies, platform }) {
 	try {
 		const { uid, room, member, members } = await requireMemberCached(cookies, params.id);
 		const since = Number(url.searchParams.get('since')) || 0;
@@ -50,10 +50,22 @@ export async function GET({ params, url, cookies }) {
 				],
 				['x_studio_type', 'x_studio_payload', 'x_studio_sender_uid']
 			], { order: 'id asc', limit: 200 }),
-			// awaited, never fire-and-forget: Amplify freezes the container once the
-			// response buffers, and a dropped heartbeat feeds sweepAbandonedRooms
+			// Deferred, never dropped. Under Amplify this had to be awaited because
+			// the container froze once the response buffered; Workers' waitUntil
+			// keeps the invocation alive instead, so the poll no longer waits on an
+			// Odoo write its own response does not depend on (line below already
+			// updates the local copy). DROPPING it is not an option — a lost
+			// heartbeat makes the room look abandoned and the cron sweep deletes it.
 			needHeartbeat
-				? adminExecute(MEMBER, 'write', [[member.id], { x_studio_last_seen: odooNow() }])
+				? (() => {
+						const w = adminExecute(MEMBER, 'write', [[member.id], { x_studio_last_seen: odooNow() }]);
+						const ctx = platform?.ctx ?? platform?.context;
+						if (ctx?.waitUntil) {
+							ctx.waitUntil(w.catch((e) => console.error('heartbeat failed:', e?.message)));
+							return Promise.resolve();
+						}
+						return w;
+					})()
 				: Promise.resolve()
 		]);
 		if (needHeartbeat) member.x_studio_last_seen = odooNow();

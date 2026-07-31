@@ -3,12 +3,31 @@ import { adminExecute } from '$lib/server/odoo.js';
 import { requireUser } from '$lib/server/auth.js';
 import { sendToUser } from '$lib/server/push.js';
 import { gameById } from '$lib/games.js';
-import { ROOM, MEMBER, GAME_TYPES, browseDomain, sweepAbandonedRooms, jsonError } from '$lib/server/room.js';
+import { ROOM, MEMBER, GAME_TYPES, browseDomain, jsonError } from '$lib/server/room.js';
 
 export const prerender = false;
 
+/**
+ * Run work after the response has been sent, where the runtime supports it.
+ *
+ * Only safe for work the response does not depend on. `platform.context` is
+ * absent under `vite dev` and in the Playwright suite, so the fallback awaits —
+ * which is the old behaviour, and keeps the tests deterministic.
+ */
+function background(platform, promise) {
+	// `ctx` is the current name; `context` is the same object kept for back-compat
+	// (see adapter-cloudflare files/worker.js — it sets both). Reading both means
+	// this keeps working whichever one the adapter drops first.
+	const ctx = platform?.ctx ?? platform?.context;
+	if (ctx?.waitUntil) {
+		ctx.waitUntil(promise);
+		return Promise.resolve();
+	}
+	return promise;
+}
+
 /** Create a room; creator becomes host + accepted player. */
-export async function POST({ request, cookies }) {
+export async function POST({ request, cookies, platform }) {
 	try {
 		const { uid } = await requireUser(cookies);
 		const { name, gameType, maxPlayers, drawsTotal, visibility, allowedUids } = await request.json();
@@ -48,9 +67,14 @@ export async function POST({ request, cookies }) {
 		}]);
 
 		// Notify: private → the invited users; public → the host's followers.
-		// Best-effort — a push failure must never fail room creation, and the await
-		// matters because Amplify's Lambda freezes once the response is returned.
-		try {
+		//
+		// Best-effort, and now genuinely BACKGROUND. Under Amplify this had to be
+		// awaited because the Lambda froze once the response was returned, so the
+		// creator sat through a fan-out that could be unbounded in follower count.
+		// Workers gives a real primitive for this: waitUntil keeps the invocation
+		// alive after the response has been sent. The fallback path still awaits,
+		// so `vite dev` and the tests behave exactly as before.
+		const notify = async () => {
 			let targets;
 			if (priv) {
 				targets = guests.filter((g) => g !== uid);
@@ -70,9 +94,11 @@ export async function POST({ request, cookies }) {
 				};
 				await Promise.allSettled(targets.map((t) => sendToUser(t, payload)));
 			}
-		} catch (e) {
-			console.error('[rooms] notify failed:', e?.message);
-		}
+		};
+		await background(
+			platform,
+			notify().catch((e) => console.error('[rooms] notify failed:', e?.message))
+		);
 
 		return json({ ok: true, roomId });
 	} catch (e) {
@@ -94,7 +120,7 @@ export async function POST({ request, cookies }) {
 export async function GET({ url, cookies }) {
 	try {
 		const { uid } = await requireUser(cookies);
-		await sweepAbandonedRooms();
+		// Room reaping moved to the Cron Trigger (see wrangler.toml).
 		const domain = browseDomain({
 			uid,
 			q: url.searchParams.get('q')?.trim() || '',

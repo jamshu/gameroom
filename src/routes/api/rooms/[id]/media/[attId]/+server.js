@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import { requireMemberCached, readRoomMedia, jsonError } from '$lib/server/room.js';
-import { IMAGE_MIMES, AUDIO_MIMES, parseRange } from '$lib/media.js';
+import { IMAGE_MIMES, AUDIO_MIMES, parseRange, b64ToBytes } from '$lib/media.js';
 
 export const prerender = false;
 
@@ -36,7 +36,9 @@ export async function GET({ params, cookies, request }) {
 			return json({ ok: false, error: 'Not found' }, { status: 404 });
 		}
 
-		const buf = Buffer.from(att.raw, 'base64');
+		// Uint8Array, not Buffer — see b64ToBytes. `.subarray()`, `.length` and
+		// `new Response(bytes)` all behave identically, so nothing below changes.
+		const buf = b64ToBytes(att.raw);
 		const headers = {
 			'Content-Type': mime,
 			'X-Content-Type-Options': 'nosniff',

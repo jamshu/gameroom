@@ -10,6 +10,10 @@
 import { writable, get } from 'svelte/store';
 import { api, POLL_TIMEOUT_MS } from '$lib/api.js';
 import { outranksAtSameVersion } from '$lib/games.js';
+import {
+	startMetrics, stopMetrics, recordWriteRtt, recordPollRtt,
+	recordStateArrival, recordPollError, recordBanner, recordPushConnected
+} from '$lib/metrics.js';
 
 // Budget, not preference: Odoo Online rate-limits per IP at roughly 1 req/s, and
 // every poll costs 3 Odoo calls shared across the whole room. A 4-player room at
@@ -97,6 +101,7 @@ export function createRoomStore(roomId) {
 	// Rosters carry a server timestamp for the same reason: two pushes can arrive
 	// out of order and there is no version field to compare.
 	let lastRosterTs = 0;
+	let unsubBanner = null; // store subscription feeding the Stage 0 banner timer
 
 	function onSignal(fn) {
 		signalHandler = fn;
@@ -163,7 +168,7 @@ export function createRoomStore(roomId) {
 	 * id; `state` merges version-gated; `room`/`members` update only when present
 	 * (the push carries neither — presence still rides the poll).
 	 */
-	function ingest({ events = [], state, room, members }) {
+	function ingest({ events = [], state, room, members }, via = 'poll') {
 		// `cursor` is deliberately NOT advanced here — only poll() moves it, from
 		// the watermark the SERVER computed.
 		//
@@ -204,7 +209,14 @@ export function createRoomStore(roomId) {
 			const next = { ...s, chat: trimChat(chat), events: evs.slice(-50), error: null };
 			if (room) next.room = room;
 			if (members) next.members = members;
-			return mergeState(next, state);
+			const merged = mergeState(next, state);
+			// Stage 0: which transport actually delivered a version bump. A bump
+			// discovered by POLL means the push didn't land and somebody sat out a
+			// safety interval — the watcher-side lag, measured without needing the
+			// two machines' clocks to agree. Only counts real advances, so the
+			// contended phase's equal-version resends don't inflate it.
+			if (state && merged.gv > s.gv) recordStateArrival(via);
+			return merged;
 		});
 	}
 
@@ -228,9 +240,13 @@ export function createRoomStore(roomId) {
 			// so without a ceiling one stuck poll silently swallows every later
 			// schedule(0) — including the reconcile a failed move fires — until the
 			// browser gives up on its own. A cut-short poll costs nothing; it re-runs.
+			const t0 = performance.now();
+			let serverMs = null;
 			const d = await api(`/api/rooms/${roomId}/poll?since=${cursor}&gv=${gv}`, {
-				timeoutMs: POLL_TIMEOUT_MS
+				timeoutMs: POLL_TIMEOUT_MS,
+				onMeta: (m) => { serverMs = m.serverMs; }
 			});
+			recordPollRtt(performance.now() - t0, serverMs);
 			const overtaken = roomEpoch !== epochAtStart;
 			cursor = d.cursor || cursor;
 			// Strictly: a real event row, or a state version that actually advanced.
@@ -249,7 +265,7 @@ export function createRoomStore(roomId) {
 				state: d.state,
 				room: overtaken ? undefined : d.room,
 				members: overtaken ? undefined : d.members
-			});
+			}, 'poll');
 			errorStreak = 0;
 		} catch (e) {
 			if (TERMINAL_CODES.has(e?.code)) {
@@ -261,6 +277,7 @@ export function createRoomStore(roomId) {
 				store.update((s) => ({ ...s, error: e.message, closed: true }));
 			} else {
 				errorStreak++;
+				recordPollError();
 				// A poll is a READ. api()'s wording — "that may not have gone
 				// through" — is about a write whose effect is unknown, and means
 				// nothing here; a poll that failed simply didn't read anything.
@@ -398,7 +415,7 @@ export function createRoomStore(roomId) {
 			channel = ably.channels.get(`room:${roomId}`);
 			channel.subscribe('event', (msg) => {
 				markActive();
-				ingest({ events: [msg.data] });
+				ingest({ events: [msg.data] }, 'push');
 				// A `pick` renders nothing by itself — it is only evidence that the
 				// state blob moved. Without this the client knew something had
 				// changed and still waited out the 60s safety net.
@@ -416,12 +433,13 @@ export function createRoomStore(roomId) {
 				lastRosterTs = d.ts;
 				roomEpoch++; // a poll already in flight is now stale — see poll()
 				markActive();
-				ingest({ room: d.room, members: d.members });
+				ingest({ room: d.room, members: d.members }, 'push');
 			});
 
 			let wasConnected = false;
 			ably.connection.on((sc) => {
 				pushConnected = ably?.connection.state === 'connected';
+				recordPushConnected(pushConnected);
 				console.log('[realtime]', ably?.connection.state, pushConnected ? '(push ON)' : '');
 				if (sc?.reason) console.warn('[realtime] reason:', sc.reason.message);
 				if (pushConnected && !userChannel) {
@@ -431,11 +449,11 @@ export function createRoomStore(roomId) {
 					userChannel = ably.channels.get(`room:${roomId}:u:${uid}`);
 					userChannel.subscribe('state', (msg) => {
 						markActive();
-						ingest({ state: msg.data });
+						ingest({ state: msg.data }, 'push');
 					});
 					userChannel.subscribe('event', (msg) => {
 						markActive();
-						ingest({ events: [msg.data] });
+						ingest({ events: [msg.data] }, 'push');
 					});
 				}
 				// Catch-up on EVERY transition into connected, not just the first.
@@ -463,6 +481,12 @@ export function createRoomStore(roomId) {
 
 	function open() {
 		stopped = false;
+		startMetrics(roomId);
+		// Measure the banner from the store rather than from the paths that set it.
+		// `error` is cleared inside ingest's update, and a successful-but-EMPTY poll
+		// early-returns before reaching it — so transition-tracking at the call
+		// sites would drift from what the player is actually looking at.
+		unsubBanner = store.subscribe((s) => recordBanner(!!s.error));
 		document.addEventListener('visibilitychange', onVisibility);
 		connectRealtime();
 		poll();
@@ -470,6 +494,9 @@ export function createRoomStore(roomId) {
 
 	function close() {
 		stopped = true;
+		unsubBanner?.();
+		unsubBanner = null;
+		stopMetrics(); // flushes what this session accrued before the refs go
 		clearTimeout(timer);
 		clearTimeout(reconcileTimer);
 		reconcileTimer = null;
@@ -573,8 +600,13 @@ export function createRoomStore(roomId) {
 	 */
 	async function post(path, body) {
 		let d;
+		const t0 = performance.now();
 		try {
 			d = await api(`/api/rooms/${roomId}/${path}`, { method: 'POST', body });
+			// The acting player's own round trip: Lambda + Odoo + the write, which
+			// is precisely the term a DO migration removes. Recorded only on
+			// success — a timed-out write measures the timeout, not the server.
+			recordWriteRtt(path, performance.now() - t0);
 		} catch (e) {
 			// The response never arrived, so we can't know whether the server applied
 			// this. Resending is NOT safe: writes bump state.v and the poll is served
@@ -595,7 +627,13 @@ export function createRoomStore(roomId) {
 		}
 		markActive(); // we just did something; others are likely to respond
 		if (d?.room || d?.members) roomEpoch++; // ours is newer than any poll in flight
-		if (d?.state || d?.room || d?.members) ingest({ state: d.state, room: d.room, members: d.members });
+		// 'echo', NOT the 'poll' default: this is the actor's own write coming back
+		// in its POST response. Counting it as poll would put ~half of a 2-player
+		// game's version bumps in the "push didn't land" bucket and make that ratio
+		// meaningless — the actor's latency is already measured by writeRtt.
+		if (d?.state || d?.room || d?.members) {
+			ingest({ state: d.state, room: d.room, members: d.members }, 'echo');
+		}
 		else if (!NO_ECHO_POLL.has(path)) wake();
 		return d;
 	}

@@ -31,7 +31,11 @@ export async function load(url, context, next) {
 					globalThis.__odooCalls.push({ model, method, args, kw });
 					if (globalThis.__odooResults.length) return globalThis.__odooResults.shift();
 					// create returns an id; everything else the helpers ignore
-					return method === 'create' ? 1 : true;
+					if (method === 'create') return 1;
+						// the search family always returns a LIST in Odoo, and callers map
+						// over it (getMembers) — model that rather than a bare truthy
+						if (method === 'search' || method === 'search_read') return [];
+						return true;
 				}
 				export function assertConfigured() {}
 				// auth.js imports these at eval time; the check never calls them

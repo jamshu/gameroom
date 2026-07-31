@@ -154,16 +154,49 @@ function retryableAfter(e, method, attempt) {
 	return e?.retryAfterMs ?? Math.round(250 * 2 ** attempt + Math.random() * 150);
 }
 
+/* ---- instrumentation (Stage 0) ----------------------------------------------
+   Deliberately PROCESS-GLOBAL and therefore approximate under concurrency: the
+   question these answer is "how often is Odoo throttling the app?", which needs
+   a rate, not per-request attribution. Threading a per-request counter would
+   need AsyncLocalStorage, which we don't want to depend on. One JSON line per
+   notable event so logs can be aggregated without a metrics backend. */
+const odooStats = { calls: 0, retries: 0, throttled: 0, failed: 0 };
+
+/** Cumulative counters for this process/isolate. Approximate — see above. */
+export function odooStatsSnapshot() {
+	return { ...odooStats };
+}
+
+function logOdoo(event, fields) {
+	try {
+		console.log(JSON.stringify({ t: 'odoo', event, ...fields, ...odooStats }));
+	} catch {
+		/* instrumentation must never break a request */
+	}
+}
+
 export async function adminExecute(model, method, args = [], kwargs = {}) {
 	const uid = await adminLogin();
+	odooStats.calls++;
 	for (let attempt = 0; ; attempt++) {
 		try {
 			return await service('object', 'execute_kw', [
 				env.ODOO_DB, uid, env.ODOO_API_KEY, model, method, args, kwargs
 			]);
 		} catch (e) {
+			if (e?.httpStatus === 429) odooStats.throttled++;
 			const wait = retryableAfter(e, method, attempt);
-			if (wait == null) throw e;
+			if (wait == null) {
+				odooStats.failed++;
+				logOdoo('give_up', {
+					model, method, attempt,
+					status: e?.httpStatus ?? null,
+					msg: String(e?.message || '').slice(0, 120)
+				});
+				throw e;
+			}
+			odooStats.retries++;
+			logOdoo('retry', { model, method, attempt, wait, status: e?.httpStatus ?? null });
 			await new Promise((r) => setTimeout(r, wait));
 		}
 	}
