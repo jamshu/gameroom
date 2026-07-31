@@ -11,6 +11,7 @@
 		"deploy": "npm run build && wrangler deploy",
 		"cf:dev": "npm run build && wrangler dev",
 		"cf:tail": "wrangler tail --format pretty",
+		"probe:ws": "node scripts/ws-probe.mjs",
 		"setup:odoo": "node --env-file=.env scripts/setup-odoo.js",
 		"check:api": "node src/lib/api-check.js",
 		"check:media": "node src/lib/media-check.js",
@@ -38,7 +39,8 @@
 		"vite-plugin-pwa": "^1.3.0",
 		"workbox-core": "^7.4.1",
 		"workbox-precaching": "^7.4.1",
-		"wrangler": "^4.116.0"
+		"wrangler": "^4.116.0",
+		"ws": "^8.21.1"
 	},
 	"dependencies": {
 		"@fontsource-variable/fraunces": "^5.2.9",

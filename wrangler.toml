@@ -73,6 +73,31 @@ crons = ["*/5 * * * *"]
 [observability]
 enabled = true
 
+# One Durable Object per room: authoritative game state plus every player's
+# WebSocket, co-located. `main` above points at the generated _worker.js, which
+# scripts/wrap-worker.mjs gives a named `RoomDO` export — a DO class has to be
+# exported from the entry, and that entry is generated.
+[[durable_objects.bindings]]
+name = "ROOM"
+class_name = "RoomDO"
+
+# new_sqlite_classes, NOT new_classes — the SQLite backend is what provides
+# ctx.storage.sql, and this is the one line in this file that cannot be cleanly
+# undone: a class migration is not reversible once deployed.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RoomDO"]
+
+[vars]
+# Honoured ONLY at a room's first instantiation and never changeable afterwards.
+# Middle East, chosen for the player base; wrong choice costs ~150-250ms on every
+# message forever. Never derive this from request.cf — a room created by a
+# travelling host would be pinned to the wrong continent permanently.
+DO_LOCATION_HINT = "me"
+# Rollout flag: off | all | "1,7,42" | "pct:20". Deterministic per room, so a
+# room never flips mid-game (see src/lib/shared/doflag.js). `off` until M2.3.
+DO_ROOMS = "off"
+
 # NOTE: `routes` lives near the top of this file, above [assets]. It cannot go
 # here — see the comment there.
 
