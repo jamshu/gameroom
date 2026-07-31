@@ -2,6 +2,7 @@
 // session cookie (requireUser); all Odoo I/O for room data uses the admin key —
 // players' own Odoo access is read-only, and the secret-bearing state field is
 // admin-group-only, so the proxy is the single write path by construction.
+import { httpError } from '../shared/errors.js';
 import { adminExecute } from './odoo.js';
 import { requireUser } from './auth.js';
 import { createSnapshotCache } from './roomcache.js';
@@ -28,17 +29,14 @@ export const EVENT = 'x_room_event';
 // below and the cascade delete in deleteRoom possible.
 export const ATTACH = 'ir.attachment';
 
-/**
- * `code` is a stable machine-readable reason the client can branch on. A bare
- * 403 tells a client nothing — it can't distinguish "the host removed you"
- * (stop polling, go home) from a transient failure (keep trying).
- */
-export function httpError(status, message, code) {
-	const e = new Error(message);
-	e.status = status;
-	if (code) e.code = code;
-	return e;
-}
+// Moved to ../shared/errors.js so gamelogic.js can reach it without dragging in
+// odoo.js → $env (it has to run inside the Durable Object too). Re-exported here
+// because ~25 routes import it from this module and none of them need to change.
+//
+// IMPORTED and then exported, never `export … from` — that form creates no local
+// binding, and this module calls httpError itself a dozen times below. Same trap
+// the note at the top of this file already records for seatedPlayerIds.
+export { httpError };
 
 export async function getRoom(roomId) {
 	const [room] = await adminExecute(ROOM, 'read', [[Number(roomId)]], {

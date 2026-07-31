@@ -1,8 +1,7 @@
 // Runnable check for the envelope claim resolver — the race-sensitive path.
 // Run: node src/lib/server/thief-claims-check.js
 import assert from 'node:assert';
-import { register } from 'node:module';
-register('./thief-env-stub-loader.mjs', import.meta.url);
+// No env stub needed any more — see the note in ludo-check.js.
 const { thiefDeal, resolveClaims, filterPickRows } = await import('./gamelogic.js');
 
 const EPOCH = 'game-A';

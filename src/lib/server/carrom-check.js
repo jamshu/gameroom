@@ -11,7 +11,6 @@
 //   * a room that was mid-match when the red coin was removed survives its next
 //     shot.
 import assert from 'node:assert';
-import { register } from 'node:module';
 import {
 	T_MIN,
 	T_MAX,
@@ -23,7 +22,7 @@ import {
 	toBoard
 } from '../games/carrom-seats.js';
 import { simulate, buildBodies } from '../games/carroms-sim.js';
-register('./thief-env-stub-loader.mjs', import.meta.url);
+// No env stub needed any more — see the note in ludo-check.js.
 const { initGame, carromsApplyShot, initialCarromPieces } = await import('./gamelogic.js');
 
 const A = 100, B = 101;

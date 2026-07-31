@@ -1,8 +1,10 @@
 // Runnable check for the ludo rules — dice/move/capture/win edge cases.
 // Run: node src/lib/server/ludo-check.js
 import assert from 'node:assert';
-import { register } from 'node:module';
-register('./thief-env-stub-loader.mjs', import.meta.url);
+// No env stub needed any more: gamelogic.js moved to ../shared/ and takes
+// httpError from ../shared/errors.js, so the old
+// gamelogic → room.js → odoo.js → $env chain is gone. This file passing
+// unmodified IS the proof the extraction is complete.
 const { initGame, ludoRoll, ludoMove, ludoLegalMoves, ludoScores } = await import('./gamelogic.js');
 
 const A = 100, B = 101; // A = red (offset 0), B = yellow (offset 26) for a 2-player game

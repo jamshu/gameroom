@@ -23,7 +23,9 @@
 		"check:cache": "node src/lib/server/snapshot-cache-check.js",
 		"check:realtime": "node src/lib/server/realtime-check.js",
 		"check:push": "node src/lib/server/push-check.js",
-		"check:all": "npm run check:api && npm run check:media && npm run check:sim && npm run check:carrom && npm run check:games && npm run check:room && npm run check:thief && npm run check:ludo && npm run check:cache && npm run check:realtime && npm run check:push",
+		"check:noenv": "node scripts/check-noenv.mjs",
+		"check:doflag": "node src/lib/shared/doflag-check.js",
+		"check:all": "npm run check:api && npm run check:media && npm run check:sim && npm run check:carrom && npm run check:games && npm run check:room && npm run check:thief && npm run check:ludo && npm run check:cache && npm run check:realtime && npm run check:push && npm run check:noenv && npm run check:doflag",
 		"test:e2e": "playwright test"
 	},
 	"devDependencies": {
