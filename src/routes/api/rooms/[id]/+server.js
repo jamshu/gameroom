@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit';
 import { requireUser } from '$lib/server/auth.js';
 import { getRoom, getMembers, publicRoom, publicMembers, isPrivate, allowedUids, jsonError, httpError } from '$lib/server/room.js';
+import { isDoRoom } from '$lib/server/doflag.js';
 
 export const prerender = false;
 
@@ -30,7 +31,22 @@ export async function GET({ params, cookies }) {
 			room: publicRoom(room),
 			members: publicMembers(members),
 			me: mine ? { status: mine.x_studio_status, role: mine.x_studio_role } : null,
-			isHost
+			isHost,
+			// Whether this room is served by a Durable Object. The client opens a
+			// socket only when it is true, which keeps ONE flag source feeding both
+			// sides and stops them disagreeing about which transport is live.
+			//
+			// It also means every existing Playwright spec — none of which sets `do`
+			// in its room-detail mock — stays on the HTTP path untouched. That
+			// matters beyond convenience: playwright.config runs `vite dev`, whose
+			// HMR-only upgrade handling would meet a real ws request in undefined
+			// ways (a hang would time out the whole suite).
+			//
+			// Leaks "this room is DO-backed" to any authenticated viewer, since this
+			// route uses requireUser rather than requireMember. That is fine — it is
+			// a routing hint, not a capability; the real gate is requireMemberCached
+			// inside ws-auth.
+			do: isDoRoom(params.id)
 		});
 	} catch (e) {
 		const { body, status } = jsonError(e);

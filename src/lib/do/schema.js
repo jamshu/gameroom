@@ -74,16 +74,40 @@ export function seedSequence(sql, minSeq) {
 
 /* ---- event log ------------------------------------------------------------ */
 
-/** Append one event. Returns its seq — which is also the new watermark. */
-export function appendEvent(sql, { type, sender = 0, target = null, payload = {} }) {
+/**
+ * Append one event. Returns its seq — which is also the new watermark.
+ *
+ * `seq` may be supplied, and during the transition it always is. While BOTH
+ * transports are live the HTTP poll still returns Odoo row ids, so if the DO
+ * minted its own ids from 1 the two streams would collide in a store that keys
+ * chat by event id — the duplicate-key crash, not a merge glitch. Passing Odoo's
+ * id through keeps one id space until hydration seeds the sequence above it.
+ */
+export function appendEvent(sql, { seq = null, type, sender = 0, target = null, payload = {} }) {
+	const t = String(type);
+	const s = Number(sender) || 0;
+	const tgt = target == null ? null : Number(target);
+	const p = JSON.stringify(payload ?? {});
+	const now = Date.now();
+
+	if (seq != null && Number.isFinite(Number(seq))) {
+		const explicit = Number(seq);
+		// INSERT OR REPLACE: a redelivered push must not create a second row for the
+		// same event. The id is Odoo's primary key, so it is already unique.
+		sql.exec(
+			'INSERT OR REPLACE INTO events (seq, type, sender, target, payload, ts) VALUES (?, ?, ?, ?, ?, ?)',
+			explicit, t, s, tgt, p, now
+		);
+		// Keep AUTOINCREMENT above anything inserted explicitly, so a later
+		// DO-minted id can never land on top of one of these.
+		seedSequence(sql, explicit);
+		return explicit;
+	}
+
 	const row = [
 		...sql.exec(
 			'INSERT INTO events (type, sender, target, payload, ts) VALUES (?, ?, ?, ?, ?) RETURNING seq',
-			type,
-			Number(sender) || 0,
-			target == null ? null : Number(target),
-			JSON.stringify(payload ?? {}),
-			Date.now()
+			t, s, tgt, p, now
 		)
 	][0];
 	return row.seq;

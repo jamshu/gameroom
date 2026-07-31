@@ -58,6 +58,18 @@ export class RoomDO {
 			});
 		}
 
+		// Server-side ops, applied by the Worker through the ROOM binding. Same
+		// trust boundary as the headers above: unreachable except via the binding.
+		if (req.method === 'POST' && url.pathname.endsWith('/apply')) {
+			let op;
+			try {
+				op = await req.json();
+			} catch {
+				return new Response('bad op', { status: 400 });
+			}
+			return Response.json(this.apply(op));
+		}
+
 		if (req.headers.get('upgrade')?.toLowerCase() !== 'websocket') {
 			return new Response('expected websocket', { status: 426 });
 		}
@@ -201,9 +213,58 @@ export class RoomDO {
 
 	/* ---- ops (applied by the Worker through the ROOM binding) -------------- */
 
+	/**
+	 * Dispatch one server-side op. Synchronous on purpose: every branch is SQL
+	 * plus a fan-out, and keeping it await-free is half of the upto invariant —
+	 * an await between the insert and the last send() would let another append
+	 * interleave and hand a socket a watermark covering an event it never got.
+	 */
+	apply(op) {
+		if (kvGet(this.sql, 'evacuated')) return { ok: false, error: 'evacuated' };
+		switch (op?.op) {
+			case 'state':
+				this.applyState(op.state);
+				return { ok: true, upto: headSeq(this.sql) };
+			case 'event':
+				return { ok: true, seq: this.applyEvent(op.event, op.targetUid ?? null) };
+			case 'roster':
+				this.applyRoster(op.room, op.members);
+				return { ok: true };
+			case 'aim':
+				// Ephemeral: no seq, no storage, no ack. Echoes to everyone but the
+				// shooter, who is already rendering their own drag locally.
+				this.broadcast(aimFrame(op.data), (u) => u !== Number(op.data?.uid));
+				return { ok: true };
+			case 'kick':
+				this.kick(op.uid);
+				return { ok: true };
+			case 'destroy':
+				this.destroy();
+				return { ok: true };
+			default:
+				return { ok: false, error: `unknown op ${op?.op}` };
+		}
+	}
+
+	/** Wipe everything and stop. Used when the room is deleted upstream. */
+	destroy() {
+		for (const ws of this.ctx.getWebSockets()) {
+			try {
+				ws.close(CLOSE.KICKED, 'room deleted');
+			} catch {
+				/* ignore */
+			}
+		}
+		this.ctx.storage.deleteAll();
+	}
+
 	/** Append an event and push it, honouring the target filter. */
 	applyEvent(event, targetUid = null) {
 		const seq = appendEvent(this.sql, {
+			// Odoo already assigned this id (appendEvent in server/room.js creates the
+			// row first), so carry it rather than minting a competing one — see the
+			// note in schema.js appendEvent about the two id spaces.
+			seq: event.id ?? null,
 			type: event.type,
 			sender: event.senderUid,
 			target: targetUid,

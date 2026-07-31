@@ -102,6 +102,7 @@ export function createRoomStore(roomId) {
 	// out of order and there is no version field to compare.
 	let lastRosterTs = 0;
 	let unsubBanner = null; // store subscription feeding the Stage 0 banner timer
+	let usingSocket = false; // DO socket vs the Ably path — decided by open()
 
 	function onSignal(fn) {
 		signalHandler = fn;
@@ -168,24 +169,20 @@ export function createRoomStore(roomId) {
 	 * id; `state` merges version-gated; `room`/`members` update only when present
 	 * (the push carries neither — presence still rides the poll).
 	 */
-	function ingest({ events = [], state, room, members }, via = 'poll') {
-		// `cursor` is deliberately NOT advanced here — only poll() moves it, from
-		// the watermark the SERVER computed.
+	function ingest({ events = [], state, room, members, upto }, via = 'poll') {
+		// ONE rule for advancing the cursor, and it is always a watermark the SERVER
+		// computed: "I have filtered and delivered everything at or below this that
+		// you are entitled to". The poll passes its `d.cursor`; the socket passes
+		// the DO's `upto`.
 		//
-		// It used to advance from any event, pushed ones included. But public
-		// events arrive on `room:{id}` and targeted ones on `room:{id}:u:{uid}`,
-		// two Ably channels with no ordering guarantee between them, while both
-		// share this one cursor. A private `signal` with id 200 delivered ahead of
-		// (or instead of) a public `chat` with id 199 pushed the cursor to 200, and
-		// the next `?since=200` then skipped 199 permanently — a chat message or a
-		// system notice silently lost, with the reconnect catch-up unable to help
-		// because it asks from the highest id ever PUSHED at us rather than the
-		// highest we actually have.
-		//
-		// The cost is that each poll refetches whatever the push already delivered
-		// since the last one. That is bounded by the poll interval and the server's
-		// 200-row limit, and appliedEventIds dedupes it — cheap next to losing a
-		// message.
+		// It must never be derived from the ids we happen to have seen. Targeted
+		// events (WebRTC signals) are filtered per recipient, so every client's view
+		// of the sequence has holes BY DESIGN and cannot tell "filtered out" from
+		// "not yet sent". Advancing from a delivered id is what silently lost a
+		// chat message under the old two-channel Ably split — the cursor jumped to a
+		// private signal's id 200 and `?since=200` skipped the public chat at 199,
+		// permanently, with the reconnect catch-up unable to help.
+		if (upto > cursor) cursor = upto;
 		const fresh = events.filter((ev) => ev && !appliedEventIds.has(ev.id));
 		if (!fresh.length && !state && !room && !members) return;
 		store.update((s) => {
@@ -248,7 +245,9 @@ export function createRoomStore(roomId) {
 			});
 			recordPollRtt(performance.now() - t0, serverMs);
 			const overtaken = roomEpoch !== epochAtStart;
-			cursor = d.cursor || cursor;
+			// The cursor now advances in exactly one place — see ingest(). The poll's
+			// own watermark is handed over as `upto` rather than assigned here, so
+			// both transports go through the same rule.
 			// Strictly: a real event row, or a state version that actually advanced.
 			// NEVER diff members/room — `online` flips purely with elapsed time, so
 			// that would pin every client at ACTIVE_MS forever and silently double
@@ -264,7 +263,8 @@ export function createRoomStore(roomId) {
 				events: d.events,
 				state: d.state,
 				room: overtaken ? undefined : d.room,
-				members: overtaken ? undefined : d.members
+				members: overtaken ? undefined : d.members,
+				upto: d.cursor
 			}, 'poll');
 			errorStreak = 0;
 		} catch (e) {
@@ -387,6 +387,14 @@ export function createRoomStore(roomId) {
 	function onVisibility() {
 		if (!document.hidden) {
 			markActive(); // user is back and looking — be responsive for a bit
+			// iOS tears the WebSocket down whenever the page backgrounds or the
+			// screen locks. That is the NORMAL path there, not an edge case, so a
+			// returning user must reconnect immediately rather than wait out the
+			// backoff — the same reasoning as the schedule(0)-not-wake() note below.
+			if (usingSocket && !sock && !sockDead) {
+				sockBackoff = SOCK_BACKOFF_MIN;
+				scheduleReconnect(true);
+			}
 			wake();
 		}
 	}
@@ -398,6 +406,156 @@ export function createRoomStore(roomId) {
 	   endpoint 501s) or anything throws, we never init Ably and the tuned
 	   polling tiers carry the room as before. The preflight fetch avoids Ably's
 	   retry loop (which would re-hit the token endpoint) when it's off. */
+	/* ---- Durable Object socket -------------------------------------------
+	   One ordered stream per room, terminated by the room's DO. Chosen over the
+	   Ably path below by the `do` flag on the room-detail response, so exactly
+	   one source decides the transport and the two can never disagree.
+
+	   `pushConnected` deliberately keeps its old name and meaning, so cadence()
+	   is untouched: the poll still backs off to PUSH_SAFETY_MS while a socket is
+	   up, and still falls through to the tuned tiers when it is not. */
+	const SOCK_BACKOFF_MIN = 500;
+	const SOCK_BACKOFF_MAX = 15000;
+	const SOCK_PING_MS = 25000;
+	const SOCK_PONG_GRACE_MS = 10000;
+
+	let sock = null;
+	let sockBackoff = SOCK_BACKOFF_MIN;
+	let sockTimer = null;
+	let pingTimer = null;
+	let pongTimer = null;
+	let sockDead = false; // terminal — stop reconnecting (kicked, or room gone)
+
+	function clearSockTimers() {
+		clearTimeout(sockTimer); sockTimer = null;
+		clearInterval(pingTimer); pingTimer = null;
+		clearTimeout(pongTimer); pongTimer = null;
+	}
+
+	function scheduleReconnect(immediate = false) {
+		if (stopped || sockDead || sockTimer) return;
+		// Full jitter, not just exponential: a room-wide disconnect would otherwise
+		// bring every client back in lockstep and hammer the same object.
+		const wait = immediate ? 0 : Math.random() * sockBackoff;
+		sockBackoff = Math.min(sockBackoff * 2, SOCK_BACKOFF_MAX);
+		sockTimer = setTimeout(() => { sockTimer = null; connectSocket(); }, wait);
+	}
+
+	function dropSocket() {
+		clearSockTimers();
+		if (pushConnected) recordPushConnected(false);
+		pushConnected = false;
+		try { sock?.close(); } catch { /* ignore */ }
+		sock = null;
+	}
+
+	function connectSocket() {
+		if (stopped || sockDead || sock) return;
+		let ws;
+		try {
+			const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+			ws = new WebSocket(`${proto}//${location.host}/api/rooms/${roomId}/ws`);
+		} catch (e) {
+			console.warn('[socket] construct failed:', e?.message);
+			return scheduleReconnect();
+		}
+		sock = ws;
+
+		ws.onopen = () => {
+			// `cursor` is "the point below which I have everything" — the DO replays
+			// from it, or answers `resync` when it can no longer prove continuity.
+			try { ws.send(JSON.stringify({ t: 'hello', cursor, gv: get(store).gv, v: 1 })); } catch { /* ignore */ }
+			clearInterval(pingTimer);
+			pingTimer = setInterval(() => {
+				if (ws.readyState !== 1) return;
+				try { ws.send('p'); } catch { return; }
+				// A half-open socket — common on carrier NAT — reports OPEN forever and
+				// delivers nothing. The missing pong is the only reliable detection.
+				clearTimeout(pongTimer);
+				pongTimer = setTimeout(() => { if (sock === ws) { dropSocket(); scheduleReconnect(); } }, SOCK_PONG_GRACE_MS);
+			}, SOCK_PING_MS);
+		};
+
+		ws.onmessage = (ev) => {
+			if (ev.data === 'o') { clearTimeout(pongTimer); pongTimer = null; return; }
+			let f;
+			try { f = JSON.parse(ev.data); } catch { return; }
+			handleFrame(f);
+		};
+
+		ws.onerror = () => { /* close always follows; handle it there */ };
+
+		ws.onclose = (e) => {
+			if (sock !== ws) return; // superseded
+			const wasUp = pushConnected;
+			dropSocket();
+			if (e.code === 4003) {
+				// Membership revoked — terminal, same as the poll's TERMINAL_CODES.
+				sockDead = true;
+				stopped = true;
+				store.update((s) => ({ ...s, error: 'The host removed you from this room', closed: true }));
+				return;
+			}
+			if (e.code === 4002) {
+				// The DO handed the room back. Not an error: fall through to HTTP and
+				// stop retrying, or we would fight the evacuation.
+				sockDead = true;
+				console.warn('[socket] evacuated — falling back to polling');
+				schedule(0);
+				return;
+			}
+			// Everything else is transient. A close BEFORE we ever came up must land
+			// here too — on the polling fallback, never on the terminal path and
+			// never in a tight loop.
+			if (wasUp) schedule(0);
+			scheduleReconnect();
+		};
+	}
+
+	function handleFrame(f) {
+		switch (f.t) {
+			case 'welcome':
+			case 'resync': {
+				sockBackoff = SOCK_BACKOFF_MIN; // proven good — reset the ladder
+				if (!pushConnected) recordPushConnected(true);
+				pushConnected = true;
+				if (f.gap) {
+					// Our cursor fell below the retained log, so continuity cannot be
+					// proven. Rebuild rather than assume — the same treatment the HTTP
+					// fallback gets from its `gap` flag.
+					appliedEventIds.clear();
+					roomEpoch++;
+				}
+				lastRosterTs = f.ts ?? lastRosterTs;
+				markActive();
+				ingest({ events: f.events ?? [], state: f.state, room: f.room, members: f.members, upto: f.upto }, 'push');
+				// Re-arm the poll on the new (much longer) push cadence.
+				schedule();
+				break;
+			}
+			case 'state':
+				markActive();
+				ingest({ state: f.state, upto: f.upto }, 'push');
+				break;
+			case 'event':
+				markActive();
+				ingest({ events: [f.event], upto: f.upto }, 'push');
+				if (!SELF_CONTAINED_EVENTS.has(f.event?.type)) reconcileSoon();
+				break;
+			case 'roster':
+				if (!(f.ts > lastRosterTs)) return; // an older frame lost the race
+				lastRosterTs = f.ts;
+				roomEpoch++;
+				markActive();
+				ingest({ room: f.room, members: f.members }, 'push');
+				break;
+			case 'aim':
+				// Ephemeral: no state behind it, so deliberately no markActive/reconcile.
+				aimHandler?.(f.data);
+				break;
+		}
+	}
+
 	let userChannel = null;
 	async function connectRealtime() {
 		try {
@@ -479,8 +637,11 @@ export function createRoomStore(roomId) {
 		}
 	}
 
-	function open() {
+	function open({ useSocket = false } = {}) {
 		stopped = false;
+		sockDead = false;
+		sockBackoff = SOCK_BACKOFF_MIN;
+		usingSocket = !!useSocket;
 		startMetrics(roomId);
 		// Measure the banner from the store rather than from the paths that set it.
 		// `error` is cleared inside ingest's update, and a successful-but-EMPTY poll
@@ -488,7 +649,10 @@ export function createRoomStore(roomId) {
 		// sites would drift from what the player is actually looking at.
 		unsubBanner = store.subscribe((s) => recordBanner(!!s.error));
 		document.addEventListener('visibilitychange', onVisibility);
-		connectRealtime();
+		// One transport or the other, never both — two live push paths would double
+		// every event and race on the roster.
+		if (usingSocket) connectSocket();
+		else connectRealtime();
 		poll();
 	}
 
@@ -501,6 +665,8 @@ export function createRoomStore(roomId) {
 		clearTimeout(reconcileTimer);
 		reconcileTimer = null;
 		document.removeEventListener('visibilitychange', onVisibility);
+		sockDead = true; // stop the reconnect ladder before tearing the socket down
+		dropSocket();
 		try {
 			channel?.unsubscribe();
 			userChannel?.unsubscribe();

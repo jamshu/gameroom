@@ -39,7 +39,10 @@
 			if (d.me?.status === 'accepted') {
 				accepted = true;
 				clearInterval(detailTimer);
-				store.open();
+				// `d.do` decides the transport. Resolved here, after the detail fetch
+				// and before the only store.open() call, so there is exactly one place
+				// that knows and no window where the store guesses.
+				store.open({ useSocket: d.do === true });
 			}
 		} catch (e) {
 			error = e.message;
