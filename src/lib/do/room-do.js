@@ -267,6 +267,44 @@ export class RoomDO {
 			case 'roster':
 				this.applyRoster(op.room, op.members);
 				return { ok: true };
+			case 'snapshot':
+				// Serves the reads a mutation used to make against Odoo: the room row,
+				// the member list and the state blob. This is the call that takes a
+				// move off the ~1 req/s Odoo budget.
+				return {
+					ok: true,
+					room: kvGet(this.sql, 'room'),
+					members: this.membersWithPresence(),
+					raw: kvGet(this.sql, 'members_raw', []),
+					state: kvGet(this.sql, 'state'),
+					owns: !!kvGet(this.sql, 'owns_state')
+				};
+			case 'own':
+				// Ownership transfer, one-way. From here the DO is the source of truth
+				// for state and its write-behind alarm is the only thing that persists
+				// it — which is why the alarm gates on this flag.
+				kvSet(this.sql, 'owns_state', 1);
+				return { ok: true };
+			case 'setState': {
+				// The authoritative write. The version is bumped HERE, inside the
+				// object, which is what removes the read-modify-write race the Odoo
+				// path needed guardVersion for: a DO is single-threaded per room, so
+				// "read, bump, write" cannot interleave with another writer.
+				const cur = kvGet(this.sql, 'state');
+				const next = op.state ?? {};
+				next.v = Math.max(Number(cur?.v) || 0, Number(next.v) || 0) + (op.bump === false ? 0 : 1);
+				kvSet(this.sql, 'state', next);
+				kvSet(this.sql, 'owns_state', 1);
+				this.broadcastState(next);
+				this.markDirty();
+				return { ok: true, state: next, v: next.v };
+			}
+			case 'append': {
+				// Mint the id here so a move costs no Odoo create. Safe because the
+				// sequence was seeded above Odoo's highest id at hydrate.
+				const seq = this.applyEvent({ ...op.event, id: null }, op.targetUid ?? null);
+				return { ok: true, id: seq };
+			}
 			case 'aim':
 				// Ephemeral: no seq, no storage, no ack. Echoes to everyone but the
 				// shooter, who is already rendering their own drag locally.
