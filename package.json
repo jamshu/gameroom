@@ -12,6 +12,8 @@
 		"cf:dev": "npm run build && wrangler dev",
 		"cf:tail": "wrangler tail --format pretty",
 		"probe:ws": "node scripts/ws-probe.mjs",
+		"probe:do": "node --env-file=.env scripts/do-push-probe.mjs",
+		"probe:timing": "node scripts/timing-probe.mjs",
 		"setup:odoo": "node --env-file=.env scripts/setup-odoo.js",
 		"check:api": "node src/lib/api-check.js",
 		"check:media": "node src/lib/media-check.js",
