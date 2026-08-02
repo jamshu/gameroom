@@ -416,8 +416,14 @@ export class RoomDO {
 		if (!roomId) return;
 		let clean = true;
 
+		// State write-back is gated on OWNERSHIP, not just on having a copy.
+		// While the HTTP routes still own state they write it to Odoo themselves,
+		// and this alarm holds whatever doApply last delivered. Those can interleave:
+		// route writes v6, the v6 push has not landed yet, the alarm fires holding
+		// v5 — and Odoo regresses. Until `owns_state` is set (M2.4b), the DO's copy
+		// is a cache for pushing, never a source to persist from.
 		const state = kvGet(this.sql, 'state');
-		if (state && kvGet(this.sql, 'state_dirty_at')) {
+		if (kvGet(this.sql, 'owns_state') && state && kvGet(this.sql, 'state_dirty_at')) {
 			try {
 				await writeStateBack(this.env, roomId, state);
 			} catch (e) {
@@ -427,9 +433,17 @@ export class RoomDO {
 		}
 
 		// Oldest first, so a partial drain leaves a prefix rather than holes.
-		const pending = [...this.sql.exec(
-			'SELECT seq, type, sender, target, payload FROM events WHERE archived = 0 ORDER BY seq ASC LIMIT 200'
-		)];
+		// Events are append-only, so archiving them has none of the overwrite risk
+		// state does — but while the routes still own the log they already created
+		// the Odoo row, and re-creating it here would double every message. Mark
+		// those as archived without writing.
+		const owns = !!kvGet(this.sql, 'owns_state');
+		const pending = owns
+			? [...this.sql.exec(
+					'SELECT seq, type, sender, target, payload FROM events WHERE archived = 0 ORDER BY seq ASC LIMIT 200'
+				)]
+			: [];
+		if (!owns) this.sql.exec('UPDATE events SET archived = 1 WHERE archived = 0');
 		if (pending.length) {
 			const written = await archiveEvents(this.env, roomId, pending);
 			for (const r of pending.slice(0, written)) {
