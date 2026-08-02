@@ -518,8 +518,22 @@ export function createRoomStore(roomId) {
 			if (e.code === 4002) {
 				// The DO handed the room back. Not an error: fall through to HTTP and
 				// stop retrying, or we would fight the evacuation.
+				//
+				// REBUILD, don't resume — the id space changes underneath us. The
+				// object minted its own ids (1, 2, 3…); the archive wrote those same
+				// messages to Odoo, which assigned its own, far higher ones. So a poll
+				// resuming at `since=3` asks Odoo for "everything above 3" and gets the
+				// whole history back under different keys — every message we already
+				// hold, duplicated. Dropping the cursor and the chat and re-reading is
+				// the only coherent answer, and it is the treatment `gap` and `resync`
+				// already give the same problem: we cannot prove continuity across the
+				// handover, so we do not pretend to.
 				sockDead = true;
-				console.warn('[socket] evacuated — falling back to polling');
+				console.warn('[socket] evacuated — rebuilding from the HTTP envelope');
+				cursor = 0;
+				appliedEventIds.clear();
+				roomEpoch++;
+				store.update((s) => ({ ...s, chat: [], events: [] }));
 				schedule(0);
 				return;
 			}

@@ -102,6 +102,23 @@ export function eventFrame(event, upto) {
 	return { t: 'event', event, upto };
 }
 
+/**
+ * Stamp the id the log actually assigned onto an outgoing event.
+ *
+ * THE SEQ ALWAYS WINS over whatever the caller passed. A pure function purely so
+ * this can be asserted, because the shape it replaces was wrong in a way that
+ * was invisible for a whole milestone: `{ id: seq, ...event }` spreads the
+ * caller's `id` OVER the minted one, and while every event carried an Odoo id
+ * those two were the same number. The moment the object began minting its own —
+ * `append` passes `id: null` — the spread put null back, and every chat message
+ * on the socket arrived keyed on null. That is a duplicate key in the client's
+ * keyed {#each}: the exact crash the sequence seed exists to prevent, reached
+ * from the other direction.
+ */
+export function withSeq(event, seq) {
+	return { ...event, id: seq };
+}
+
 /** Room row + member list. Carries `ts` for the same reason the Ably roster did:
  *  room/members have no version of their own, so two frames can arrive out of
  *  order and there is nothing else to compare. */

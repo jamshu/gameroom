@@ -10,7 +10,7 @@
 //
 // Run: npm run check:frames
 import assert from 'node:assert';
-import { welcome, stateFrame, eventFrame, rosterFrame, aimFrame, ackFrame, errFrame, uptoOf, CLOSE, PROTOCOL_VERSION } from './frames.js';
+import { welcome, stateFrame, eventFrame, rosterFrame, aimFrame, ackFrame, errFrame, uptoOf, withSeq, CLOSE, PROTOCOL_VERSION } from './frames.js';
 
 /* ---- the rule that broke voice ------------------------------------------- */
 
@@ -98,4 +98,24 @@ import { welcome, stateFrame, eventFrame, rosterFrame, aimFrame, ackFrame, errFr
 	assert.strictEqual(CLOSE.KICKED, 4003);
 }
 
-console.log('frames-check: all assertions passed (state/roster/aim carry no watermark)');
+{
+	// THE SEQ ALWAYS WINS. This shipped wrong and was invisible for a milestone:
+	// the old shape spread the caller's event OVER the id, which agreed with the
+	// minted seq for as long as every event carried an Odoo id. The `append` op
+	// passes id: null, so the spread put null back and every socket-delivered chat
+	// message arrived keyed on null — a duplicate key in the client's keyed
+	// {#each}, which is the crash the sequence seed exists to prevent.
+	assert.strictEqual(withSeq({ id: null, type: 'chat' }, 4211).id, 4211,
+		'a minted seq must replace a null id, not be replaced by it');
+	assert.strictEqual(withSeq({ id: 9, type: 'chat' }, 4211).id, 4211,
+		'and must replace a stale one too — the log decides, not the caller');
+	assert.strictEqual(withSeq({ id: null, type: 'chat', senderUid: 7 }, 3).senderUid, 7,
+		'every other field is carried through untouched');
+
+	// And the frame built from it agrees with its own watermark, which is what
+	// lets the client advance its cursor off an event frame at all.
+	const f = eventFrame(withSeq({ id: null, type: 'chat' }, 4211), 4211);
+	assert.strictEqual(f.event.id, f.upto, 'upto equals the id of the event it delivers');
+}
+
+console.log('frames-check: all assertions passed (state/roster/aim carry no watermark; seq beats caller id)');

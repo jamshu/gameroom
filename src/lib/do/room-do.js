@@ -10,7 +10,7 @@ import {
 	appendEvent, eventsFor, newestFor, headSeq, oldestSeq, trim, rowsOfType,
 	REPLAY_MAX
 } from './schema.js';
-import { welcome, stateFrame, eventFrame, rosterFrame, aimFrame, ackFrame, errFrame, uptoOf, hasGap, CLOSE } from './frames.js';
+import { welcome, stateFrame, eventFrame, rosterFrame, aimFrame, ackFrame, errFrame, uptoOf, hasGap, withSeq, CLOSE } from './frames.js';
 import { hydrate, recentEvents, writeStateBack, archiveEvents, touchLastSeen } from './odoo-bridge.js';
 import { publicRoom, publicMembers } from '../shared/roomview.js';
 
@@ -505,7 +505,14 @@ export class RoomDO {
 			target: targetUid,
 			payload: event.payload
 		});
-		const frame = eventFrame({ id: seq, ...event }, seq);
+		// `id` LAST, and this is load-bearing. It used to be written first and then
+		// spread over — which was invisible while every event carried an Odoo id,
+		// because `event.id` and `seq` were the same number. The `append` op passes
+		// `id: null` (the object mints its own), so the spread overwrote the minted
+		// seq with null and every socket-delivered chat message arrived keyed on
+		// null: a duplicate key in the client's keyed {#each}, which is the crash
+		// the whole id-seed exists to prevent, arriving from the other direction.
+		const frame = eventFrame(withSeq(event, seq), seq);
 		// Synchronous fan-out, immediately after the insert — see broadcastState.
 		this.broadcast(frame, targetUid ? (u) => u === Number(targetUid) : undefined);
 		this.markDirty();
