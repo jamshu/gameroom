@@ -7,6 +7,8 @@ import { adminExecute } from './odoo.js';
 import { requireUser } from './auth.js';
 import { createSnapshotCache } from './roomcache.js';
 import { publishState, publishEvent, publishRoster } from './realtime.js';
+import { isDoRoom } from './doflag.js';
+import { doOp, isEvacuated } from './dostub.js';
 
 // The game list is shared with the client so a select, a capacity preview and a
 // validation check can't drift. Re-exported here because every server caller
@@ -67,9 +69,48 @@ export async function getMembers(roomId) {
  * poll. Kept as one `Promise.all` on purpose: if the room is gone, `getRoom`
  * rejecting should win over the 403 an empty member list would produce.
  */
+/**
+ * Overlay the Durable Object's state onto a room row read from Odoo.
+ *
+ * THIS IS THE OTHER HALF OF SINGLE-WRITER, and it is easy to miss. Moving writes
+ * into the object is only half the job: once it owns the state, Odoo's
+ * `x_studio_state` is a write-behind ARCHIVE that lags by up to one alarm period
+ * (15s). Every route in this app reads state the same way — `parseState(room)`
+ * off the row — so without this a chess move would be computed against a board
+ * up to 15 seconds old, written back, and the object's Math.max would keep the
+ * version climbing the whole time. The regression would look completely healthy
+ * while silently discarding every move made in the last 15 seconds.
+ *
+ * Doing it here rather than at 21 call sites is deliberate: `parseState(room)`
+ * then returns object truth everywhere, with no route edits and nothing to
+ * forget when a route is added.
+ *
+ * NOT CACHED, on purpose. The room snapshot cache has a 750ms TTL, and two moves
+ * inside one TTL window is completely ordinary — the second would be computed
+ * against the first's pre-image. One object round trip per authenticated request
+ * is the price, and it replaces an Odoo read rather than adding to one.
+ *
+ * Gated on `owns`, never on "the object has a copy": before the transfer,
+ * `kv.state` is only whatever the last best-effort push delivered, and doOp
+ * swallows failures. Reading a dropped push as authoritative is the same
+ * corruption arriving from the other direction.
+ *
+ * Returns a COPY when it substitutes. Mutating the cached row would leave the
+ * object's state stranded in the snapshot cache for rooms that are not owned.
+ */
+async function withDoState(roomId, room) {
+	if (!room || !isDoRoom(roomId)) return room;
+	const snap = await doOp(roomId, { op: 'snapshot' });
+	if (!snap?.ok || !snap.owns || !snap.state) return room;
+	return { ...room, x_studio_state: JSON.stringify(snap.state) };
+}
+
 export async function requireMember(cookies, roomId) {
 	const { uid } = await requireUser(cookies);
-	const [room, members] = await Promise.all([getRoom(roomId), getMembers(roomId)]);
+	const [rawRoom, members] = await Promise.all([getRoom(roomId), getMembers(roomId)]);
+	// Before judgeMembership: it reads `banned` out of the state blob, so a stale
+	// one would let a removed player back in for up to an alarm period.
+	const room = await withDoState(roomId, rawRoom);
 	return { uid, room, member: judgeMembership(uid, room, members), members };
 }
 
@@ -115,14 +156,31 @@ export function roomSnapshot(roomId, opts) {
  * treats `not_member` as terminal — so any 403 is re-judged against a FRESH
  * snapshot before it's thrown. The happy path (accepted member) never re-fetches.
  */
-export async function requireMemberCached(cookies, roomId) {
+export async function requireMemberCached(cookies, roomId, { state = true } = {}) {
 	const { uid } = await requireUser(cookies);
-	let [room, members] = await roomSnapshot(roomId);
+	let [row, members] = await roomSnapshot(roomId);
+	// The membership rows may be served from the 750ms cache; the STATE may not —
+	// see withDoState. The object is the source of truth for it once it owns the
+	// room, and it is fresh on every call.
+	//
+	// `state: false` is for callers that provably never read the blob. Only the
+	// carrom aim cursor qualifies, and it matters there: it fires ~10x/second while
+	// a player lines up a shot, so an unconditional overlay would double that route
+	// s object traffic to fetch a field it discards. Everything else leaves this
+	// alone — a route that reads state without the overlay is the 15-second-stale
+	// board this function exists to prevent.
+	let room = state ? await withDoState(roomId, row) : row;
 	try {
 		return { uid, room, member: judgeMembership(uid, room, members), members };
 	} catch (e) {
 		if (e.status !== 403) throw e;
-		[room, members] = await roomSnapshot(roomId, { fresh: true });
+		[row, members] = await roomSnapshot(roomId, { fresh: true });
+		// The overlay is not optional on THIS path even for `state: false` callers:
+		// the 403 being re-judged is `banned`, which lives in the state blob.
+		// Deliberately re-substituted rather than reusing `room`: the fresh read
+		// replaces the row, and dropping the overlay here would re-judge `banned`
+		// against the stale archive — the exact case this re-read exists to get right.
+		room = await withDoState(roomId, row);
 		return { uid, room, member: judgeMembership(uid, room, members), members };
 	}
 }
@@ -175,6 +233,77 @@ export function parseState(room) {
  * routes — chess, ludo, carroms — need neither.
  */
 export async function writeState(roomId, state, extraVals = {}, { guardVersion = false, stillValid } = {}) {
+	/* ---- Durable Object write path -------------------------------------------
+	   The seam again: one branch here moves state ownership for all 24 callers.
+
+	   `guardVersion` is DROPPED rather than translated, and that is not a
+	   simplification — it is what the object makes true. Its whole job was to
+	   collapse a read-modify-write window that spanned a whole request; inside a
+	   single-threaded object the read, the bump and the write are one step, and
+	   `Math.max(current, incoming) + 1` in setState IS "land above whatever is
+	   there". Sending an extra read to emulate it would cost a round trip to
+	   re-derive a guarantee we already hold.
+
+	   `stillValid` is NOT dropped, because it asks a different question — "my
+	   precondition broke, do not write at all". It is evaluated against the
+	   object's current state and the version it saw is then carried as `expectV`,
+	   which the object compares before writing. That closes the window rather
+	   than merely narrowing it: a deal that raced another deal is refused, not
+	   ordered. */
+	let evacuated = false;
+	if (isDoRoom(roomId)) {
+		let expectV;
+		if (stillValid) {
+			const snap = await doOp(roomId, { op: 'snapshot' });
+			if (isEvacuated(snap)) evacuated = true;
+			else if (!snap?.ok) throw httpError(503, 'The room is busy — try again', 'do_unreachable');
+			else {
+				if (!stillValid(snap.state)) {
+					throw httpError(409, 'Someone else just changed this — try again', 'conflict');
+				}
+				expectV = Number(snap.state?.v) || 0;
+			}
+		}
+		if (!evacuated) {
+			const res = await doOp(roomId, { op: 'setState', state, expectV });
+			if (res?.ok) {
+				// The object bumped the version itself; hand it back on the caller's own
+				// object, because callers go on to use `state.v` and stateView(state).
+				state.v = res.state.v;
+				// extraVals are x_gameroom COLUMNS (status, host, draws) — the room
+				// registry stays in Odoo, only the state blob moved. The object's copy
+				// of the row is refreshed by the pushRoster every such caller already
+				// makes; that contract predates the DO and is what keeps it accurate.
+				if (Object.keys(extraVals).length) {
+					await adminExecute(ROOM, 'write', [[Number(roomId)], extraVals]);
+					roomCache.invalidate(Number(roomId));
+				}
+				// No publishState: setState broadcast to every socket before it replied.
+				return state;
+			}
+			if (isEvacuated(res)) evacuated = true;
+			else if (res?.code === 'conflict') throw httpError(409, res.error, 'conflict');
+			// Anything else means the object did not answer, and it may still own the
+			// room. Failing the request is the only safe reading — writing Odoo behind
+			// an object that owns the state is the split brain this milestone exists to
+			// avoid, and it would be silent.
+			else throw httpError(503, 'The room is busy — try again', 'do_unreachable');
+		}
+	}
+
+	/* I1 — EXACTLY ONE WRITER TO GAME STATE.
+	   Reaching Odoo for a DO room is legitimate in exactly one case: the object
+	   evacuated, which means it flushed everything it held and refuses further
+	   ops (see RoomDO.evacuate). Any other route to this line is a bug that would
+	   corrupt a live game, so it fails loudly here rather than at the next move.
+
+	   The plan put this at the top of the function. It belongs BELOW the dispatch
+	   instead, because writeState is now the dispatcher — asserting at the top
+	   would reject the very call that is about to do the right thing. */
+	if (isDoRoom(roomId) && !evacuated) {
+		throw httpError(500, `writeState called for DO-owned room ${roomId}`, 'do_owned');
+	}
+
 	if (guardVersion || stillValid) {
 		const [row] = await adminExecute(ROOM, 'read', [[Number(roomId)]], {
 			fields: ['x_studio_state']
@@ -267,6 +396,25 @@ export async function readRoomMedia(roomId, attId) {
 }
 
 export async function appendEvent(roomId, type, payload, senderUid, targetUid = null) {
+	// DO rooms mint the id inside the object, so a chat message or a WebRTC signal
+	// costs no Odoo create at all — the write-behind alarm archives it later. Safe
+	// only because the sequence was seeded above Odoo's highest id at the
+	// ownership transfer, and only because the HTTP fallback poll is served from
+	// the object too: those two are ONE change. A DO-minted id that the poll still
+	// looked for in Odoo would hand the client a chat key it has never seen.
+	if (isDoRoom(roomId)) {
+		const res = await doOp(roomId, {
+			op: 'append',
+			event: { type, senderUid: senderUid || 0, payload: payload ?? {} },
+			targetUid
+		});
+		// applyEvent already fanned this out; no publishEvent, or every message
+		// would arrive twice.
+		if (res?.ok) return res.id;
+		// Same reasoning as writeState: only an evacuation makes the Odoo path
+		// correct again. An unreachable object may still own the log.
+		if (!isEvacuated(res)) throw httpError(503, 'The room is busy — try again', 'do_unreachable');
+	}
 	const vals = {
 		x_name: type,
 		x_studio_room_id: Number(roomId),
@@ -438,7 +586,9 @@ export function syncVoiceSince(state) {
 	return state;
 }
 
-export async function dropMember(target, state) {
+/** `roomId` is optional only so the two existing callers could adopt it one at a
+ *  time; without it the removed player keeps a live socket. Always pass it. */
+export async function dropMember(target, state, roomId = null) {
 	// 'left', not 'rejected': publicMembers filters `rejected` out entirely, which
 	// would retroactively degrade their name to `#uid` across chat history.
 	await adminExecute(MEMBER, 'write', [[target.id], { x_studio_status: 'left' }]);
@@ -453,6 +603,13 @@ export async function dropMember(target, state) {
 	// room the guest list is the actual gate; this only supplies the message.
 	state.banned = [...new Set([...(state.banned || []), targetUid])];
 	target.x_studio_status = 'left';
+	// Close their sockets. Without this a removed player keeps a live connection
+	// and keeps receiving every state and roster frame until they happen to
+	// reconnect — the 403 only ever fires on a NEW request, and a socket makes no
+	// new requests. `banned` above is what makes their next handshake terminal;
+	// this is what makes the current one stop. Best-effort: the Odoo row is already
+	// written, and a failure here must not turn a successful removal into an error.
+	if (roomId != null && isDoRoom(roomId)) await doOp(roomId, { op: 'kick', uid: targetUid });
 	return targetUid;
 }
 
@@ -600,7 +757,17 @@ export async function purgeUserRooms(uid) {
 // heartbeat: HEARTBEAT_AFTER_MS (45s) and PRESENCE_WINDOW_MS (90s) both have to
 // stay far under this, or a room full of people polling exactly as designed gets
 // deleted out from under them.
-const ABANDON_MIN = 10;
+//
+// Widened 10 → 30 with M2.4. Presence no longer rides the poll for DO rooms: a
+// socket-connected player refreshes last_seen from the object's heartbeat alarm,
+// which runs once a MINUTE for the whole room instead of once per client per
+// poll. That is the point — it is what takes ~3 Odoo calls per client per 1.5s
+// down to one per room per minute — but it means a single missed alarm (a flush
+// that failed, an object still cold) now costs a far larger share of the window
+// than a single missed poll ever did. 30 minutes buys back the margin the
+// batching spent. Reverted at M2.6, when live socket presence removes the
+// last_seen round trip entirely.
+const ABANDON_MIN = 30;
 // Ceiling per cron tick. Each deleteRoom is 4-7 sequential Odoo calls, and a
 // Workers invocation has a subrequest budget — so an unbounded backlog must
 // drain over several ticks rather than blowing one up. At 5-minute ticks this

@@ -10,7 +10,7 @@
 import assert from 'node:assert';
 import { register } from 'node:module';
 register('./room-stub-loader.mjs', import.meta.url);
-const { reseatRoles, setRoles, resetRound, createRoomMedia, readRoomMedia, deleteRoom, pickSuccessorHost, finishRoom, publicMembers, browseDomain, seatOnAccept, dropMember, writeState, roomSnapshot, syncVoiceSince } =
+const { reseatRoles, setRoles, resetRound, createRoomMedia, readRoomMedia, deleteRoom, pickSuccessorHost, finishRoom, publicMembers, browseDomain, seatOnAccept, dropMember, writeState, appendEvent, roomSnapshot, syncVoiceSince } =
 	await import('./room.js');
 
 const member = (id, role, status = 'accepted') => ({
@@ -500,4 +500,186 @@ const dealStillValid = (baseDraw) => ({
 	assert.equal(JSON.parse(after[0].x_studio_state).v, 2, 'and the poll now sees the new row');
 }
 
-console.log('room-check: all assertions passed');
+/* ==========================================================================
+   M2.4 — state ownership moves into the room Durable Object.
+
+   These drive the SEAM rather than the routes: writeState and appendEvent are
+   where ~25 call sites funnel through, so proving the dispatch here proves it
+   for all of them. `__doResults` queues the object's replies; `__doOps` records
+   what was actually sent (see room-stub-loader.mjs).
+   ========================================================================== */
+const asDoRoom = (id) => { process.env.DO_ROOMS = String(id); };
+const noDoRooms = () => { delete process.env.DO_ROOMS; };
+const resetDo = () => { globalThis.__doOps = []; globalThis.__doResults = []; globalThis.__odooCalls.length = 0; globalThis.__odooResults = []; };
+
+// 20. The write goes to the object, and NOT to Odoo. This is the milestone in
+//     one assertion: a move costs zero Odoo round trips.
+{
+	asDoRoom(71); resetDo();
+	globalThis.__doResults = [{ ok: true, state: { v: 12, game: { type: 'chess' } } }];
+	const state = { v: 5, game: { type: 'chess' } };
+	const out = await writeState(71, state);
+
+	assert.equal(globalThis.__doOps.length, 1, 'one op');
+	assert.equal(globalThis.__doOps[0].op, 'setState', 'and it is the authoritative write');
+	assert.equal(globalThis.__odooCalls.length, 0, 'Odoo is not touched at all on a move');
+	assert.equal(state.v, 12, 'the object bumped the version; the caller sees ITS number');
+	assert.strictEqual(out, state, 'and still gets the same object back, as ~24 callers expect');
+}
+
+// 21. guardVersion is DROPPED, not translated. Its job was to collapse a
+//     read-modify-write window; a single-threaded object has no such window, so
+//     emulating it would buy a guarantee we already hold at the price of a round
+//     trip on the app's hottest contended route.
+{
+	asDoRoom(71); resetDo();
+	globalThis.__doResults = [{ ok: true, state: { v: 8 } }];
+	await writeState(71, { v: 5 }, {}, { guardVersion: true });
+	assert.equal(globalThis.__doOps.length, 1, 'no extra read to re-derive what setState already does');
+	assert.equal(globalThis.__doOps[0].expectV, undefined, 'and no compare-and-set either');
+}
+
+// 22. extraVals are x_gameroom COLUMNS — status, host, draws. Only the state
+//     blob moved into the object; the room registry stays in Odoo, so these must
+//     still be written or `start` would never flip a room to `playing`.
+{
+	asDoRoom(71); resetDo();
+	globalThis.__doResults = [{ ok: true, state: { v: 2 } }];
+	await writeState(71, { v: 1 }, { x_studio_status: 'playing' });
+
+	const write = globalThis.__odooCalls.find((c) => c.method === 'write');
+	assert.equal(write.args[1].x_studio_status, 'playing', 'room columns still reach Odoo');
+	assert.equal(write.args[1].x_studio_state, undefined, 'but the state blob does NOT — one writer');
+}
+
+// 23. stillValid survives, because it asks a different question: "my
+//     precondition broke, do not write at all". It is evaluated against the
+//     object's current state, and the version it saw rides along as expectV so
+//     the object refuses a write whose verdict has gone stale. That CLOSES the
+//     window rather than narrowing it.
+{
+	asDoRoom(71); resetDo();
+	globalThis.__doResults = [{ ok: true, owns: true, state: { v: 6, game: { draw: 2 } } }];
+	globalThis.__doResults.push({ ok: true, state: { v: 7 } });
+	await writeState(71, { v: 5, game: { draw: 3 } }, {}, dealStillValid(2));
+
+	assert.deepEqual(globalThis.__doOps.map((o) => o.op), ['snapshot', 'setState'], 'read, then write');
+	assert.equal(globalThis.__doOps[1].expectV, 6, 'carrying the version the predicate judged');
+}
+{
+	asDoRoom(71); resetDo();
+	globalThis.__doResults = [{ ok: true, owns: true, state: { v: 6, game: { draw: 3 } } }];
+	await assert.rejects(
+		() => writeState(71, { v: 5, game: { draw: 3 } }, {}, dealStillValid(2)),
+		(e) => e.status === 409 && e.code === 'conflict',
+		'a rival deal is still refused outright'
+	);
+	assert.equal(globalThis.__doOps.length, 1, 'and no write was attempted');
+}
+{
+	// …and the object gets the last word: if the state moved between the snapshot
+	// and the write, the predicate's verdict is stale and the write is refused.
+	asDoRoom(71); resetDo();
+	globalThis.__doResults = [
+		{ ok: true, owns: true, state: { v: 6, game: { draw: 2 } } },
+		{ ok: false, status: 409, code: 'conflict', error: 'Someone else just changed this — try again' }
+	];
+	await assert.rejects(
+		() => writeState(71, { v: 5, game: { draw: 3 } }, {}, dealStillValid(2)),
+		(e) => e.status === 409 && e.code === 'conflict',
+		'the compare-and-set failing surfaces as the same coded 409'
+	);
+}
+
+// 24. THE SPLIT-BRAIN GUARD, and the most important assertion in this file. An
+//     object that does not answer may still OWN the room's state. Falling back to
+//     Odoo there would give the room two writers and corrupt it silently, so the
+//     request has to fail instead. Fail closed, never fall back.
+{
+	asDoRoom(71); resetDo();
+	globalThis.__doResults = []; // the object did not answer
+	await assert.rejects(
+		() => writeState(71, { v: 5 }),
+		(e) => e.status === 503 && e.code === 'do_unreachable',
+		'an unreachable object fails the write'
+	);
+	assert.equal(globalThis.__odooCalls.filter((c) => c.method === 'write').length, 0,
+		'and above all does NOT write Odoo behind an object that may own the state');
+}
+
+// 25. Evacuation is the ONE case where the Odoo path is correct again: the object
+//     flushed everything it held and refuses further ops. This is what makes the
+//     M2.4 rollback a rollback rather than a data-loss button.
+{
+	asDoRoom(71); resetDo();
+	globalThis.__doResults = [{ ok: false, error: 'evacuated' }];
+	const state = { v: 5 };
+	await writeState(71, state);
+
+	assert.equal(state.v, 6, 'the Odoo path bumped it');
+	const write = globalThis.__odooCalls.find((c) => c.method === 'write');
+	assert.equal(JSON.parse(write.args[1].x_studio_state).v, 6, 'and persisted the state itself');
+}
+
+// 26. appendEvent mints inside the object: no Odoo create for a chat message or
+//     a WebRTC signal, and no publishEvent either — applyEvent already fanned the
+//     event out before it replied, so publishing would deliver every message twice.
+{
+	asDoRoom(71); resetDo();
+	globalThis.__doResults = [{ ok: true, id: 4211 }];
+	const id = await appendEvent(71, 'chat', { text: 'hi' }, 101);
+
+	assert.equal(id, 4211, 'the id comes from the object');
+	assert.equal(globalThis.__doOps[0].op, 'append');
+	assert.equal(globalThis.__odooCalls.filter((c) => c.method === 'create').length, 0,
+		'and costs no Odoo create');
+}
+{
+	// Same fail-closed rule as writeState: an unreachable object may own the log.
+	asDoRoom(71); resetDo();
+	await assert.rejects(
+		() => appendEvent(71, 'chat', { text: 'hi' }, 101),
+		(e) => e.status === 503,
+		'an unreachable object fails the append'
+	);
+	assert.equal(globalThis.__odooCalls.filter((c) => c.method === 'create').length, 0,
+		'rather than writing an event Odoo would then hand back under a different id');
+}
+{
+	asDoRoom(71); resetDo();
+	globalThis.__doResults = [{ ok: false, error: 'evacuated' }];
+	await appendEvent(71, 'chat', { text: 'hi' }, 101);
+	assert.equal(globalThis.__odooCalls.filter((c) => c.method === 'create').length, 1,
+		'but an evacuated room goes back to creating the Odoo row');
+}
+
+// 27. A room the flag does not select is completely untouched by any of this —
+//     which is what makes `DO_ROOMS` a real rollout control rather than a switch
+//     that has already been thrown.
+{
+	asDoRoom(71); resetDo();
+	const state = { v: 5 };
+	await writeState(72, state); // a DIFFERENT room
+	assert.equal(globalThis.__doOps.length, 0, 'no op for a room outside the flag');
+	assert.equal(state.v, 6, 'the Odoo path, exactly as before');
+}
+// 28. Removing someone closes their socket. `banned` makes their NEXT handshake
+//     terminal, but a socket issues no new requests — so without the kick they
+//     keep receiving every state and roster frame for the room they were just
+//     thrown out of.
+{
+	asDoRoom(71); resetDo();
+	globalThis.__doResults = [{ ok: true }];
+	const target = { id: 3, x_studio_status: 'accepted', x_studio_user_id: [303, 'P3'] };
+	const state = { voice: [303, 404] };
+	await dropMember(target, state, 71);
+
+	const kick = globalThis.__doOps.find((o) => o.op === 'kick');
+	assert.ok(kick, 'a removal reaches the object');
+	assert.equal(kick.uid, 303, 'and names the player it removed');
+	assert.ok(!state.voice.includes(303), 'still dropped from voice, as before');
+	assert.ok(state.banned.includes(303), 'and still marked removed-by-host');
+}
+noDoRooms();
+
+console.log('room-check: all assertions passed (incl. DO dispatch, fail-closed and evacuation)');

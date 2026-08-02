@@ -79,7 +79,7 @@ export async function POST({ params, request, cookies }) {
 		);
 		if (row) {
 			const state = parseState(room) || { v: 0, voice: [], game: null };
-			await dropMember(row, state);
+			await dropMember(row, state, params.id);
 			// one ROOM write for the guest list AND the state, per writeState's extraVals
 			await writeState(params.id, state, { x_studio_allowed_user_ids: [[6, 0, next]] });
 			room.x_studio_allowed_user_ids = next;

@@ -47,7 +47,7 @@ export async function POST({ params, request, cookies }) {
 		const state = parseState(room) || { v: 0, voice: [], game: null };
 		// row → 'left', out of voice, marked removed-by-host. Shared with the private
 		// room's guest list so the two ways out of a room behave identically.
-		await dropMember(target, state);
+		await dropMember(target, state, params.id);
 
 		// A private room's guest list is what lets someone in, and `join` auto-accepts
 		// anyone on it — so without this the removed player walks straight back in.

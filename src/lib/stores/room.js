@@ -264,6 +264,20 @@ export function createRoomStore(roomId) {
 			// alone would re-arm activity forever — pinning an abandoned thief room
 			// at ACTIVE_MS instead of letting it decay to IDLE_MS.
 			if ((d.events?.length ?? 0) > 0 || d.state?.v > gv) markActive();
+			// The HTTP path's `resync`. Our cursor fell below the retained log, so
+			// the server sent the newest page instead of the window we asked for and
+			// continuity cannot be proven — without this the cursor would jump to the
+			// end of that page and the block in between would be silently, permanently
+			// missing. Additive on the wire, so a server that never sets it (any room
+			// still on the Odoo path) behaves exactly as before.
+			//
+			// Same treatment as the socket's `resync` frame, deliberately identical:
+			// two different repairs for the same condition is how the two transports
+			// start disagreeing about what the client holds.
+			if (d.gap) {
+				appliedEventIds.clear();
+				roomEpoch++;
+			}
 			ingest({
 				events: d.events,
 				state: d.state,

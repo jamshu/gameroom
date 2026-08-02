@@ -1,8 +1,10 @@
 import { json } from '@sveltejs/kit';
 import { adminExecute } from '$lib/server/odoo.js';
-import { EVENT, MEMBER, requireMemberCached, parseState, publicRoom, publicMembers, pruneStaleVoice, writeState, jsonError } from '$lib/server/room.js';
+import { EVENT, MEMBER, requireMemberCached, parseState, publicRoom, publicMembers, pruneStaleVoice, writeState, jsonError, httpError } from '$lib/server/room.js';
 import { resolveClaims, filterPickRows, stateView } from '$lib/server/gamelogic.js';
 import { isContendedPhase } from '$lib/games.js';
+import { isDoRoom } from '$lib/server/doflag.js';
+import { doOp, isEvacuated } from '$lib/server/dostub.js';
 
 export const prerender = false;
 
@@ -40,9 +42,26 @@ export async function GET({ params, url, cookies, platform }) {
 			: 0;
 		const needHeartbeat = Date.now() - last > HEARTBEAT_AFTER_MS;
 
+		// Events come from the Durable Object once it owns the log — its seq IS the
+		// id clients key chat by, and after M2.4 a DO-minted event does not exist in
+		// Odoo until the archive alarm drains (and lands there under a DIFFERENT
+		// id). Querying Odoo here would return an id the client has never seen for a
+		// message it already has.
+		//
+		// `gap` is the flag this path was missing. Once the object trims its log, a
+		// client whose cursor fell below the oldest retained seq gets the newest page
+		// and would jump its cursor to the end — silently losing the block in
+		// between, with nothing to notice it by. The socket has `resync` for exactly
+		// this; additive here, so old bundles and every existing spec mock ignore it.
+		const doEvents = isDoRoom(params.id) ? await doOp(params.id, { op: 'events', uid, since }) : null;
+		if (doEvents && !doEvents.ok && !isEvacuated(doEvents)) {
+			throw httpError(503, 'The room is busy — try again', 'do_unreachable');
+		}
+		const fromDo = doEvents?.ok ? doEvents : null;
+
 		// events: public ones + those privately targeted at me (WebRTC signals)
 		const [events] = await Promise.all([
-			adminExecute(EVENT, 'search_read', [
+			fromDo ? [] : adminExecute(EVENT, 'search_read', [
 				[
 					['x_studio_room_id', '=', Number(params.id)],
 					['id', '>', since],
@@ -72,16 +91,24 @@ export async function GET({ params, url, cookies, platform }) {
 
 		const out = {
 			ok: true,
-			cursor: events.length ? events[events.length - 1].id : since,
-			events: events.map((e) => ({
-				id: e.id,
-				type: e.x_studio_type,
-				senderUid: e.x_studio_sender_uid,
-				payload: safeParse(e.x_studio_payload)
-			})),
+			cursor: fromDo ? fromDo.cursor : events.length ? events[events.length - 1].id : since,
+			// The object already returns the client shape (schema.js toClientEvent),
+			// field for field — `id`, `type`, `senderUid`, `payload` — so the envelope
+			// is byte-identical whichever store answered.
+			events: fromDo
+				? fromDo.events
+				: events.map((e) => ({
+						id: e.id,
+						type: e.x_studio_type,
+						senderUid: e.x_studio_sender_uid,
+						payload: safeParse(e.x_studio_payload)
+					})),
 			room: publicRoom(room),
 			members: publicMembers(members)
 		};
+		// Additive: `since = 0` is a fresh client and needs no flag, so this only
+		// ever appears on a cursor that genuinely fell off the retained log.
+		if (fromDo?.gap) out.gap = true;
 
 		const state = parseState(room);
 		// Prune voice-roster ghosts (offline members). writeState bumps the version
@@ -90,12 +117,28 @@ export async function GET({ params, url, cookies, platform }) {
 		// healthy all-online roster costs nothing.
 		// ponytail: if two clients prune the same ghost inside the 750ms cache window
 		// they both write — harmless, they filter to the same result.
-		if (state && pruneStaleVoice(state, members)) {
+		//
+		// Skipped for DO rooms, and not as an optimisation: this infers voice ghosts
+		// from a 90s staleness window because nothing better existed. The object
+		// holds the live socket set, so webSocketClose drops the uid from
+		// `state.voice` and calls syncVoiceSince the moment a player actually goes —
+		// exact, and seconds rather than a minute and a half. Running both would also
+		// mean a READ endpoint writing state, which is what would trip the
+		// single-writer guard. Deleted outright at M2.6, once live presence lands for
+		// the non-DO path too.
+		if (!isDoRoom(params.id) && state && pruneStaleVoice(state, members)) {
 			await writeState(params.id, state, {});
 		}
 		// Self-heal: rebuild claims from the pick log so a lost blob write recovers
 		// and the picking→guessing flip still fires if the final picks raced.
-		if (state?.game?.type === 'thief_finder' && state.game.phase === 'picking') {
+		//
+		// Also skipped for DO rooms. It is a repair for a race that cannot happen
+		// there: the object appends the pick, re-resolves the claim map from its own
+		// log and writes state as ONE synchronous step (RoomDO.thiefPick), so there
+		// is no window between them for a second pick to land in. Keeping it would
+		// re-read the whole pick log on every poll of a picking room to repair
+		// nothing.
+		if (!isDoRoom(params.id) && state?.game?.type === 'thief_finder' && state.game.phase === 'picking') {
 			const picks = await adminExecute(EVENT, 'search_read', [
 				[['x_studio_room_id', '=', Number(params.id)], ['x_studio_type', '=', 'pick']],
 				['x_studio_sender_uid', 'x_studio_payload']

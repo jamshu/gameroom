@@ -72,13 +72,49 @@ export async function writeStateBack(env, roomId, state) {
 }
 
 /**
+ * The tail of Odoo's event log for a room, oldest first.
+ *
+ * Read at the OWNERSHIP TRANSFER, not at hydrate, and it is load-bearing three
+ * times over. The moment the DO starts minting ids and serving the poll, its own
+ * log is the only log — and a DO that hydrated during M2.3 has an empty one:
+ *
+ *  - a client polling `?since=<odoo id>` would be told the room had no history,
+ *  - `oldestSeq` would be 0, so the `gap` flag could never fire,
+ *  - and thief-finder would MIS-RESOLVE: resolveClaims rebuilds the claim map
+ *    from the whole pick log, so a transfer mid-draw would hand the envelopes
+ *    out again from a log holding only the picks that arrived after the flip.
+ *
+ * REPLAY_MAX rows, matching the poll page the client already expects.
+ */
+export async function recentEvents(env, roomId, limit = 200) {
+	const odoo = adminFor(env);
+	const rows = await odoo.adminExecute(EVENT_MODEL, 'search_read', [
+		[['x_studio_room_id', '=', Number(roomId)]],
+		['x_studio_type', 'x_studio_payload', 'x_studio_sender_uid', 'x_studio_target_uid']
+	], { order: 'id desc', limit });
+	return rows.reverse().map((r) => ({
+		seq: r.id,
+		type: r.x_studio_type,
+		sender: r.x_studio_sender_uid || 0,
+		// Odoo reads an unset integer field back as `false`, never null.
+		target: r.x_studio_target_uid || null,
+		payload: r.x_studio_payload || '{}'
+	}));
+}
+
+/**
  * Archive events the DO has accepted but Odoo has not seen.
  *
- * Explicit ids, because the DO's seq IS the Odoo id — that is what keeps one id
- * space across both transports. Odoo's `create` cannot set `id`, so rows the DO
- * minted itself (after the seed, so always above anything Odoo issued) are
- * written with their seq in a studio field and the row id is allowed to differ;
- * the client never sees Odoo's id for those.
+ * THE ARCHIVED ROW'S ODOO ID IS NOT THE DO'S SEQ. Odoo's `create` assigns the
+ * id and there is no studio field carrying the original, so a DO-minted event
+ * lands in Odoo under a different id from the one clients saw. That is a
+ * deliberate acceptance, not an oversight: once the DO owns the log, Odoo is a
+ * durable archive that nothing reads back on the hot path, and the one place
+ * that DOES read it back — hydrate/ownership transfer — only needs `max(id)` as
+ * a floor for the sequence, which stays correct because Odoo's ids keep
+ * ascending. The cost is that an archived row cannot be matched to the client's
+ * chat key. Adding `x_studio_seq` to the Odoo model would close that; it is not
+ * needed for anything M2 does.
  */
 export async function archiveEvents(env, roomId, rows) {
 	if (!rows.length) return 0;

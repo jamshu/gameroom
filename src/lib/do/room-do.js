@@ -4,14 +4,14 @@
 //
 // ISOMORPHIC BY CONTRACT — no `$lib`, no `$env`. wrangler bundles this outside
 // the SvelteKit build where neither resolves; `check:noenv` enforces it.
-import { stateView } from '../shared/gamelogic.js';
+import { stateView, resolveClaims, filterPickRows } from '../shared/gamelogic.js';
 import {
 	migrate, kvGet, kvSet, seedSequence,
-	appendEvent, eventsFor, newestFor, headSeq, oldestSeq, trim,
+	appendEvent, eventsFor, newestFor, headSeq, oldestSeq, trim, rowsOfType,
 	REPLAY_MAX
 } from './schema.js';
-import { welcome, stateFrame, eventFrame, rosterFrame, aimFrame, ackFrame, errFrame, uptoOf, CLOSE } from './frames.js';
-import { hydrate, writeStateBack, archiveEvents, touchLastSeen } from './odoo-bridge.js';
+import { welcome, stateFrame, eventFrame, rosterFrame, aimFrame, ackFrame, errFrame, uptoOf, hasGap, CLOSE } from './frames.js';
+import { hydrate, recentEvents, writeStateBack, archiveEvents, touchLastSeen } from './odoo-bridge.js';
 import { publicRoom, publicMembers } from '../shared/roomview.js';
 
 /* Alarm cadences. One alarm, multiplexed: each job stores its own due time in
@@ -25,6 +25,12 @@ const ARCHIVE_MS = 15_000; // while state/events are dirty
 const HEARTBEAT_MS = 60_000; // while >=1 socket — keeps Odoo last_seen fresh
 const TRIM_MS = 600_000;
 const IDLE_MS = 300_000; // after the last socket closes
+
+/* Ops that make this object the source of truth, and therefore have to run the
+   one-way ownership transfer first. Everything else — pushes from routes that
+   still write Odoo themselves, roster updates, ephemeral aim — must NOT trigger
+   it, or a room would flip the moment somebody merely spoke in chat. */
+const OWNING_OPS = new Set(['setState', 'append', 'thiefPick']);
 
 export class RoomDO {
 	constructor(ctx, env) {
@@ -78,6 +84,101 @@ export class RoomDO {
 		return ok;
 	}
 
+	/**
+	 * Take ownership of the room's state and event log. One-way, once per room.
+	 *
+	 * This is the instant the source of truth moves, and it has to be exactly an
+	 * instant — everything below runs inside blockConcurrencyWhile so no request
+	 * can observe a room that is half transferred.
+	 *
+	 * Three things happen here that CANNOT be folded into ensureHydrated:
+	 *
+	 * 1. A FRESH Odoo read. Before ownership, `kv.state` is only whatever the last
+	 *    doApply({op:'state'}) delivered — and doApply is best-effort by design,
+	 *    logging and swallowing failures (see server/realtime.js). Promoting a
+	 *    dropped push to source-of-truth would silently roll the game back. Odoo is
+	 *    still authoritative at this moment, so we re-read it.
+	 * 2. Backfilling the tail of Odoo's event log. From here the DO's log is the
+	 *    only log: it serves the poll, it answers `hello`, and it is what
+	 *    resolveClaims rebuilds the thief-finder claim map from. Starting empty
+	 *    would show a joiner an empty room and re-deal envelopes mid-draw.
+	 * 3. Re-seeding the sequence above Odoo's highest id, so DO-minted ids can
+	 *    never collide with the ones clients already hold as chat keys.
+	 *
+	 * Rooms that hydrated during M2.3 are already past ensureHydrated's early
+	 * return, which is exactly why this cannot ride on hydration.
+	 */
+	async ensureOwned(roomId) {
+		if (kvGet(this.sql, 'owns_state')) return true;
+		let ok = false;
+		await this.ctx.blockConcurrencyWhile(async () => {
+			if (kvGet(this.sql, 'owns_state')) { ok = true; return; }
+			const id = Number(roomId) || kvGet(this.sql, 'room_id');
+			if (!id) return;
+
+			const [data, recent] = await Promise.all([
+				hydrate(this.env, id),
+				recentEvents(this.env, id, REPLAY_MAX)
+			]);
+			if (!data) return; // room is gone — stay unowned and let the caller fail
+
+			kvSet(this.sql, 'room_id', id);
+			kvSet(this.sql, 'room', publicRoom(data.row));
+			kvSet(this.sql, 'members', publicMembers(data.members));
+			kvSet(this.sql, 'members_raw', data.members);
+			kvSet(this.sql, 'state', data.state ?? { v: 0, voice: [], game: null });
+
+			// EVERYTHING ALREADY IN THE LOG CAME FROM ODOO, so none of it is owed
+			// back. Rows arrive here two ways and both are already durable: the
+			// backfill below, and the `{op:'event'}` pushes M2.3 has been delivering
+			// since hydrate — those carry the id of a row the ROUTE created in Odoo.
+			// Once owns_state flips, flush() starts archiving anything marked
+			// archived = 0, so without this line the transfer would re-create every
+			// event the room had pushed since it woke, duplicating chat history in
+			// the archive. The pre-ownership flush marks rows as it goes; this covers
+			// whatever arrived since the last one.
+			this.sql.exec('UPDATE events SET archived = 1 WHERE archived = 0');
+			// archived: 1 — same reasoning, for the rows we are about to pull in.
+			for (const r of recent) appendEvent(this.sql, { ...r, archived: 1 });
+			seedSequence(this.sql, Math.max(data.maxEventId, headSeq(this.sql)));
+
+			kvSet(this.sql, 'owns_state', 1);
+			kvSet(this.sql, 'owned_at', Date.now());
+			ok = true;
+		});
+		return ok;
+	}
+
+	/**
+	 * Hand the room back to the HTTP/Odoo path. The M2.4 rollback.
+	 *
+	 * IT MUST REFUSE TO COMPLETE UNTIL THE FLUSH SUCCEEDS. That is the whole
+	 * difference between a rollback and a data-loss button: once `evacuated` is
+	 * set, every subsequent op is rejected and the dispatcher falls back to Odoo,
+	 * so anything still only in this object's storage would be gone. A failed
+	 * flush leaves the room owned and serving, which is the recoverable outcome.
+	 *
+	 * Order matters: flush, THEN mark, THEN close. Marking first would let the
+	 * flush's own writes race a route that has already fallen back.
+	 */
+	async evacuate() {
+		if (kvGet(this.sql, 'evacuated')) return { ok: true, already: true };
+		await this.flush();
+		if (kvGet(this.sql, 'state_dirty_at')) {
+			return { ok: false, error: 'flush incomplete — room stays on the DO' };
+		}
+		kvSet(this.sql, 'evacuated', 1);
+		kvSet(this.sql, 'owns_state', 0);
+		for (const ws of this.ctx.getWebSockets()) {
+			try {
+				ws.close(CLOSE.EVACUATED, 'evacuated');
+			} catch {
+				/* a socket that will not close must not block the rollback */
+			}
+		}
+		return { ok: true };
+	}
+
 	async fetch(req) {
 		const url = new URL(req.url);
 		const roomId = Number(req.headers.get('x-room-id')) || kvGet(this.sql, 'room_id');
@@ -103,6 +204,20 @@ export class RoomDO {
 				op = await req.json();
 			} catch {
 				return new Response('bad op', { status: 400 });
+			}
+
+			// The two ops that must await live HERE, ahead of apply(). apply() is
+			// synchronous on purpose — an await between an insert and the last send()
+			// is precisely what breaks the upto invariant — so anything needing Odoo
+			// has to finish before it is entered, never inside it.
+			if (op?.op === 'evacuate') return Response.json(await this.evacuate());
+			if (OWNING_OPS.has(op?.op) && !kvGet(this.sql, 'evacuated')) {
+				if (!(await this.ensureOwned(roomId))) {
+					// Never fall through to a write on a room whose ownership could not
+					// be established: that would make the DO's copy authoritative
+					// without the fresh Odoo read that makes it correct.
+					return Response.json({ ok: false, error: 'ownership transfer failed', code: 'not_owned' });
+				}
 			}
 			return Response.json(this.apply(op));
 		}
@@ -173,10 +288,8 @@ export class RoomDO {
 	/* ---- frames ----------------------------------------------------------- */
 
 	sendWelcome(ws, uid, cursor) {
-		const oldest = oldestSeq(this.sql);
-		// A cursor below the retained log means we cannot prove continuity, so say
-		// so instead of handing back a window that silently skips events.
-		const gap = cursor > 0 && oldest > 0 && cursor < oldest;
+		// One predicate for both transports — see frames.js hasGap.
+		const gap = hasGap(cursor, oldestSeq(this.sql));
 		const events = gap || cursor === 0 ? newestFor(this.sql, uid) : eventsFor(this.sql, uid, cursor);
 		const state = kvGet(this.sql, 'state');
 		ws.send(
@@ -279,32 +392,57 @@ export class RoomDO {
 					state: kvGet(this.sql, 'state'),
 					owns: !!kvGet(this.sql, 'owns_state')
 				};
-			case 'own':
-				// Ownership transfer, one-way. From here the DO is the source of truth
-				// for state and its write-behind alarm is the only thing that persists
-				// it — which is why the alarm gates on this flag.
-				kvSet(this.sql, 'owns_state', 1);
-				return { ok: true };
+			case 'events': {
+				// The HTTP fallback poll, served from here instead of Odoo. Same page
+				// size and same oldest-first order as the query it replaces, so the
+				// envelope the route builds around it is unchanged.
+				const uid = Number(op.uid);
+				const since = Number(op.since) || 0;
+				// The client cannot tell "trimmed away" from "nothing new", and a
+				// cursor that jumps to the newest returned id would leave a block of
+				// chat silently missing. `gap` is the HTTP path's `resync`, and it is
+				// the SAME predicate the socket uses — see frames.js hasGap.
+				const gap = hasGap(since, oldestSeq(this.sql));
+				const events = gap ? newestFor(this.sql, uid) : eventsFor(this.sql, uid, since);
+				return {
+					ok: true,
+					events,
+					// uptoOf, not headSeq: targeted signals are filtered out of `events`
+					// for everyone but their recipient, so the head can cover an event
+					// this caller was never entitled to and will never refetch.
+					cursor: uptoOf(events, gap ? 0 : since),
+					gap
+				};
+			}
 			case 'setState': {
 				// The authoritative write. The version is bumped HERE, inside the
 				// object, which is what removes the read-modify-write race the Odoo
 				// path needed guardVersion for: a DO is single-threaded per room, so
 				// "read, bump, write" cannot interleave with another writer.
 				const cur = kvGet(this.sql, 'state');
+				// Optional compare-and-set, for the callers whose precondition means
+				// "this action must not happen at all" rather than "order it" (see
+				// stillValid in server/room.js). The caller evaluated its predicate
+				// against the version it names here; if the state moved in between,
+				// that verdict is stale and the write is refused rather than applied.
+				if (op.expectV != null && (Number(cur?.v) || 0) !== Number(op.expectV)) {
+					return { ok: false, status: 409, code: 'conflict', error: 'Someone else just changed this — try again' };
+				}
 				const next = op.state ?? {};
 				next.v = Math.max(Number(cur?.v) || 0, Number(next.v) || 0) + (op.bump === false ? 0 : 1);
 				kvSet(this.sql, 'state', next);
-				kvSet(this.sql, 'owns_state', 1);
 				this.broadcastState(next);
 				this.markDirty();
 				return { ok: true, state: next, v: next.v };
 			}
 			case 'append': {
 				// Mint the id here so a move costs no Odoo create. Safe because the
-				// sequence was seeded above Odoo's highest id at hydrate.
+				// sequence was seeded above Odoo's highest id at the ownership transfer.
 				const seq = this.applyEvent({ ...op.event, id: null }, op.targetUid ?? null);
 				return { ok: true, id: seq };
 			}
+			case 'thiefPick':
+				return this.thiefPick(op);
 			case 'aim':
 				// Ephemeral: no seq, no storage, no ack. Echoes to everyone but the
 				// shooter, who is already rendering their own drag locally.
@@ -362,6 +500,57 @@ export class RoomDO {
 		if (room) kvSet(this.sql, 'room', room);
 		if (members) kvSet(this.sql, 'members', members);
 		this.broadcastRoster();
+	}
+
+	/**
+	 * A thief-finder envelope pick: validate, append, re-resolve the whole claim
+	 * map from the log, persist and push — as ONE synchronous step.
+	 *
+	 * This is the route that several players hit at the same instant; that IS the
+	 * game. On the Odoo path it was three round trips (append, re-read the pick
+	 * log, write) with other players interleaving freely, which is what
+	 * guardVersion and the poll's self-heal existed to paper over — and they only
+	 * ever ordered the damage, they could not prevent it.
+	 *
+	 * Here the object is single-threaded and nothing below awaits, so no second
+	 * pick can observe or interleave with a half-applied one. guardVersion is
+	 * therefore not merely unnecessary, it is meaningless: there is no window.
+	 *
+	 * resolveClaims/filterPickRows are the same shared, pure functions the Odoo
+	 * path uses, fed the same row shape by rowsOfType — one arbiter, two stores.
+	 */
+	thiefPick({ uid, envelope }) {
+		const player = Number(uid);
+		const state = kvGet(this.sql, 'state');
+		const game = state?.game;
+		if (!game || game.type !== 'thief_finder') {
+			return { ok: false, status: 409, error: 'No thief-finder game in progress' };
+		}
+		if (game.phase !== 'picking') return { ok: false, status: 409, error: 'Not in the picking phase' };
+		if (!game.players.includes(player)) return { ok: false, status: 403, error: 'You are not a player' };
+		const k = Number(envelope);
+		if (!Number.isInteger(k) || k < 0 || k >= game.players.length) {
+			return { ok: false, status: 400, error: 'No such envelope' };
+		}
+		// Exact here, not the best-effort fast reject the route had to settle for:
+		// the claim map cannot move under us.
+		if (game.claims?.[k] != null && game.claims[k] !== player) {
+			return { ok: false, status: 409, code: 'taken', error: 'Envelope already taken' };
+		}
+
+		this.applyEvent({
+			id: null,
+			type: 'pick',
+			senderUid: player,
+			payload: { epoch: game.epoch, draw: game.draw, envelope: k }
+		});
+		// `game` is a live reference into `state`, so this mutates what we persist.
+		resolveClaims(game, filterPickRows(rowsOfType(this.sql, 'pick'), game));
+		state.v = (Number(state.v) || 0) + 1;
+		kvSet(this.sql, 'state', state);
+		this.broadcastState(state);
+		this.markDirty();
+		return { ok: true, state, v: state.v };
 	}
 
 	/** Close a revoked member's sockets. Terminal on the client. */

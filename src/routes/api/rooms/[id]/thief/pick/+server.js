@@ -2,6 +2,8 @@ import { json } from '@sveltejs/kit';
 import { requireMember, parseState, writeState, appendEvent, jsonError, httpError, EVENT } from '$lib/server/room.js';
 import { adminExecute } from '$lib/server/odoo.js';
 import { resolveClaims, filterPickRows, stateView } from '$lib/server/gamelogic.js';
+import { isDoRoom } from '$lib/server/doflag.js';
+import { doOp, isEvacuated } from '$lib/server/dostub.js';
 
 export const prerender = false;
 
@@ -9,13 +11,33 @@ export const prerender = false;
 export async function POST({ params, request, cookies }) {
 	try {
 		const { uid, room } = await requireMember(cookies, params.id);
+		// Read once: the body is a stream, and the evacuated fallback below would
+		// otherwise reach the Odoo path with it already consumed.
+		const { envelope } = await request.json();
+
+		// The one route in the app that several players hit at the same instant, so
+		// it is the one that gets the object's atomicity rather than the seam.
+		// writeState's dispatch would still be three separate ops here — append,
+		// re-read the pick log, write — with other picks free to interleave between
+		// them, which is the exact race guardVersion could only order after the fact.
+		// RoomDO.thiefPick does all three inside the object, where nothing can.
+		if (isDoRoom(params.id)) {
+			const res = await doOp(params.id, { op: 'thiefPick', uid, envelope });
+			if (res?.ok) return json({ ok: true, state: stateView(res.state, uid) });
+			if (!isEvacuated(res)) {
+				// The object's rejections carry the same status/code the Odoo path threw,
+				// so the client's `taken` handling is unchanged.
+				throw httpError(res?.status || 503, res?.error || 'The room is busy — try again', res?.code);
+			}
+			// evacuated — fall through to the Odoo path below, which is now correct again
+		}
+
 		const state = parseState(room);
 		const game = state?.game;
 		if (!game || game.type !== 'thief_finder') throw httpError(409, 'No thief-finder game in progress');
 		if (game.phase !== 'picking') throw httpError(409, 'Not in the picking phase');
 		if (!game.players.includes(uid)) throw httpError(403, 'You are not a player');
 
-		const { envelope } = await request.json();
 		const k = Number(envelope);
 		if (!Number.isInteger(k) || k < 0 || k >= game.players.length) throw httpError(400, 'No such envelope');
 		// best-effort fast reject; resolveClaims below is the real arbiter

@@ -26,9 +26,10 @@
 		"check:push": "node src/lib/server/push-check.js",
 		"check:noenv": "node scripts/check-noenv.mjs",
 		"check:doflag": "node src/lib/shared/doflag-check.js",
-		"check:all": "npm run check:api && npm run check:media && npm run check:sim && npm run check:carrom && npm run check:games && npm run check:room && npm run check:thief && npm run check:ludo && npm run check:cache && npm run check:realtime && npm run check:push && npm run check:noenv && npm run check:doflag && npm run check:frames",
+		"check:all": "npm run check:api && npm run check:media && npm run check:sim && npm run check:carrom && npm run check:games && npm run check:room && npm run check:thief && npm run check:ludo && npm run check:cache && npm run check:realtime && npm run check:push && npm run check:noenv && npm run check:doflag && npm run check:frames && npm run check:doseq",
 		"test:e2e": "playwright test",
-		"check:frames": "node src/lib/do/frames-check.js"
+		"check:frames": "node src/lib/do/frames-check.js",
+		"check:doseq": "node --disable-warning=ExperimentalWarning src/lib/do/doseq-check.js"
 	},
 	"devDependencies": {
 		"@playwright/test": "^1.61.1",

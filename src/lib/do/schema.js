@@ -82,12 +82,20 @@ export function seedSequence(sql, minSeq) {
  * minted its own ids from 1 the two streams would collide in a store that keys
  * chat by event id — the duplicate-key crash, not a merge glitch. Passing Odoo's
  * id through keeps one id space until hydration seeds the sequence above it.
+ *
+ * `archived` marks a row Odoo already holds, so the write-behind alarm skips it.
+ * Set it for rows backfilled FROM Odoo at the ownership transfer — re-creating
+ * those would duplicate every message in the archive.
  */
-export function appendEvent(sql, { seq = null, type, sender = 0, target = null, payload = {} }) {
+export function appendEvent(sql, { seq = null, type, sender = 0, target = null, payload = {}, archived = 0 }) {
 	const t = String(type);
 	const s = Number(sender) || 0;
 	const tgt = target == null ? null : Number(target);
-	const p = JSON.stringify(payload ?? {});
+	// Backfilled rows arrive as the JSON STRING Odoo stored; freshly appended ones
+	// arrive as an object. Re-stringifying a string would double-encode it and the
+	// client would parse a payload of `"{\"kind\":…}"` instead of an object.
+	const p = typeof payload === 'string' ? payload : JSON.stringify(payload ?? {});
+	const a = archived ? 1 : 0;
 	const now = Date.now();
 
 	if (seq != null && Number.isFinite(Number(seq))) {
@@ -95,8 +103,8 @@ export function appendEvent(sql, { seq = null, type, sender = 0, target = null, 
 		// INSERT OR REPLACE: a redelivered push must not create a second row for the
 		// same event. The id is Odoo's primary key, so it is already unique.
 		sql.exec(
-			'INSERT OR REPLACE INTO events (seq, type, sender, target, payload, ts) VALUES (?, ?, ?, ?, ?, ?)',
-			explicit, t, s, tgt, p, now
+			'INSERT OR REPLACE INTO events (seq, type, sender, target, payload, ts, archived) VALUES (?, ?, ?, ?, ?, ?, ?)',
+			explicit, t, s, tgt, p, now, a
 		);
 		// Keep AUTOINCREMENT above anything inserted explicitly, so a later
 		// DO-minted id can never land on top of one of these.
@@ -106,11 +114,26 @@ export function appendEvent(sql, { seq = null, type, sender = 0, target = null, 
 
 	const row = [
 		...sql.exec(
-			'INSERT INTO events (type, sender, target, payload, ts) VALUES (?, ?, ?, ?, ?) RETURNING seq',
-			t, s, tgt, p, now
+			'INSERT INTO events (type, sender, target, payload, ts, archived) VALUES (?, ?, ?, ?, ?, ?) RETURNING seq',
+			t, s, tgt, p, now, a
 		)
 	][0];
 	return row.seq;
+}
+
+/**
+ * Every event of one type, oldest first, in the shape the Odoo `search_read`
+ * returned — `x_studio_sender_uid` / `x_studio_payload`.
+ *
+ * The shape is deliberate rather than lazy: resolveClaims and filterPickRows are
+ * shared, pure and already tested against those field names, so serving them the
+ * same rows from a different store keeps ONE implementation of who-claimed-what.
+ * A second shape here would be a second thief-finder arbiter.
+ */
+export function rowsOfType(sql, type) {
+	return [
+		...sql.exec('SELECT sender, payload FROM events WHERE type = ? ORDER BY seq ASC', String(type))
+	].map((r) => ({ x_studio_sender_uid: r.sender, x_studio_payload: r.payload }));
 }
 
 /**

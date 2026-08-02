@@ -5,59 +5,23 @@
 // - targeted events (WebRTC signals) go on the recipient's private channel.
 // Everything no-ops when ABLY_API_KEY is unset, so the app still runs on polling.
 import { env } from '$env/dynamic/private';
-import { getRequestEvent } from '$app/server';
 import { stateView } from './gamelogic.js';
 import { isDoRoom } from './doflag.js';
+import { doOp } from './dostub.js';
 
 /* ---- Durable Object dispatch ----------------------------------------------
    The seam. writeState/appendEvent/pushRoster already funnel every push through
    the four publish* functions below, so branching here moves the transport for
    the whole app without touching a single caller.
 
-   The binding lives on the RequestEvent, and threading `platform` through ~25
-   call sites would be a far bigger diff than the feature. getRequestEvent()
-   reads it from AsyncLocalStorage instead — which is exactly why wrangler.toml
-   needs nodejs_compat (SvelteKit's internal/event.js imports node:async_hooks).
-
    Best-effort, like the Ably path it replaces: a push failure must never fail
-   the mutation. The state is already persisted by the time we get here. */
+   the mutation. The state is already persisted by the time we get here — which
+   is why these four DISCARD doOp's result, including `evacuated`. A push into an
+   evacuated object is simply a push nobody needed; the writer that produced the
+   state has already dealt with the fallback (see writeState in room.js).
 
-function roomStub(roomId) {
-	// getRequestEvent throws outside a request (and, on a cold isolate, before
-	// SvelteKit's async_hooks import has resolved). Neither is worth failing a
-	// write over.
-	let platform;
-	try {
-		({ platform } = getRequestEvent());
-	} catch {
-		return null;
-	}
-	const ns = platform?.env?.ROOM;
-	if (!ns) return null;
-	return ns.get(ns.idFromName(`room:${Number(roomId)}`), {
-		locationHint: platform.env.DO_LOCATION_HINT || undefined
-	});
-}
-
-async function doApply(roomId, op) {
-	try {
-		const stub = roomStub(roomId);
-		if (!stub) {
-			console.error(`doApply: no ROOM binding for room ${roomId} — push dropped`);
-			return;
-		}
-		const res = await stub.fetch('https://do/apply', {
-			method: 'POST',
-			// x-room-id: the DO cannot derive its own room from its id (idFromName is
-			// one-way), and it needs it to hydrate from Odoo on first touch.
-			headers: { 'content-type': 'application/json', 'x-room-id': String(Number(roomId)) },
-			body: JSON.stringify(op)
-		});
-		if (!res.ok) console.error(`doApply ${op.op} -> ${res.status}`);
-	} catch (e) {
-		console.error(`doApply ${op?.op} failed:`, e?.message);
-	}
-}
+   The plumbing itself moved to dostub.js once the same stub started carrying
+   authoritative reads and writes rather than only pushes. */
 
 /** Public room channel — carries public events. Pure. */
 export function roomChannel(roomId) {
@@ -92,7 +56,7 @@ async function ablyRest() {
 export async function publishState(roomId, state, memberUids = []) {
 	// The DO filters per socket with the same stateView, so it takes the state
 	// whole — no memberUids fan-out, and no dependency on roomUids being warm.
-	if (isDoRoom(roomId)) return doApply(roomId, { op: 'state', state });
+	if (isDoRoom(roomId)) return doOp(roomId, { op: 'state', state });
 	try {
 		const rest = await ablyRest();
 		if (!rest) return; // realtime not configured — polling carries the room
@@ -129,7 +93,7 @@ export async function publishState(roomId, state, memberUids = []) {
  * Best-effort like the rest: a publish failure must never fail the mutation.
  */
 export async function publishRoster(roomId, { room, members }) {
-	if (isDoRoom(roomId)) return doApply(roomId, { op: 'roster', room, members });
+	if (isDoRoom(roomId)) return doOp(roomId, { op: 'roster', room, members });
 	try {
 		const rest = await ablyRest();
 		if (!rest) return;
@@ -141,7 +105,7 @@ export async function publishRoster(roomId, { room, members }) {
 
 /** Push one event: public → room channel, targeted → the recipient's channel. */
 export async function publishEvent(roomId, event, targetUid = null) {
-	if (isDoRoom(roomId)) return doApply(roomId, { op: 'event', event, targetUid });
+	if (isDoRoom(roomId)) return doOp(roomId, { op: 'event', event, targetUid });
 	try {
 		const rest = await ablyRest();
 		if (!rest) return;
@@ -157,7 +121,7 @@ export async function publishEvent(roomId, event, targetUid = null) {
  * write, no event id, no state version. Best-effort like the rest.
  */
 export async function publishAim(roomId, data) {
-	if (isDoRoom(roomId)) return doApply(roomId, { op: 'aim', data });
+	if (isDoRoom(roomId)) return doOp(roomId, { op: 'aim', data });
 	try {
 		const rest = await ablyRest();
 		if (!rest) return;

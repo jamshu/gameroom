@@ -12,7 +12,11 @@ import { publishAim } from '$lib/server/realtime.js';
 // cadence rate-limits the whole app (429). requireMemberCached serves from the
 // same 750ms snapshot the poll already warms.
 export async function POST({ params, cookies, request }) {
-	const { uid } = await requireMemberCached(cookies, params.id);
+	// `state: false` for the same reason the cached read is used at all: this route
+	// never touches the state blob, and at ~10 calls/second the Durable Object
+	// overlay requireMemberCached otherwise applies would double this path's object
+	// traffic to fetch a field that is immediately discarded.
+	const { uid } = await requireMemberCached(cookies, params.id, { state: false });
 	const { strikerT, aim } = await request.json();
 	await publishAim(params.id, { uid, strikerT, aim });
 	return json({ ok: true });

@@ -24,6 +24,29 @@
 
 export const PROTOCOL_VERSION = 1;
 
+/**
+ * Has this client's cursor fallen below what the log still retains?
+ *
+ * If so, continuity CANNOT be proven: the trim alarm dropped rows between their
+ * cursor and the oldest we hold, and answering with the window they asked for
+ * would advance their cursor past a block they never received — permanently,
+ * because `?since=` only ever moves forward. Saying "gap" instead lets the client
+ * rebuild.
+ *
+ * One function, deliberately, because BOTH transports have to answer this the
+ * same way: the socket turns it into a `resync` frame, the HTTP fallback into a
+ * `gap: true` field. Two copies of the comparison is how they start disagreeing
+ * about what a client holds.
+ *
+ * `since = 0` is a fresh client with nothing to lose, never a gap. `oldest = 0`
+ * is an empty log, so there is nothing it could have missed.
+ */
+export function hasGap(since, oldest) {
+	const s = Number(since) || 0;
+	const o = Number(oldest) || 0;
+	return s > 0 && o > 0 && s < o;
+}
+
 /** Highest seq actually present in a replay array, or `floor` when empty. */
 export function uptoOf(events, floor = 0) {
 	let max = Number(floor) || 0;
