@@ -91,6 +91,9 @@ async function handleUpgrade(req, env, ctx, roomId) {
 	const fwd = new Request(req);
 	fwd.headers.set('x-uid', String(uid));
 	fwd.headers.set('x-name', name ?? '');
+	// The DO knows its own id only as an opaque hash (idFromName is one-way), so
+	// it cannot look itself up in Odoo without being told which room it is.
+	fwd.headers.set('x-room-id', String(roomId));
 	return stub.fetch(fwd);
 }
 

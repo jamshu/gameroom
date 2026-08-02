@@ -11,6 +11,8 @@ import {
 	REPLAY_MAX
 } from './schema.js';
 import { welcome, stateFrame, eventFrame, rosterFrame, aimFrame, ackFrame, errFrame, uptoOf, CLOSE } from './frames.js';
+import { hydrate, writeStateBack, archiveEvents, touchLastSeen } from './odoo-bridge.js';
+import { publicRoom, publicMembers } from '../shared/roomview.js';
 
 /* Alarm cadences. One alarm, multiplexed: each job stores its own due time in
    kv and alarm() runs whichever are due, then re-arms for the earliest.
@@ -43,8 +45,43 @@ export class RoomDO {
 	 * already run requireMemberCached against the session cookie. If you ever add
 	 * another way to reach this fetch(), this stops being true.
 	 */
+	/**
+	 * Load the room from Odoo exactly once, before anything can observe an empty
+	 * object.
+	 *
+	 * blockConcurrencyWhile is what makes "exactly once" true: without it a room
+	 * that gets two simultaneous joins would hydrate twice, and the second would
+	 * overwrite state the first had already started mutating.
+	 *
+	 * The roomId comes from the caller because the DO knows its own id only as an
+	 * opaque hash — idFromName is one-way.
+	 */
+	async ensureHydrated(roomId) {
+		if (kvGet(this.sql, 'hydrated_at')) return true;
+		let ok = false;
+		await this.ctx.blockConcurrencyWhile(async () => {
+			if (kvGet(this.sql, 'hydrated_at')) { ok = true; return; }
+			const data = await hydrate(this.env, roomId);
+			if (!data) return; // room is gone — leave unhydrated so we retry
+			kvSet(this.sql, 'room_id', Number(roomId));
+			kvSet(this.sql, 'room', publicRoom(data.row));
+			kvSet(this.sql, 'members', publicMembers(data.members));
+			kvSet(this.sql, 'members_raw', data.members);
+			if (data.state) kvSet(this.sql, 'state', data.state);
+			// MUST happen before any event is appended: clients hold chat keyed by
+			// Odoo event ids, so a DO minting from 1 would collide with keys already
+			// in their store — a duplicate-key crash in a keyed {#each}.
+			seedSequence(this.sql, data.maxEventId);
+			kvSet(this.sql, 'hydrated_at', Date.now());
+			ok = true;
+		});
+		return ok;
+	}
+
 	async fetch(req) {
 		const url = new URL(req.url);
+		const roomId = Number(req.headers.get('x-room-id')) || kvGet(this.sql, 'room_id');
+		if (roomId) await this.ensureHydrated(roomId);
 
 		if (url.pathname.endsWith('/health')) {
 			return Response.json({
@@ -342,12 +379,20 @@ export class RoomDO {
 			kvSet(this.sql, 'next_trim_at', 0);
 		}
 
-		// M2.2 is dark: archive and heartbeat land in M2.4 with the Odoo client.
-		if (this.isDue('next_archive_at', now)) kvSet(this.sql, 'next_archive_at', 0);
-		if (this.isDue('next_heartbeat_at', now)) kvSet(this.sql, 'next_heartbeat_at', 0);
+		if (this.isDue('next_archive_at', now)) {
+			kvSet(this.sql, 'next_archive_at', 0);
+			await this.flush();
+		}
+
+		if (this.isDue('next_heartbeat_at', now)) {
+			kvSet(this.sql, 'next_heartbeat_at', 0);
+			await this.heartbeat();
+		}
 
 		if (sockets === 0 && this.isDue('next_idle_at', now)) {
 			kvSet(this.sql, 'next_idle_at', 0);
+			// Drain before going quiet: after this there is no timer to come back on.
+			await this.flush();
 			// Deliberately schedule NOTHING here. No timer + no sockets = hibernated
 			// = zero duration billing. This early return is the cost story.
 			return;
@@ -359,5 +404,62 @@ export class RoomDO {
 	isDue(key, now) {
 		const at = kvGet(this.sql, key, 0);
 		return at > 0 && at <= now;
+	}
+
+	/* ---- write-behind ------------------------------------------------------
+	   Odoo is the archive now, not the source of truth. Nothing here is on a
+	   move's critical path — a failure means the durable copy lags, which the
+	   next alarm retries, not that a player is blocked. */
+
+	async flush() {
+		const roomId = kvGet(this.sql, 'room_id');
+		if (!roomId) return;
+		let clean = true;
+
+		const state = kvGet(this.sql, 'state');
+		if (state && kvGet(this.sql, 'state_dirty_at')) {
+			try {
+				await writeStateBack(this.env, roomId, state);
+			} catch (e) {
+				console.error(`flush: state write failed for room ${roomId}:`, e?.message);
+				clean = false;
+			}
+		}
+
+		// Oldest first, so a partial drain leaves a prefix rather than holes.
+		const pending = [...this.sql.exec(
+			'SELECT seq, type, sender, target, payload FROM events WHERE archived = 0 ORDER BY seq ASC LIMIT 200'
+		)];
+		if (pending.length) {
+			const written = await archiveEvents(this.env, roomId, pending);
+			for (const r of pending.slice(0, written)) {
+				this.sql.exec('UPDATE events SET archived = 1 WHERE seq = ?', r.seq);
+			}
+			if (written < pending.length) clean = false;
+		}
+
+		// Only clear the dirty marker on a FULL drain. Clearing it optimistically
+		// would stop the alarm chain re-arming and strand whatever failed.
+		if (clean) kvSet(this.sql, 'state_dirty_at', 0);
+		else this.armAlarms();
+	}
+
+	/**
+	 * Keep last_seen fresh for connected players.
+	 *
+	 * Load-bearing once the poll is gone: presence used to ride the poll, and
+	 * sweepAbandonedRooms deletes any room whose members all look stale. Without
+	 * this, a room full of people talking over sockets would be reaped.
+	 */
+	async heartbeat() {
+		const roomId = kvGet(this.sql, 'room_id');
+		const raw = kvGet(this.sql, 'members_raw', []);
+		const live = [...this.liveUids()];
+		if (!roomId || !raw?.length || !live.length) return;
+		try {
+			await touchLastSeen(this.env, roomId, raw, live);
+		} catch (e) {
+			console.error(`heartbeat failed for room ${roomId}:`, e?.message);
+		}
 	}
 }

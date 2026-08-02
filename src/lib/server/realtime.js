@@ -48,7 +48,9 @@ async function doApply(roomId, op) {
 		}
 		const res = await stub.fetch('https://do/apply', {
 			method: 'POST',
-			headers: { 'content-type': 'application/json' },
+			// x-room-id: the DO cannot derive its own room from its id (idFromName is
+			// one-way), and it needs it to hydrate from Odoo on first touch.
+			headers: { 'content-type': 'application/json', 'x-room-id': String(Number(roomId)) },
 			body: JSON.stringify(op)
 		});
 		if (!res.ok) console.error(`doApply ${op.op} -> ${res.status}`);

@@ -291,25 +291,15 @@ export async function appendEvent(roomId, type, payload, senderUid, targetUid = 
  * the poll slow down; the cost is that the lobby dot is now coarse, going dark
  * up to ~90s after someone actually leaves.
  */
-const PRESENCE_WINDOW_MS = 90000;
-
-/** Members serialized for clients (uid-keyed, presence derived). */
-export function publicMembers(members) {
-	const now = Date.now();
-	return members
-		.filter((m) => m.x_studio_status !== 'rejected')
-		.map((m) => ({
-			id: m.id,
-			uid: m.x_studio_user_id?.[0],
-			name: m.x_studio_user_id?.[1] || m.x_name,
-			status: m.x_studio_status,
-			role: m.x_studio_role,
-			score: m.x_studio_score || 0,
-			online:
-				m.x_studio_last_seen &&
-				now - new Date(m.x_studio_last_seen.replace(' ', 'T') + 'Z').getTime() < PRESENCE_WINDOW_MS
-		}));
-}
+// Presence window and the row->client shapers now live in shared/roomview.js so
+// the room Durable Object can serve byte-identical payloads. Re-exported here
+// because every existing caller imports them from this module.
+// IMPORTED and then exported, never `export … from` — that form creates no local
+// binding, and pushRoster/finishRoom below call publicRoom and publicMembers
+// themselves. Third time this file has hit that trap (see httpError and
+// seatedPlayerIds above); the failure is a ReferenceError at runtime, not build.
+import { PRESENCE_WINDOW_MS, publicRoom, publicMembers } from '../shared/roomview.js';
+export { PRESENCE_WINDOW_MS, publicRoom, publicMembers };
 
 /** Uids of members currently online (last_seen within the presence window). */
 export function onlineUids(members) {
@@ -363,23 +353,6 @@ export function pushRoster(roomId, room, members) {
 }
 
 /** Room serialized for clients — never includes raw state. */
-export function publicRoom(room) {
-	return {
-		id: room.id,
-		name: room.x_name,
-		gameType: room.x_studio_game_type,
-		status: room.x_studio_status,
-		hostUid: room.x_studio_host_id?.[0],
-		hostName: room.x_studio_host_id?.[1],
-		maxPlayers: room.x_studio_max_players,
-		drawsTotal: room.x_studio_draws_total,
-		// the 🔒 chip. The allowed-uid list is deliberately NOT here: this ships on
-		// every roster push and poll, and turning uids into names costs an extra
-		// res.users read. The host fetches the guest list from `invites` instead.
-		visibility: isPrivate(room) ? 'private' : 'public'
-	};
-}
-
 /* ---------------------------- private rooms -------------------------------
    A room is private only when it says so. x_studio_visibility is NULL on every
    row created before the field existed, so "not private" is the safe reading of

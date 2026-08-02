@@ -106,9 +106,14 @@ try {
 	wsB = await connect(B, roomId, 'B');
 	wsA.send(JSON.stringify({ t: 'hello', cursor: 0, gv: 0, v: 1 }));
 	wsB.send(JSON.stringify({ t: 'hello', cursor: 0, gv: 0, v: 1 }));
-	await wsA.waitFor((f) => f.t === 'welcome', 'A welcome');
+	const wa = await wsA.waitFor((f) => f.t === 'welcome', 'A welcome');
 	await wsB.waitFor((f) => f.t === 'welcome', 'B welcome');
-	console.log('[4] both sockets welcomed');
+	console.log(`[4] both welcomed; A sees room=${wa.room?.name ?? 'null'} members=${wa.members?.length ?? 0}`);
+	// Hydration: the DO must have read the room out of Odoo before anyone could
+	// observe it empty. An empty roster here is the bug that made a client render
+	// as though the host had vanished.
+	if (!wa.room) throw new Error('welcome carried no room — DO did not hydrate');
+	if (!wa.members?.length) throw new Error('welcome carried an empty roster — DO did not hydrate');
 
 	// The actual question: A writes over HTTP, B hears it on the socket.
 	const heard = wsB.waitFor((f) => f.t === 'event' && f.event?.type === 'chat', 'B chat event');
