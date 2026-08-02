@@ -577,6 +577,21 @@ const resetDo = () => { globalThis.__doOps = []; globalThis.__doResults = []; gl
 	assert.equal(globalThis.__doOps.length, 1, 'and no write was attempted');
 }
 {
+	// The FIRST guarded write of a room's life must not carry expectV. setState
+	// runs the ownership transfer, which replaces the object's state from a fresh
+	// Odoo read — so a version snapshotted from a pre-transfer copy (possibly a
+	// dropped push, and therefore behind) would meet a different one and reject a
+	// deal nobody raced, as "Someone else just changed this".
+	asDoRoom(71); resetDo();
+	globalThis.__doResults = [
+		{ ok: true, owns: false, state: { v: 6, game: { draw: 2 } } },
+		{ ok: true, state: { v: 9 } }
+	];
+	await writeState(71, { v: 5, game: { draw: 3 } }, {}, dealStillValid(2));
+	assert.equal(globalThis.__doOps[1].expectV, undefined,
+		'no compare-and-set against a copy that is about to be replaced');
+}
+{
 	// …and the object gets the last word: if the state moved between the snapshot
 	// and the write, the predicate's verdict is stale and the write is refused.
 	asDoRoom(71); resetDo();

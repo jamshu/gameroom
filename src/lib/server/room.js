@@ -261,7 +261,14 @@ export async function writeState(roomId, state, extraVals = {}, { guardVersion =
 				if (!stillValid(snap.state)) {
 					throw httpError(409, 'Someone else just changed this — try again', 'conflict');
 				}
-				expectV = Number(snap.state?.v) || 0;
+				// ONLY when the object already owns the state. On the transfer write,
+				// setState runs ensureOwned first, which replaces kv.state from a fresh
+				// Odoo read — so a version snapshotted from a pre-transfer copy (which
+				// may be a dropped push, and therefore behind) would meet a different
+				// one and reject a deal nobody raced. There is no concurrent writer to
+				// guard against at the transfer anyway, and that fresh read is the
+				// stronger guarantee.
+				if (snap.owns) expectV = Number(snap.state?.v) || 0;
 			}
 		}
 		if (!evacuated) {

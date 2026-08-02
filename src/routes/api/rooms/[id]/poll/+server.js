@@ -57,7 +57,13 @@ export async function GET({ params, url, cookies, platform }) {
 		if (doEvents && !doEvents.ok && !isEvacuated(doEvents)) {
 			throw httpError(503, 'The room is busy — try again', 'do_unreachable');
 		}
-		const fromDo = doEvents?.ok ? doEvents : null;
+		// `owns`, not merely "the object answered". Before the ownership transfer its
+		// log holds only the pushes delivered since it woke, while Odoo holds the
+		// room's whole history — serving from the object there would show a client
+		// opening an established room an empty one, which is a regression against
+		// M2.3 rather than a new behaviour. And it is safe by construction: `append`
+		// is an owning op, so while this is false no DO-minted id exists to miss.
+		const fromDo = doEvents?.ok && doEvents.owns ? doEvents : null;
 
 		// events: public ones + those privately targeted at me (WebRTC signals)
 		const [events] = await Promise.all([

@@ -160,15 +160,29 @@ export class RoomDO {
 	 *
 	 * Order matters: flush, THEN mark, THEN close. Marking first would let the
 	 * flush's own writes race a route that has already fallen back.
+	 *
+	 * blockConcurrencyWhile around the flush-and-mark is what makes the promise
+	 * above actually true. flush() awaits Odoo, and a setState landing in that
+	 * window calls markDirty() — which is a NO-OP when state_dirty_at is already
+	 * set. flush then clears the marker on its way out, the check below passes,
+	 * and that write is gone with no alarm left to retry it. Holding the object
+	 * across both means there is no window for an op to land in.
 	 */
 	async evacuate() {
 		if (kvGet(this.sql, 'evacuated')) return { ok: true, already: true };
-		await this.flush();
-		if (kvGet(this.sql, 'state_dirty_at')) {
-			return { ok: false, error: 'flush incomplete — room stays on the DO' };
-		}
-		kvSet(this.sql, 'evacuated', 1);
-		kvSet(this.sql, 'owns_state', 0);
+		let drained = false;
+		await this.ctx.blockConcurrencyWhile(async () => {
+			await this.flush();
+			// Only a FULL drain clears this; anything still owed leaves the room owned
+			// and serving, which is the recoverable outcome.
+			if (kvGet(this.sql, 'state_dirty_at')) return;
+			kvSet(this.sql, 'evacuated', 1);
+			kvSet(this.sql, 'owns_state', 0);
+			drained = true;
+		});
+		if (!drained) return { ok: false, error: 'flush incomplete — room stays on the DO' };
+		// Outside the block on purpose: `evacuated` is set, so apply() already
+		// rejects everything and there is nothing left to race.
 		for (const ws of this.ctx.getWebSockets()) {
 			try {
 				ws.close(CLOSE.EVACUATED, 'evacuated');
@@ -406,6 +420,14 @@ export class RoomDO {
 				const events = gap ? newestFor(this.sql, uid) : eventsFor(this.sql, uid, since);
 				return {
 					ok: true,
+					// THE CALLER MUST CHECK THIS. Until the transfer, this object's log
+					// holds only the pushes delivered since it woke — Odoo holds the
+					// room's actual history, and answering from here would show a client
+					// opening a room with a year of chat an empty one. `owns` is the exact
+					// discriminator rather than a heuristic: `append` is an owning op, so
+					// while this is false no DO-minted id exists anywhere and Odoo is
+					// complete by construction.
+					owns: !!kvGet(this.sql, 'owns_state'),
 					events,
 					// uptoOf, not headSeq: targeted signals are filtered out of `events`
 					// for everyone but their recipient, so the head can cover an event
