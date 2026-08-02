@@ -51,9 +51,27 @@ export function welcome({ room, members, state, events, epoch, gap = false }) {
 	return f;
 }
 
-/** A per-uid filtered state push. `upto` is stamped by the caller at append time. */
-export function stateFrame(state, upto) {
-	return { t: 'state', state, upto };
+/**
+ * A per-uid filtered state push.
+ *
+ * DELIBERATELY CARRIES NO `upto`, and this is load-bearing.
+ *
+ * A state frame delivers no events, so it cannot vouch for any of them. It is
+ * also sent to EVERY socket, whereas targeted events go to one — so stamping the
+ * current head here tells every client "you have everything up to N" when N may
+ * be a WebRTC signal that went to a single recipient.
+ *
+ * That is how voice broke: a signal for B at seq N, a game move immediately
+ * after broadcasting upto=N to everyone, and any socket that missed the signal
+ * frame still advanced its cursor past it. The poll's `?since=N` then never
+ * refetched it, so the offer/answer/ICE was lost for good — the peer sat in
+ * `connecting` until the watchdog tore it down, and the player had to rejoin.
+ *
+ * Only frames that actually deliver events may move the watermark: eventFrame
+ * (to its recipient) and welcome/resync (from what the replay contained).
+ */
+export function stateFrame(state) {
+	return { t: 'state', state };
 }
 
 /** One event, already filtered for this socket's uid. */

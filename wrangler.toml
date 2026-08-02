@@ -68,7 +68,7 @@ run_worker_first = ["/api/*", "/_app/env.js"]
 # isolates anyway, so a real schedule is strictly better than the "no cron
 # needed" trick it replaces.
 [triggers]
-crons = ["*/5 * * * *"]
+crons = ["*/10 * * * *"]
 
 [observability]
 enabled = true
@@ -96,7 +96,7 @@ new_sqlite_classes = ["RoomDO"]
 DO_LOCATION_HINT = "me"
 # Rollout flag: off | all | "1,7,42" | "pct:20". Deterministic per room, so a
 # room never flips mid-game (see src/lib/shared/doflag.js). `off` until M2.3.
-DO_ROOMS = "off"
+DO_ROOMS = "all"
 
 # NOTE: `routes` lives near the top of this file, above [assets]. It cannot go
 # here — see the comment there.

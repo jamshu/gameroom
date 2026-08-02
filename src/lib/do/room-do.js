@@ -193,12 +193,12 @@ export class RoomDO {
 	 * is the append half of the upto invariant (see frames.js). One stateView per
 	 * uid rather than per socket, so two tabs cost one filter.
 	 */
-	broadcastState(state, upto) {
+	broadcastState(state) {
 		const cache = new Map();
 		for (const ws of this.ctx.getWebSockets()) {
 			const { uid } = ws.deserializeAttachment() ?? {};
 			if (!uid) continue;
-			if (!cache.has(uid)) cache.set(uid, JSON.stringify(stateFrame(stateView(state, uid), upto)));
+			if (!cache.has(uid)) cache.set(uid, JSON.stringify(stateFrame(stateView(state, uid))));
 			try {
 				ws.send(cache.get(uid));
 			} catch {
@@ -279,7 +279,7 @@ export class RoomDO {
 
 	applyState(state) {
 		kvSet(this.sql, 'state', state);
-		this.broadcastState(state, headSeq(this.sql));
+		this.broadcastState(state);
 		this.markDirty();
 	}
 

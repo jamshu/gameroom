@@ -205,7 +205,12 @@ export function createRoomStore(roomId) {
 			}
 			const next = { ...s, chat: trimChat(chat), events: evs.slice(-50), error: null };
 			if (room) next.room = room;
-			if (members) next.members = members;
+			// `members?.length`, NOT `members`: [] is truthy, so a welcome from a DO
+			// that has not hydrated yet would REPLACE a good roster with nothing and
+			// the room would render as if the host had vanished — until the next
+			// poll, which on the push cadence is up to 60s away. An empty roster is
+			// never meaningful anyway; a room always has at least its host.
+			if (members?.length) next.members = members;
 			const merged = mergeState(next, state);
 			// Stage 0: which transport actually delivered a version bump. A bump
 			// discovered by POLL means the push didn't land and somebody sat out a
@@ -535,7 +540,9 @@ export function createRoomStore(roomId) {
 			}
 			case 'state':
 				markActive();
-				ingest({ state: f.state, upto: f.upto }, 'push');
+				// No `upto` on purpose — a state frame delivers no events, so it may
+				// not move the event cursor. See frames.js stateFrame.
+				ingest({ state: f.state }, 'push');
 				break;
 			case 'event':
 				markActive();

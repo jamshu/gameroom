@@ -137,7 +137,23 @@ try {
 	const r = await roster;
 	console.log(`[6] B received roster ts=${r.ts} members=${r.members?.length}`);
 
-	console.log('\nPASS: HTTP write by A -> DO -> socket frame at B, upto == event id, Odoo id space preserved.');
+	// REGRESSION (voice): a state frame must not move the event cursor.
+	// A targeted signal goes only to its recipient. If the state broadcast that
+	// follows carried the log head as `upto`, every socket would advance past it —
+	// and any socket that missed the signal frame would lose it permanently. The
+	// poll's `?since=` never asks again, so the WebRTC offer/ICE is gone and the
+	// peer sits in `connecting` until the watchdog forces a rejoin.
+	const sawState = wsA.waitFor((f) => f.t === 'state', 'A state frame');
+	res = await fetch(`${BASE}/api/rooms/${roomId}/voice`, {
+		method: 'POST', headers: { 'content-type': 'application/json', cookie: A.cookie() },
+		body: JSON.stringify({ action: 'join' })
+	});
+	if (!res.ok) throw new Error('voice join failed: ' + JSON.stringify(await j(res)));
+	const sf = await sawState;
+	console.log(`[7] A state frame keys=[${Object.keys(sf).join(',')}]`);
+	if ('upto' in sf) throw new Error('state frame carries upto — the bug that loses WebRTC signals');
+
+	console.log('\nPASS: push delivered, upto == event id, Odoo id space preserved, state frames carry no watermark.');
 } finally {
 	try { wsA?.close(); wsB?.close(); } catch { /* ignore */ }
 	await del(A); await del(B);
