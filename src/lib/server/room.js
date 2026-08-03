@@ -735,11 +735,21 @@ export async function purgeUserRooms(uid) {
 // looks abandoned. Ten minutes against a sixty-second heartbeat is still a
 // tenfold margin.
 const ABANDON_MIN = 10;
-// Ceiling per cron tick. Each deleteRoom is 4-7 sequential Odoo calls, and a
-// Workers invocation has a subrequest budget — so an unbounded backlog must
-// drain over several ticks rather than blowing one up. At 5-minute ticks this
-// clears 240 rooms/hour, far beyond any plausible accumulation.
-const SWEEP_BATCH = 20;
+// Ceiling per cron tick. Each deleteRoom is 4-7 sequential Odoo calls plus one
+// Durable Object destroy, and a Workers invocation has a subrequest budget — so
+// an unbounded backlog must drain over several ticks rather than blowing one up.
+//
+// COUPLED TO THE CRON FREQUENCY IN wrangler.toml: deletion capacity is
+// frequency x this number, and only the product means anything. It was 20 at
+// 10-minute ticks (2880 rooms/day). The schedule is now daily, so 20 would have
+// capped deletion at 20 rooms/day and made any larger backlog permanent — 60
+// keeps a day's worth of abandonment clearable in the tick that follows it.
+//
+// Sized against the subrequest budget, not against demand: 60 rooms x ~8 calls
+// is ~480, which leaves real headroom under the cap. Push it much past 100 and
+// the tick starts risking the limit it exists to respect. If 60/day ever stops
+// being enough, add a second daily tick rather than growing this.
+const SWEEP_BATCH = 60;
 
 /**
  * Best-effort deletion of rooms whose every member has been offline > 10min.
@@ -750,6 +760,14 @@ const SWEEP_BATCH = 20;
  * Workers there are many short-lived isolates, so it would have fired far more
  * often while a user merely listed rooms — each time doing an unbounded serial
  * delete loop. A schedule is both cheaper and honest about what this is.
+ *
+ * ELIGIBILITY AND COLLECTION ARE DIFFERENT CLOCKS, and the gap is now a day.
+ * ABANDON_MIN says a room may be collected 10 minutes after its last member goes
+ * quiet; the daily cron says when anyone looks. So an abandoned room lives up to
+ * ~24h, and browseDomain has no staleness filter — it excludes only `finished` —
+ * which means dead lobbies stay in the room list until the next sweep. That is
+ * the visible cost of the daily schedule, and it is a listing concern, not a
+ * storage one: hiding them is a change to browseDomain, not to this.
  */
 export async function sweepAbandonedRooms() {
 	try {

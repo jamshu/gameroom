@@ -67,8 +67,20 @@ run_worker_first = ["/api/*", "/_app/env.js"]
 # 60s throttle was per-process and is meaningless across many short-lived
 # isolates anyway, so a real schedule is strictly better than the "no cron
 # needed" trick it replaces.
+#
+# ONCE A DAY, AT A QUIET HOUR — and the hour is the point, not tidiness. The
+# sweep is a burst of sequential Odoo calls (SWEEP_BATCH rooms x ~7 each) against
+# a budget of roughly 1 req/s shared with every player in every room. Spread over
+# 144 ticks a day that was invisible; in one burst it is not, and it WILL take
+# 429s and ride the retry backoff. At 01:00 UTC (≈04:00 for a Middle East player
+# base, matching DO_LOCATION_HINT) there is nobody to take them from.
+#
+# CAPACITY IS frequency x SWEEP_BATCH. This was 144 x 20 = 2880 rooms/day; it is
+# now 1 x 60. Raising the batch was NOT optional when the frequency dropped —
+# leaving it at 20 would have quietly capped deletion at 20 rooms/day forever,
+# and a backlog past that could never drain. Change one, look at the other.
 [triggers]
-crons = ["*/10 * * * *"]
+crons = ["0 1 * * *"]
 
 [observability]
 enabled = true
