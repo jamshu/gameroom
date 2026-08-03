@@ -53,17 +53,32 @@ describe('the idle alarm', () => {
 	});
 
 	it('but a dirty room DOES re-arm, or the write-behind would strand', async () => {
-		// The contrast matters: without it the test above passes just as well on an
-		// object whose alarms never work at all.
+		// THE CONTRAST HAS TO GO THROUGH alarm(), or the pair is vacuous: an alarm()
+		// body of `{ return; }` satisfies the test above on both counts — it "ran",
+		// and it left nothing scheduled. Only re-arming from inside the handler
+		// distinguishes "deliberately went quiet" from "does nothing at all".
 		const stub = freshRoom('dirty-rearms');
 		await seedHydrated(stub);
 
 		await runInDurableObject(stub, async (instance, state) => {
-			// Something is owed, and there is a socket, so this is not the idle case.
+			// Something is owed to Odoo and no socket is open — the same shape as the
+			// idle test, differing only in being dirty. Odoo is unreachable here, so
+			// the flush fails, which is precisely the case that must re-arm rather
+			// than strand the write.
 			kvSet(instance.sql, 'state_dirty_at', Date.now());
-			kvSet(instance.sql, 'next_archive_at', Date.now() + 15_000);
-			instance.armAlarms();
+			kvSet(instance.sql, 'owns_state', 1);
+			kvSet(instance.sql, 'state', { v: 2, voice: [], game: null });
+			kvSet(instance.sql, 'next_archive_at', Date.now() - 1);
+			kvSet(instance.sql, 'next_idle_at', 0);
+			await state.storage.setAlarm(Date.now() + 60_000);
+		});
+
+		expect(await runDurableObjectAlarm(stub)).toBe(true);
+
+		await runInDurableObject(stub, async (instance, state) => {
 			expect(await state.storage.getAlarm()).not.toBe(null);
+			// And it is still owed, so the retry has something to do.
+			expect(kvGet(instance.sql, 'state_dirty_at')).toBeTruthy();
 		});
 	});
 

@@ -736,9 +736,36 @@ export function setHost(roomId, uid) {
 	return adminExecute(ROOM, 'write', [[Number(roomId)], { x_studio_host_id: Number(uid) }]);
 }
 
-/** Delete a room and all its rows (FK-safe order: media → events → members → room). */
+/**
+ * Delete a room and all its rows (FK-safe order: media → events → members → room).
+ *
+ * TELLS THE DURABLE OBJECT FIRST, and that ordering is not cosmetic. The object
+ * write-behinds on an alarm, and flush() re-arms itself whenever a drain fails:
+ *
+ *   room deleted in Odoo → the object's archive alarm fires → writeStateBack
+ *   writes a record that no longer exists → throws → clean = false →
+ *   armAlarms() → due again in 15s → fails again → forever
+ *
+ * That is one doomed Odoo call every fifteen seconds, per dead room, for as long
+ * as the account exists — charged against the same ~1 req/s budget this whole
+ * milestone exists to get off. It also pins the object awake, so an ended room
+ * never stops billing. An orphan that retries forever is far worse than one that
+ * merely lingers.
+ *
+ * Reached by the host leaving an empty room, by account deletion
+ * (purgeUserRooms) and by the abandoned-room cron — all three go through here,
+ * which is why the call belongs at this level rather than at the three sites.
+ * The cron path has a request context (the `scheduled` handler dispatches
+ * through inner.fetch), so the binding resolves there too.
+ *
+ * Best-effort: the Odoo rows are what actually make the room gone, and failing
+ * to reach the object must not leave them behind.
+ */
 export async function deleteRoom(roomId) {
 	const id = Number(roomId);
+	// Before the Odoo rows go, so the object never gets a window in which it is
+	// still write-behinding a room that has already ceased to exist.
+	if (isDoRoom(id)) await doOp(id, { op: 'destroy' });
 	// Chat media dies with the room. Unlinked explicitly rather than leaning on
 	// Odoo's implicit attachment cleanup, same as the rows below.
 	const media = await adminExecute(ATTACH, 'search', [

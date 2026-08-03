@@ -225,6 +225,10 @@ export class RoomDO {
 			// is precisely what breaks the upto invariant — so anything needing Odoo
 			// has to finish before it is entered, never inside it.
 			if (op?.op === 'evacuate') return Response.json(await this.evacuate());
+			if (op?.op === 'destroy') {
+				await this.destroy();
+				return Response.json({ ok: true });
+			}
 			if (OWNING_OPS.has(op?.op) && !kvGet(this.sql, 'evacuated')) {
 				if (!(await this.ensureOwned(roomId))) {
 					// Never fall through to a write on a room whose ownership could not
@@ -473,16 +477,31 @@ export class RoomDO {
 			case 'kick':
 				this.kick(op.uid);
 				return { ok: true };
-			case 'destroy':
-				this.destroy();
-				return { ok: true };
+			// 'destroy' and 'evacuate' are NOT here — both await, and this switch is
+			// await-free on purpose (the upto invariant). They are intercepted in
+			// fetch() before it is entered.
 			default:
 				return { ok: false, error: `unknown op ${op?.op}` };
 		}
 	}
 
-	/** Wipe everything and stop. Used when the room is deleted upstream. */
-	destroy() {
+	/**
+	 * Wipe everything and stop. Used when the room is deleted upstream.
+	 *
+	 * `deleteAll()` DROPS THE TABLES, it does not merely empty them — every
+	 * subsequent kvGet on this instance throws "no such table: kv" until the
+	 * object is evicted and the constructor's migrate runs again. So re-migrate
+	 * here and leave a valid, empty object behind. (Verified in
+	 * worker-test/destroy.test.js; assuming rows-not-tables is the natural
+	 * reading and it is wrong.)
+	 *
+	 * The alarm goes with it. Without that, a pending archive fires into an empty
+	 * object minutes later, tries to write a room Odoo no longer has, fails, and
+	 * re-arms itself — one doomed Odoo call every 15 seconds, forever, against a
+	 * budget the whole app shares. An orphan that never stops is worse than one
+	 * that never runs.
+	 */
+	async destroy() {
 		for (const ws of this.ctx.getWebSockets()) {
 			try {
 				ws.close(CLOSE.KICKED, 'room deleted');
@@ -490,7 +509,9 @@ export class RoomDO {
 				/* ignore */
 			}
 		}
-		this.ctx.storage.deleteAll();
+		await this.ctx.storage.deleteAll();
+		await this.ctx.storage.deleteAlarm();
+		migrate(this.sql);
 	}
 
 	/** Append an event and push it, honouring the target filter. */

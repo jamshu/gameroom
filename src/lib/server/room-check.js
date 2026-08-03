@@ -695,6 +695,23 @@ const resetDo = () => { globalThis.__doOps = []; globalThis.__doResults = []; gl
 	assert.ok(!state.voice.includes(303), 'still dropped from voice, as before');
 	assert.ok(state.banned.includes(303), 'and still marked removed-by-host');
 }
+// 29. Deleting a room must tell the object BEFORE Odoo's rows go, or it is left
+//     write-behinding a room that no longer exists — and flush() re-arms on
+//     failure, so that is one doomed Odoo call every 15s forever, per dead room,
+//     against the budget this whole milestone exists to get off.
+{
+	asDoRoom(71); resetDo();
+	globalThis.__doResults = [{ ok: true }];
+	await deleteRoom(71);
+
+	assert.equal(globalThis.__doOps[0]?.op, 'destroy', 'the object is told first');
+	// Ordering is the point: every Odoo unlink must come after it.
+	assert.ok(globalThis.__odooCalls.length > 0, 'and the Odoo rows still go');
+	assert.ok(
+		globalThis.__odooCalls.some((c) => c.method === 'unlink' && c.model === 'x_gameroom'),
+		'including the room row itself'
+	);
+}
 noDoRooms();
 
 console.log('room-check: all assertions passed (incl. DO dispatch, fail-closed and evacuation)');
