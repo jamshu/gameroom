@@ -62,6 +62,24 @@ export async function hydrate(env, roomId) {
 	return { row, members, state, maxEventId: maxEvent?.[0]?.id ?? 0 };
 }
 
+/**
+ * Does this room still exist in Odoo? One read, one field.
+ *
+ * Asked only after a flush has failed repeatedly, because the answer decides
+ * whether the object is retrying something transient or is an ORPHAN — a room
+ * deleted upstream by a path that never reached it. An orphan that keeps
+ * retrying is the worst shape available: flush() re-arms on failure, so it never
+ * hibernates and never stops spending the shared Odoo budget.
+ *
+ * Deliberately not folded into hydrate(): that is three calls, and this is asked
+ * on a failure path where the whole point is to spend as little as possible.
+ */
+export async function roomExists(env, roomId) {
+	const odoo = adminFor(env);
+	const rows = await odoo.adminExecute(ROOM_MODEL, 'read', [[Number(roomId)]], { fields: ['id'] });
+	return !!rows?.[0];
+}
+
 /** Persist the state blob. The DO owns it now; this is the durable copy. */
 export async function writeStateBack(env, roomId, state) {
 	const odoo = adminFor(env);

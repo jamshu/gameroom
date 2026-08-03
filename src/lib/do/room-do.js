@@ -11,7 +11,7 @@ import {
 	REPLAY_MAX
 } from './schema.js';
 import { welcome, stateFrame, eventFrame, rosterFrame, aimFrame, ackFrame, errFrame, uptoOf, hasGap, withSeq, CLOSE } from './frames.js';
-import { hydrate, recentEvents, writeStateBack, archiveEvents, touchLastSeen } from './odoo-bridge.js';
+import { hydrate, recentEvents, roomExists, writeStateBack, archiveEvents, touchLastSeen } from './odoo-bridge.js';
 import { publicRoom, publicMembers } from '../shared/roomview.js';
 
 /* Alarm cadences. One alarm, multiplexed: each job stores its own due time in
@@ -25,6 +25,10 @@ const ARCHIVE_MS = 15_000; // while state/events are dirty
 const HEARTBEAT_MS = 60_000; // while >=1 socket — keeps Odoo last_seen fresh
 const TRIM_MS = 600_000;
 const IDLE_MS = 300_000; // after the last socket closes
+/* Consecutive failed flushes before spending one read on "does this room still
+   exist?". Low enough that an orphan stops within a minute or so, high enough
+   that an ordinary Odoo blip never pays for the question. */
+const FLUSH_FAILS_BEFORE_ORPHAN_CHECK = 3;
 
 /* Ops that make this object the source of truth, and therefore have to run the
    one-way ownership transfer first. Everything else — pushes from routes that
@@ -619,6 +623,12 @@ export class RoomDO {
 		this.armAlarms();
 	}
 
+	/** Archive retry interval: 15s, doubling per consecutive failure, capped at 10m. */
+	archiveBackoffMs() {
+		const fails = Number(kvGet(this.sql, 'flush_fails', 0)) || 0;
+		return Math.min(ARCHIVE_MS * 2 ** Math.min(fails, 6), 600_000);
+	}
+
 	/* ---- alarms ----------------------------------------------------------- */
 
 	armAlarms() {
@@ -627,7 +637,12 @@ export class RoomDO {
 		const dirty = !!kvGet(this.sql, 'state_dirty_at');
 
 		const due = [];
-		if (dirty) due.push(this.ensureDue('next_archive_at', now + ARCHIVE_MS));
+		// Back the archive off exponentially while it keeps failing. Odoo being
+		// down, or a room deleted underneath us, would otherwise mean a doomed call
+		// every 15 seconds for as long as the object exists — against the ~1 req/s
+		// budget the whole app shares. Capped, and reset to ARCHIVE_MS the moment a
+		// flush drains cleanly, so an ordinary blip costs nothing.
+		if (dirty) due.push(this.ensureDue('next_archive_at', now + this.archiveBackoffMs()));
 		if (sockets > 0) {
 			due.push(this.ensureDue('next_heartbeat_at', now + HEARTBEAT_MS));
 			due.push(this.ensureDue('next_trim_at', now + TRIM_MS));
@@ -731,8 +746,43 @@ export class RoomDO {
 
 		// Only clear the dirty marker on a FULL drain. Clearing it optimistically
 		// would stop the alarm chain re-arming and strand whatever failed.
-		if (clean) kvSet(this.sql, 'state_dirty_at', 0);
-		else this.armAlarms();
+		if (clean) {
+			kvSet(this.sql, 'state_dirty_at', 0);
+			kvSet(this.sql, 'flush_fails', 0);
+			return;
+		}
+
+		/* ORPHAN SELF-HEAL.
+		   A room deleted upstream leaves an object that can never drain: every
+		   archive write targets rows Odoo no longer has, fails, and re-arms — so it
+		   never hibernates and spends the shared Odoo budget forever. deleteRoom
+		   now sends `destroy`, but that only covers deletes that REACH the object;
+		   a transient failure there, or any room deleted before that wiring
+		   existed, still strands one. Measured, not theoretical: six orphans
+		   accumulated from six probe runs inside an hour, each retrying every 15s.
+
+		   So after a few consecutive failures, spend ONE read asking whether the
+		   room still exists. Gone means this object has nothing left to do and
+		   should stop existing; still there means Odoo is merely unhappy, and the
+		   backoff above carries it. */
+		const fails = (Number(kvGet(this.sql, 'flush_fails', 0)) || 0) + 1;
+		kvSet(this.sql, 'flush_fails', fails);
+		if (fails >= FLUSH_FAILS_BEFORE_ORPHAN_CHECK) {
+			try {
+				if (!(await roomExists(this.env, roomId))) {
+					console.log(`room ${roomId} is gone from Odoo — destroying the orphaned object`);
+					await this.destroy();
+					return; // storage is wiped; there is nothing left to re-arm for
+				}
+				// It exists, so this is a real outage. Don't re-ask on every alarm.
+				kvSet(this.sql, 'flush_fails', 1);
+			} catch (e) {
+				// The existence check itself failed, which means Odoo is unreachable
+				// rather than the room being gone — exactly when NOT to self-destruct.
+				console.error(`orphan check failed for room ${roomId}:`, e?.message);
+			}
+		}
+		this.armAlarms();
 	}
 
 	/**

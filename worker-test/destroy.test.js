@@ -75,3 +75,58 @@ describe('destroy', () => {
 		});
 	});
 });
+
+// ---------------------------------------------------------------------------
+// ORPHAN SELF-HEAL. deleteRoom sends `destroy`, but that only covers deletes
+// that REACH the object. A transient failure there — or any room deleted before
+// that wiring existed — strands an object that can never drain: every archive
+// write targets rows Odoo no longer has, fails, and re-arms. It never
+// hibernates and spends the shared Odoo budget forever.
+//
+// This was measured, not theorised: six orphans accumulated from six probe runs
+// inside an hour, each retrying every 15 seconds.
+describe('a flush that can never succeed', () => {
+	it('backs off instead of retrying every 15s', async () => {
+		const stub = env.ROOM.get(env.ROOM.idFromName('orphan-backoff'));
+		await runInDurableObject(stub, (instance) => {
+			kvSet(instance.sql, 'hydrated_at', Date.now());
+			kvSet(instance.sql, 'room_id', 42);
+			// The interval is a pure function of the failure count, so it can be
+			// asserted without waiting out real alarms.
+			kvSet(instance.sql, 'flush_fails', 0);
+			expect(instance.archiveBackoffMs()).toBe(15_000);
+			kvSet(instance.sql, 'flush_fails', 3);
+			expect(instance.archiveBackoffMs()).toBe(120_000);
+			kvSet(instance.sql, 'flush_fails', 99);
+			expect(instance.archiveBackoffMs()).toBe(600_000); // capped, not unbounded
+		});
+	});
+
+	it('does NOT self-destruct when Odoo is merely unreachable', async () => {
+		// The distinction that matters. The orphan check asks "is the room gone?";
+		// if that question itself cannot be answered, the answer is not "yes".
+		// Odoo is unreachable in this harness, so roomExists throws — and the object
+		// must survive, because destroying it here would discard unflushed state
+		// during an ordinary outage.
+		const stub = env.ROOM.get(env.ROOM.idFromName('orphan-outage'));
+		await runInDurableObject(stub, (instance) => {
+			kvSet(instance.sql, 'hydrated_at', Date.now());
+			kvSet(instance.sql, 'owns_state', 1);
+			kvSet(instance.sql, 'room_id', 42);
+			kvSet(instance.sql, 'state', { v: 3, voice: [], game: null });
+			kvSet(instance.sql, 'state_dirty_at', Date.now());
+			kvSet(instance.sql, 'flush_fails', 5); // already past the threshold
+			appendEvent(instance.sql, { type: 'chat', sender: 7, payload: { text: 'unflushed' } });
+		});
+
+		await runInDurableObject(stub, (instance) => instance.flush());
+
+		await runInDurableObject(stub, (instance) => {
+			// Storage intact, still dirty, still owed — the retry has something to do.
+			expect(kvGet(instance.sql, 'hydrated_at')).toBeTruthy();
+			expect(kvGet(instance.sql, 'state_dirty_at')).toBeTruthy();
+			expect(headSeq(instance.sql)).toBeGreaterThan(0);
+			expect(kvGet(instance.sql, 'flush_fails')).toBeGreaterThan(0);
+		});
+	});
+});
