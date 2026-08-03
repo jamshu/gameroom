@@ -455,6 +455,12 @@ export async function appendEvent(roomId, type, payload, senderUid, targetUid = 
 // seatedPlayerIds above); the failure is a ReferenceError at runtime, not build.
 import { PRESENCE_WINDOW_MS, publicRoom, publicMembers } from '../shared/roomview.js';
 export { PRESENCE_WINDOW_MS, publicRoom, publicMembers };
+// syncVoiceSince moved to shared/gamelogic.js so the Durable Object can call it:
+// a socket closing is now what ends a call, and that happens inside the object.
+// Imported and re-exported, never `export … from` — dropMember below calls it.
+// Fourth time this file has hit that trap; see the notes above.
+import { syncVoiceSince } from '../shared/gamelogic.js';
+export { syncVoiceSince };
 
 /** Uids of members currently online (last_seen within the presence window). */
 export function onlineUids(members) {
@@ -467,23 +473,6 @@ export function onlineUids(members) {
 		}
 	}
 	return set;
-}
-
-/**
- * Drop voice-roster members who have gone offline — closed the tab, crashed, or
- * navigated away without the (best-effort) leave beacon landing. Returns true if
- * it removed anyone; the caller persists via writeState so the cleaned roster
- * reaches the room. The polling member always counts as online (it just
- * heartbeated), so this never prunes the caller itself.
- */
-export function pruneStaleVoice(state, members) {
-	if (!state?.voice?.length) return false;
-	const live = onlineUids(members);
-	const kept = state.voice.filter((u) => live.has(u));
-	if (kept.length === state.voice.length) return false;
-	state.voice = kept;
-	syncVoiceSince(state);
-	return true;
 }
 
 /**
@@ -570,31 +559,6 @@ const playerCapacityFor = (room) =>
  * list, because those two must have identical effects — a difference between
  * them is how you get a member who is out of the list but still in the room.
  */
-/**
- * Keep the call-start stamp in step with the voice roster.
- *
- * A call only exists once there are two people in it, so the clock starts on the
- * SECOND join and clears when the roster drops back under two — one person sitting
- * in voice is waiting, not talking. Only writes the stamp when it is absent, so a
- * third person joining does not restart a call already in progress.
- *
- * Lives here rather than beside stateView because gamelogic.js already imports
- * from this module, and the reverse import would close a cycle. stateView needs
- * only the field, not the function.
- *
- * Call from EVERY site that touches state.voice — voice join/leave, leaving the
- * room, and being removed by the host. One helper is what stops those drifting.
- */
-export function syncVoiceSince(state) {
-	if (!state) return state;
-	const live = (state.voice || []).length >= 2;
-	if (live) state.voiceSince = state.voiceSince || Date.now();
-	else state.voiceSince = null;
-	return state;
-}
-
-/** `roomId` is optional only so the two existing callers could adopt it one at a
- *  time; without it the removed player keeps a live socket. Always pass it. */
 export async function dropMember(target, state, roomId = null) {
 	// 'left', not 'rejected': publicMembers filters `rejected` out entirely, which
 	// would retroactively degrade their name to `#uid` across chat history.
@@ -788,20 +752,17 @@ export async function purgeUserRooms(uid) {
 }
 
 // Minutes with every member offline → abandoned. Coupled to the presence
-// heartbeat: HEARTBEAT_AFTER_MS (45s) and PRESENCE_WINDOW_MS (90s) both have to
-// stay far under this, or a room full of people polling exactly as designed gets
-// deleted out from under them.
+// heartbeat: the object refreshes last_seen for every connected player once a
+// MINUTE, and PRESENCE_WINDOW_MS (90s) has to stay far under this, or a room
+// full of people would get deleted out from under them.
 //
-// Widened 10 → 30 with M2.4. Presence no longer rides the poll for DO rooms: a
-// socket-connected player refreshes last_seen from the object's heartbeat alarm,
-// which runs once a MINUTE for the whole room instead of once per client per
-// poll. That is the point — it is what takes ~3 Odoo calls per client per 1.5s
-// down to one per room per minute — but it means a single missed alarm (a flush
-// that failed, an object still cold) now costs a far larger share of the window
-// than a single missed poll ever did. 30 minutes buys back the margin the
-// batching spent. Reverted at M2.6, when live socket presence removes the
-// last_seen round trip entirely.
-const ABANDON_MIN = 30;
+// Went 10 → 30 for M2.4 and back to 10 here, as the plan intended. The widening
+// bought margin while a missed heartbeat alarm was the only thing standing
+// between a live room and the sweep; M2.6 gives presence a second, independent
+// source — an open socket — so a single failed alarm no longer means the room
+// looks abandoned. Ten minutes against a sixty-second heartbeat is still a
+// tenfold margin.
+const ABANDON_MIN = 10;
 // Ceiling per cron tick. Each deleteRoom is 4-7 sequential Odoo calls, and a
 // Workers invocation has a subrequest budget — so an unbounded backlog must
 // drain over several ticks rather than blowing one up. At 5-minute ticks this

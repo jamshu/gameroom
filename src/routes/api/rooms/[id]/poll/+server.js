@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import { adminExecute } from '$lib/server/odoo.js';
-import { EVENT, MEMBER, requireMemberCached, parseState, publicRoom, publicMembers, pruneStaleVoice, writeState, jsonError, httpError } from '$lib/server/room.js';
+import { EVENT, MEMBER, requireMemberCached, parseState, publicRoom, publicMembers, writeState, jsonError, httpError } from '$lib/server/room.js';
 import { resolveClaims, filterPickRows, stateView } from '$lib/server/gamelogic.js';
 import { isContendedPhase } from '$lib/games.js';
 import { isDoRoom } from '$lib/server/doflag.js';
@@ -110,31 +110,27 @@ export async function GET({ params, url, cookies, platform }) {
 						payload: safeParse(e.x_studio_payload)
 					})),
 			room: publicRoom(room),
-			members: publicMembers(members)
+			// Live socket presence, unioned with last_seen — see roomview.isOnline.
+			// Without the object's view this envelope would disagree with the roster
+			// frames the very same room receives on the socket, and a presence dot
+			// that flickers when a client changes transport is close to
+			// unattributable.
+			members: publicMembers(members, fromDo ? new Set(fromDo.liveUids) : null)
 		};
 		// Additive: `since = 0` is a fresh client and needs no flag, so this only
 		// ever appears on a cursor that genuinely fell off the retained log.
 		if (fromDo?.gap) out.gap = true;
 
 		const state = parseState(room);
-		// Prune voice-roster ghosts (offline members). writeState bumps the version
-		// and pushes the cleaned roster to everyone; the `state.v > gv` gate below
-		// then also serves it. Only writes when something is actually stale, so a
-		// healthy all-online roster costs nothing.
-		// ponytail: if two clients prune the same ghost inside the 750ms cache window
-		// they both write — harmless, they filter to the same result.
+		// pruneStaleVoice is GONE as of M2.6, and this endpoint no longer writes.
 		//
-		// Skipped for DO rooms, and not as an optimisation: this infers voice ghosts
-		// from a 90s staleness window because nothing better existed. The object
-		// holds the live socket set, so webSocketClose drops the uid from
-		// `state.voice` and calls syncVoiceSince the moment a player actually goes —
-		// exact, and seconds rather than a minute and a half. Running both would also
-		// mean a READ endpoint writing state, which is what would trip the
-		// single-writer guard. Deleted outright at M2.6, once live presence lands for
-		// the non-DO path too.
-		if (!isDoRoom(params.id) && state && pruneStaleVoice(state, members)) {
-			await writeState(params.id, state, {});
-		}
+		// It inferred voice ghosts from a 90-second staleness window because nothing
+		// better existed, and it did so from a READ endpoint — the one thing that
+		// would trip the single-writer guard. The object holds the live socket set,
+		// so RoomDO.onSocketGone drops the uid from `state.voice` and ends the call
+		// the moment a player actually goes: exact, and in milliseconds rather than
+		// a minute and a half.
+		//
 		// Self-heal: rebuild claims from the pick log so a lost blob write recovers
 		// and the picking→guessing flip still fires if the final picks raced.
 		//

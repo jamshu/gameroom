@@ -4,7 +4,7 @@
 //
 // ISOMORPHIC BY CONTRACT — no `$lib`, no `$env`. wrangler bundles this outside
 // the SvelteKit build where neither resolves; `check:noenv` enforces it.
-import { stateView, resolveClaims, filterPickRows } from '../shared/gamelogic.js';
+import { stateView, resolveClaims, filterPickRows, syncVoiceSince } from '../shared/gamelogic.js';
 import {
 	migrate, kvGet, kvSet, seedSequence,
 	appendEvent, eventsFor, newestFor, headSeq, oldestSeq, trim, rowsOfType,
@@ -12,7 +12,7 @@ import {
 } from './schema.js';
 import { welcome, stateFrame, eventFrame, rosterFrame, aimFrame, ackFrame, errFrame, uptoOf, hasGap, withSeq, CLOSE } from './frames.js';
 import { hydrate, recentEvents, roomExists, writeStateBack, archiveEvents, touchLastSeen } from './odoo-bridge.js';
-import { publicRoom, publicMembers } from '../shared/roomview.js';
+import { publicRoom, publicMembers, withPresence } from '../shared/roomview.js';
 
 /* Alarm cadences. One alarm, multiplexed: each job stores its own due time in
    kv and alarm() runs whichever are due, then re-arms for the earliest.
@@ -311,12 +311,41 @@ export class RoomDO {
 	}
 
 	async webSocketClose(ws) {
-		// Presence is derived from live sockets, so a close changes the roster.
-		this.broadcastRoster();
-		this.armAlarms();
+		this.onSocketGone(ws);
 	}
 
 	async webSocketError(ws) {
+		this.onSocketGone(ws);
+	}
+
+	/**
+	 * A socket went away. Presence changes, and so may the voice roster.
+	 *
+	 * DROPPING THEM FROM VOICE HERE IS WHAT REPLACES pruneStaleVoice. That helper
+	 * inferred voice ghosts from a 90-second staleness window because nothing
+	 * better existed — it ran on a READ endpoint, wrote state, and could not tell
+	 * "tab closed" from "slow network". A closed socket is the real signal, and it
+	 * arrives in milliseconds.
+	 *
+	 * Only when the uid has NO sockets left: two tabs are ordinary, and closing
+	 * one must not hang up the call being held in the other. `getWebSockets` still
+	 * includes the closing socket during this callback in some runtimes, so the
+	 * check excludes it explicitly rather than trusting the count.
+	 */
+	onSocketGone(ws) {
+		const { uid } = ws.deserializeAttachment() ?? {};
+		if (uid && !this.ctx.getWebSockets(`u:${uid}`).some((s) => s !== ws)) {
+			const state = kvGet(this.sql, 'state');
+			if (state?.voice?.includes(uid)) {
+				state.voice = state.voice.filter((u) => u !== uid);
+				syncVoiceSince(state); // dropping under two people ends the call
+				state.v = (Number(state.v) || 0) + 1;
+				kvSet(this.sql, 'state', state);
+				this.broadcastState(state);
+				this.markDirty();
+			}
+		}
+		// Presence is derived from live sockets, so a close changes the roster.
 		this.broadcastRoster();
 		this.armAlarms();
 	}
@@ -352,10 +381,20 @@ export class RoomDO {
 		return s;
 	}
 
+	/**
+	 * The roster, with presence decided NOW rather than whenever it was stored.
+	 *
+	 * `kv.members` is publicMembers output written at the last roster push, so its
+	 * `online` is a frozen verdict — re-serving it would show someone online for
+	 * as long as the room lived. withPresence re-decides from the `lastSeen` that
+	 * travelled with each row, unioned with the sockets open at this instant.
+	 *
+	 * The union is what keeps HTTP-fallback players visible: they hold no socket,
+	 * so socket-only presence would render them offline to everyone including
+	 * themselves.
+	 */
 	membersWithPresence() {
-		const members = kvGet(this.sql, 'members', []) ?? [];
-		const live = this.liveUids();
-		return members.map((m) => ({ ...m, online: live.has(m.uid) }));
+		return withPresence(kvGet(this.sql, 'members', []) ?? [], this.liveUids());
 	}
 
 	/** Send one already-built frame to every socket (optionally filtered by uid). */
@@ -450,6 +489,11 @@ export class RoomDO {
 					// while this is false no DO-minted id exists anywhere and Odoo is
 					// complete by construction.
 					owns: !!kvGet(this.sql, 'owns_state'),
+					// Who holds a socket right now. The HTTP poll cannot know this and
+					// would otherwise render presence from last_seen alone — up to 90
+					// seconds behind the roster frames the same room sees on the wire.
+					// Free: this call was already being made for the events.
+					liveUids: [...this.liveUids()],
 					events,
 					// uptoOf, not headSeq: targeted signals are filtered out of `events`
 					// for everyone but their recipient, so the head can cover an event

@@ -607,3 +607,30 @@ export function carromsApplyShot(game, uid, { positions = [], pocketed = [], str
 	}
 	return { foul, continueTurn };
 }
+
+/**
+ * Keep the call-start stamp in step with the voice roster.
+ *
+ * A call only exists once there are two people in it, so the clock starts on the
+ * SECOND join and clears when the roster drops back under two — one person sitting
+ * in voice is waiting, not talking. Only writes the stamp when it is absent, so a
+ * third person joining does not restart a call already in progress.
+ *
+ * Lives here, beside stateView, because the room Durable Object ends calls too:
+ * a socket closing is the most reliable "they left" signal there is, and the
+ * object is $env-free so it cannot reach server/room.js. server/room.js
+ * re-exports it, so every existing caller is untouched.
+ *
+ * Call from EVERY site that touches state.voice — voice join/leave, leaving the
+ * room, and being removed by the host. One helper is what stops those drifting.
+ */
+export function syncVoiceSince(state) {
+	if (!state) return state;
+	const live = (state.voice || []).length >= 2;
+	if (live) state.voiceSince = state.voiceSince || Date.now();
+	else state.voiceSince = null;
+	return state;
+}
+
+/** `roomId` is optional only so the two existing callers could adopt it one at a
+ *  time; without it the removed player keeps a live socket. Always pass it. */
