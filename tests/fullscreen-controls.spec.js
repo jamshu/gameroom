@@ -51,7 +51,6 @@ async function mockBackend(page, gameType, gameOverrides = {}) {
 	const base = gameType === 'ludo' ? LUDO : CHESS;
 	const game = { ...base, ...gameOverrides };
 	await page.route('**/api/auth/me', (r) => r.fulfill({ json: { user: ME } }));
-	await page.route('**/api/realtime/token**', (r) => r.fulfill({ status: 501, json: { error: 'off' } }));
 	await page.route('**/api/avatar/**', (r) => r.fulfill({ status: 404, body: '' }));
 	await page.route(/\/api\/rooms\/\d+$/, (r) =>
 		r.fulfill({ json: { room: ROOM, members: MEMBERS, me: { status: 'accepted', role: 'player' } } })

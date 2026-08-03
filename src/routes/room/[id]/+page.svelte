@@ -121,7 +121,6 @@
 		inVoice = false;
 		voicePeers = [];
 		releaseWake();
-		store.setFast(false);
 		mesh?.leave();
 		await store.post('voice', { action: 'leave' }).catch(() => {});
 	}
@@ -145,15 +144,11 @@
 		}
 	});
 
-	// 1s polling while any voice pair is still negotiating — signaling rides the
-	// poll, so this roughly halves connect time; back to 2s once settled
-	$effect(() => {
-		const negotiating =
-			inVoice &&
-			($store.voice.filter((u) => u !== myUid).length > voicePeers.length ||
-				voicePeers.some((p) => p.state !== 'connected'));
-		store.setFast(negotiating);
-	});
+	// The "poll faster while voice is negotiating" effect that used to live here is
+	// gone with the tier ladder. Signaling no longer rides the poll at all — a
+	// `signal` event is a targeted frame on the room's socket, delivered in
+	// milliseconds — and on the fallback path FALLBACK_MS is already 2s, which is
+	// what the fast tier was reaching for anyway.
 
 	/**
 	 * Host cuts a round short and takes everyone back to the lobby, so people can

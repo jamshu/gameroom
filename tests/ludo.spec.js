@@ -48,8 +48,6 @@ const baseGame = (over = {}) => ({
  *  POST /ludo/roll returns for that test's scenario. */
 async function mockBackend(page, rollResponse) {
 	await page.route('**/api/auth/me', (r) => r.fulfill({ json: { user: ME } }));
-	// 501 → the client stays on polling and never opens an Ably connection.
-	await page.route('**/api/realtime/token**', (r) => r.fulfill({ status: 501, json: { error: 'off' } }));
 	await page.route('**/api/avatar/**', (r) => r.fulfill({ status: 404, body: '' }));
 	// room detail (accepted member → the board mounts)
 	await page.route(/\/api\/rooms\/\d+$/, (r) =>

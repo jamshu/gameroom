@@ -53,7 +53,6 @@ const ROLLED_SIX = baseGame({
 async function mockBackend(page, { path, write, game = ROLLED_SIX } = {}) {
 	const box = { game, v: 1, polls: 0, failPolls: 0 };
 	await page.route('**/api/auth/me', (x) => x.fulfill({ json: { user: ME } }));
-	await page.route('**/api/realtime/token**', (x) => x.fulfill({ status: 501, json: { error: 'off' } }));
 	await page.route('**/api/avatar/**', (x) => x.fulfill({ status: 404, body: '' }));
 	await page.route(/\/api\/rooms\/\d+$/, (x) =>
 		x.fulfill({ json: { room: ROOM, members: MEMBERS, me: { status: 'accepted', role: 'player' } } })

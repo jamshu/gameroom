@@ -1,139 +1,65 @@
-// Ably push: carry the actual change to browsers so they never poll Odoo for it.
-// - game state is per-uid FILTERED (thief roles/envelopes stay secret) and sent
-//   on each member's private channel `room:{id}:u:{uid}`,
-// - public events (chat, system) go on the shared `room:{id}` channel,
-// - targeted events (WebRTC signals) go on the recipient's private channel.
-// Everything no-ops when ABLY_API_KEY is unset, so the app still runs on polling.
-import { env } from '$env/dynamic/private';
-import { stateView } from './gamelogic.js';
+// Push: carry the actual change to browsers so they never poll for it.
+//
+// FOUR NAMES, ONE TRANSPORT. writeState, appendEvent and pushRoster funnel every
+// push in the app through the functions below, which is what let the transport be
+// swapped underneath ~25 call sites without touching one of them. Ably was that
+// transport until M2.5; the room's Durable Object is now, and these survive as
+// the dispatchers rather than being inlined at the call sites — the indirection
+// is the thing that made the migration possible and is worth keeping for the
+// next one.
+//
+// - game state is per-uid FILTERED (thief roles/envelopes stay secret) and the
+//   object applies the same stateView per socket,
+// - public events (chat, system) go to every socket in the room,
+// - targeted events (WebRTC signals) go only to their recipient's sockets.
+//
+// Best-effort, all four: a push failure must never fail the mutation. The state
+// is already persisted by the time any of these run — which is why they discard
+// doOp's result, `evacuated` included. A push into an evacuated object is simply
+// a push nobody needed; the writer that produced the state has already dealt with
+// the fallback (see writeState in room.js).
 import { isDoRoom } from './doflag.js';
 import { doOp } from './dostub.js';
 
-/* ---- Durable Object dispatch ----------------------------------------------
-   The seam. writeState/appendEvent/pushRoster already funnel every push through
-   the four publish* functions below, so branching here moves the transport for
-   the whole app without touching a single caller.
-
-   Best-effort, like the Ably path it replaces: a push failure must never fail
-   the mutation. The state is already persisted by the time we get here — which
-   is why these four DISCARD doOp's result, including `evacuated`. A push into an
-   evacuated object is simply a push nobody needed; the writer that produced the
-   state has already dealt with the fallback (see writeState in room.js).
-
-   The plumbing itself moved to dostub.js once the same stub started carrying
-   authoritative reads and writes rather than only pushes. */
-
-/** Public room channel — carries public events. Pure. */
-export function roomChannel(roomId) {
-	return `room:${Number(roomId)}`;
-}
-
-/** A member's private channel — carries their filtered state + targeted events. Pure. */
-export function userChannel(roomId, uid) {
-	return `room:${Number(roomId)}:u:${Number(uid)}`;
-}
-
-/** Ably capability: subscribe to the room's public channel + this user's own. Pure. */
-export function tokenCapability(roomId, uid) {
-	return { [roomChannel(roomId)]: ['subscribe'], [userChannel(roomId, uid)]: ['subscribe'] };
-}
-
-let _rest = null;
-async function ablyRest() {
-	if (!env.ABLY_API_KEY) return null;
-	if (!_rest) {
-		const Ably = await import('ably');
-		_rest = new Ably.Rest(env.ABLY_API_KEY);
-	}
-	return _rest;
-}
-
 /**
- * Push the new state to each member's private channel, filtered per-uid so a
- * thief-finder secret never leaves the server. Best-effort — a publish failure
- * must never fail the mutation (the client's safety poll still catches it).
+ * Push the new state. The object filters per socket with the same stateView, so
+ * it takes the state whole — no per-uid fan-out here, and no dependency on the
+ * caller knowing who is in the room.
  */
-export async function publishState(roomId, state, memberUids = []) {
-	// The DO filters per socket with the same stateView, so it takes the state
-	// whole — no memberUids fan-out, and no dependency on roomUids being warm.
-	if (isDoRoom(roomId)) return doOp(roomId, { op: 'state', state });
-	try {
-		const rest = await ablyRest();
-		if (!rest) return; // realtime not configured — polling carries the room
-		// Deliberately NOT merged with the guard above: "Ably is off" is a config
-		// choice, but "a state write had no members to push to" is a bug, and it
-		// degrades silently — everyone else waits out the 60s safety poll. Callers
-		// re-read before reaching here (see writeState), so this should be dead code.
-		if (!memberUids.length) {
-			console.error(`publishState: no member uids for room ${roomId} — state push dropped`);
-			return;
-		}
-		await Promise.all(
-			memberUids.map((uid) =>
-				rest.channels.get(userChannel(roomId, uid)).publish('state', stateView(state, uid))
-			)
-		);
-	} catch (e) {
-		console.error('publishState failed:', e?.message);
-	}
+export async function publishState(roomId, state) {
+	if (!isDoRoom(roomId)) return;
+	return doOp(roomId, { op: 'state', state });
 }
 
 /**
- * Push the room row + member roster on the PUBLIC channel.
+ * Push the room row + member roster.
  *
- * Safe to share: the poll already hands both to every member, and the `role` in
- * here is SEATING (player/spectator, written by reseatRoles) — the thief-finder
- * roles are a different thing entirely, living in the state blob and filtered by
- * stateView. Nothing per-uid, so one publish serves the whole room.
+ * Safe to share with everyone: the poll already hands both to every member, and
+ * the `role` here is SEATING (player/spectator) — thief-finder roles are a
+ * different thing entirely, living in the state blob behind stateView.
  *
- * `ts` is the ordering guard. Unlike state, room/members carry no version of
- * their own, so a client that receives two rosters out of order has no other way
- * to tell which is newer.
- *
- * Best-effort like the rest: a publish failure must never fail the mutation.
+ * Call after ANY write that changes those two rows. State pushes carry neither,
+ * so without this a role change, a join approval or a host handover would reach
+ * the rest of the room no sooner than their next poll — and, since M2.4, the
+ * object's own copy of the room row would go stale with it.
  */
 export async function publishRoster(roomId, { room, members }) {
-	if (isDoRoom(roomId)) return doOp(roomId, { op: 'roster', room, members });
-	try {
-		const rest = await ablyRest();
-		if (!rest) return;
-		await rest.channels.get(roomChannel(roomId)).publish('roster', { ts: Date.now(), room, members });
-	} catch (e) {
-		console.error('publishRoster failed:', e?.message);
-	}
+	if (!isDoRoom(roomId)) return;
+	return doOp(roomId, { op: 'roster', room, members });
 }
 
-/** Push one event: public → room channel, targeted → the recipient's channel. */
+/** Push one event: public to the whole room, targeted to one recipient. */
 export async function publishEvent(roomId, event, targetUid = null) {
-	if (isDoRoom(roomId)) return doOp(roomId, { op: 'event', event, targetUid });
-	try {
-		const rest = await ablyRest();
-		if (!rest) return;
-		const name = targetUid ? userChannel(roomId, targetUid) : roomChannel(roomId);
-		await rest.channels.get(name).publish('event', event);
-	} catch (e) {
-		console.error('publishEvent failed:', e?.message);
-	}
+	if (!isDoRoom(roomId)) return;
+	return doOp(roomId, { op: 'event', event, targetUid });
 }
 
 /**
- * Push a live striker/aim cursor on the PUBLIC channel. Ephemeral — no Odoo
- * write, no event id, no state version. Best-effort like the rest.
+ * Push a live striker/aim cursor. Ephemeral — no storage, no event id, no state
+ * version. It fires ~10x/second while a player lines up a shot and nothing
+ * durable rides on it.
  */
 export async function publishAim(roomId, data) {
-	if (isDoRoom(roomId)) return doOp(roomId, { op: 'aim', data });
-	try {
-		const rest = await ablyRest();
-		if (!rest) return;
-		await rest.channels.get(roomChannel(roomId)).publish('aim', data);
-	} catch (e) {
-		console.error('publishAim failed:', e?.message);
-	}
-}
-
-/** A signed token request scoped to this room + user, for the browser's authUrl. */
-export async function roomTokenRequest(roomId, uid) {
-	const rest = await ablyRest();
-	if (!rest) return null;
-	return rest.auth.createTokenRequest({ capability: tokenCapability(roomId, uid), clientId: String(uid) });
+	if (!isDoRoom(roomId)) return;
+	return doOp(roomId, { op: 'aim', data });
 }

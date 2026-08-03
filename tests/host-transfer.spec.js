@@ -20,7 +20,6 @@ const STATE = { v: 1, voice: [], game: null };
 async function mockBackend(page, { r = room() } = {}) {
 	page.on('dialog', (d) => d.accept()); // the handover asks for confirmation
 	await page.route('**/api/auth/me', (x) => x.fulfill({ json: { user: ME } }));
-	await page.route('**/api/realtime/token**', (x) => x.fulfill({ status: 501, json: { error: 'off' } }));
 	await page.route('**/api/avatar/**', (x) => x.fulfill({ status: 404, body: '' }));
 	await page.route(/\/api\/rooms\/\d+$/, (x) =>
 		x.fulfill({ json: { room: r, members: MEMBERS, me: { status: 'accepted', role: 'player' } } })
@@ -80,7 +79,6 @@ test('a host handover is announced to the room', async ({ page }) => {
 	let armed = false;
 	page.on('dialog', (d) => d.accept());
 	await page.route('**/api/auth/me', (x) => x.fulfill({ json: { user: ME } }));
-	await page.route('**/api/realtime/token**', (x) => x.fulfill({ status: 501, json: { error: 'off' } }));
 	await page.route('**/api/avatar/**', (x) => x.fulfill({ status: 404, body: '' }));
 	await page.route(/\/api\/rooms\/\d+$/, (x) =>
 		x.fulfill({ json: { room: room(), members: MEMBERS, me: { status: 'accepted', role: 'player' } } })

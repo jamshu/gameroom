@@ -30,7 +30,6 @@ const RESEATED = [
 /** Everything the room page fetches. `pollHandler` overrides the poll route. */
 async function mockBackend(page, { r = room(), members = [member(1, 100, 'Host'), member(2, 101, 'Bee')], state = { v: 1, voice: [], game: null }, pollHandler } = {}) {
 	await page.route('**/api/auth/me', (x) => x.fulfill({ json: { user: ME } }));
-	await page.route('**/api/realtime/token**', (x) => x.fulfill({ status: 501, json: { error: 'off' } }));
 	await page.route('**/api/avatar/**', (x) => x.fulfill({ status: 404, body: '' }));
 	await page.route(/\/api\/rooms\/\d+$/, (x) =>
 		x.fulfill({ json: { room: r, members, me: { status: 'accepted', role: 'player' } } })

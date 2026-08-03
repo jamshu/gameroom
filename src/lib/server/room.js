@@ -18,11 +18,6 @@ import { doOp, isEvacuated } from './dostub.js';
 import { seatedPlayerIds, GAME_TYPES, playerCapacity } from '../games.js';
 export { GAME_TYPES, playerCapacity };
 
-// Latest known member uids per room, refreshed on every member read (getMembers).
-// Lets writeState address per-uid push channels without an extra Odoo lookup; a
-// just-joined player missing here for one poll cycle is fine (safety poll covers).
-const roomUids = new Map();
-
 export const ROOM = 'x_gameroom';
 export const MEMBER = 'x_room_member';
 export const EVENT = 'x_room_event';
@@ -57,7 +52,6 @@ export async function getMembers(roomId) {
 		[['x_studio_room_id', '=', Number(roomId)]],
 		['x_name', 'x_studio_user_id', 'x_studio_status', 'x_studio_role', 'x_studio_score', 'x_studio_last_seen']
 	], { order: 'id asc' });
-	roomUids.set(Number(roomId), members.map((m) => m.x_studio_user_id?.[0]).filter(Boolean));
 	return members;
 }
 
@@ -334,34 +328,12 @@ export async function writeState(roomId, state, extraVals = {}, { guardVersion =
 	// trying again. `extraVals` writes room columns too, so the rows are stale
 	// either way.
 	roomCache.invalidate(Number(roomId));
-	// Push the filtered new state straight to each member — no client poll needed.
-	//
-	// `roomUids` is warm by the time any mutation gets here, but only by
-	// coincidence: every auth path runs getMembers() — requireMember directly,
-	// requireMemberCached through the snapshot cache, whose loader is
-	// Promise.all([getRoom, getMembers]) — and the map has no TTL, so a cache HIT
-	// implies a miss already filled it in this process. Nothing enforces that.
-	//
-	// Re-read rather than push to nobody if it ever stops holding. An empty list
-	// makes publishState return early, which is SILENT: no error, no log, and
-	// every other player sits out the 60s push safety net before seeing the move.
-	// One extra Odoo read on a path that should never run beats that failure mode.
-	// The re-read is best-effort like the publish it feeds: it must never turn a
-	// successful write into a failed request. The state is already persisted by
-	// this point, so the worst case is the pre-existing one — clients fall back to
-	// the safety poll.
-	let uids = roomUids.get(Number(roomId));
-	if (!uids?.length) {
-		console.warn(`[realtime] roomUids cold for room ${roomId} — re-reading members before publish`);
-		try {
-			await getMembers(roomId); // repopulates roomUids as a side effect
-			uids = roomUids.get(Number(roomId)) || [];
-		} catch (e) {
-			console.error(`[realtime] member re-read failed for room ${roomId}:`, e?.message);
-			uids = [];
-		}
-	}
-	await publishState(roomId, state, uids);
+	// Push the new state. The object filters per socket with the same stateView, so
+	// it takes the state whole — and the roomUids map that used to feed this is
+	// gone with Ably. It existed only to address per-uid CHANNELS, which meant
+	// carrying a member list on the write path and re-reading it from Odoo whenever
+	// it went cold. One socket set, held by the object, needs none of that.
+	await publishState(roomId, state);
 	return state;
 }
 

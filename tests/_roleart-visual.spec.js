@@ -24,7 +24,6 @@ const base = {
 
 async function mount(page, game) {
 	await page.route('**/api/auth/me', (x) => x.fulfill({ json: { user: ME } }));
-	await page.route('**/api/realtime/token**', (x) => x.fulfill({ status: 501, json: { error: 'off' } }));
 	await page.route('**/api/avatar/**', (x) => x.fulfill({ status: 404, body: '' }));
 	await page.route(/\/api\/rooms\/\d+$/, (x) =>
 		x.fulfill({ json: { room, members, me: { status: 'accepted', role: 'player' } } })

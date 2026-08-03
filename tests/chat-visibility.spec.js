@@ -38,7 +38,6 @@ async function mockBackend(page, status, gameType = 'chess') {
 	// only a live game carries state.game; in lobby the board must not render
 	const game = status === 'lobby' ? null : gameType === 'thief_finder' ? THIEF : GAME;
 	await page.route('**/api/auth/me', (r) => r.fulfill({ json: { user: ME } }));
-	await page.route('**/api/realtime/token**', (r) => r.fulfill({ status: 501, json: { error: 'off' } }));
 	await page.route('**/api/avatar/**', (r) => r.fulfill({ status: 404, body: '' }));
 	await page.route('**/api/follow**', (r) => r.fulfill({ json: { ok: true, following: [] } }));
 	await page.route(/\/api\/rooms\/\d+$/, (r) =>

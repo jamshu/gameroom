@@ -22,7 +22,6 @@ const MEMBERS = [
 
 async function mockBackend(page, { voice = [], voiceMs = null } = {}) {
 	await page.route('**/api/auth/me', (r) => r.fulfill({ json: { user: ME } }));
-	await page.route('**/api/realtime/token**', (r) => r.fulfill({ status: 501, json: { error: 'off' } }));
 	await page.route('**/api/avatar/**', (r) => r.fulfill({ status: 404, body: '' }));
 	await page.route('**/api/follow**', (r) => r.fulfill({ json: { ok: true, following: [] } }));
 	await page.route(/\/api\/rooms\/\d+$/, (r) =>

@@ -1,12 +1,12 @@
-// Room poll loop: one consolidated GET drives chat, presence, voice roster,
-// game state and WebRTC signaling.
+// Room transport: a WebSocket to the room's Durable Object, with one
+// consolidated GET as the fallback when that socket is down.
 //
-// Cadence is three-tier. The remaining latency in the room is *discovery* — you
-// only learn about someone else's move on your next poll — so the tiers are
-// tuned around that. Note the idle tier deliberately needs 30s of total silence:
-// the changes you most want promptly tend to FOLLOW a lull (the police thinks,
-// then guesses), so backing off after a few quiet seconds would slow down
-// exactly the moments that matter.
+// THE TIER LADDER IS GONE, with the Odoo budget that justified it. It existed
+// because every poll cost ~3 Odoo calls against a shared ~1 req/s limit, so the
+// interval had to be a guess about how likely something was to have changed.
+// Nothing is guessed now: the socket delivers the change itself, so the poll has
+// exactly two jobs — a safety net while the socket is healthy, and a catch-up
+// while it is not. See cadence().
 import { writable, get } from 'svelte/store';
 import { api, POLL_TIMEOUT_MS } from '$lib/api.js';
 import { outranksAtSameVersion } from '$lib/games.js';
@@ -15,45 +15,43 @@ import {
 	recordStateArrival, recordPollError, recordBanner, recordPushConnected
 } from '$lib/metrics.js';
 
-// Budget, not preference: Odoo Online rate-limits per IP at roughly 1 req/s, and
-// every poll costs 3 Odoo calls shared across the whole room. A 4-player room at
-// 2.5s already runs ~5 req/s, so these are the slowest values that still feel
-// like a game — pushing ACTIVE down to 800ms earned a hard HTTP 429.
-const ACTIVE_MS = 1500; // something changed just now — more probably will (was 1050: 429s)
-const BASE_MS = 1500; // normal play
-const IDLE_MS = 10000; // nothing at all for 30s — empty lobby, abandoned game
-const ACTIVE_WINDOW_MS = 5000;
-const IDLE_AFTER_MS = 30000;
-const FAST_MS = 1000; // while WebRTC signaling is in flight
-// When Ably push is connected, every actual change now arrives on the wire —
-// state, events AND the room/member roster — so the poll is purely a safety net.
-// It used to sit at 8s only because presence rode on it; the heartbeat and the
-// `online` window in server/room.js were widened together to let this go up.
-// These three numbers are coupled: this must stay under PRESENCE_WINDOW_MS there,
-// or a player polling on schedule renders as offline to everyone else.
-const PUSH_SAFETY_MS = 60000;
+// Socket healthy: every actual change — state, events, roster — arrives on the
+// wire, so the timer is purely a belt-and-braces re-read.
+//
+// Five minutes is a decision M2.6 unlocked. This used to be pinned under
+// PRESENCE_WINDOW_MS (90s) because presence RODE ON THE POLL: a client that
+// stopped polling rendered offline to everyone else. Presence is now a union of
+// last_seen and an open socket, and the object refreshes last_seen for every
+// connected player once a minute — so a socket client is visibly online whether
+// or not it ever polls, and this constant is free of that coupling. It stays a
+// real number rather than null because a half-open socket that the pong watchdog
+// has not yet caught is still possible, and this is the floor under that.
+const IDLE_SAFETY_MS = 300000;
+// Socket DOWN: catch-up cadence. Affordable at 2s only because it now reads the
+// Durable Object rather than Odoo — that is the whole reason this endpoint
+// survived the milestone rather than being deleted with the rest of the polling.
+const FALLBACK_MS = 2000;
 // Reasons the poll must give up rather than retry. Anything else is transient.
 const TERMINAL_CODES = new Set(['removed', 'not_member']);
 // Retry ladder while polls are failing — see cadence(). Deliberately NOT a
-// multiplier on the normal tiers: recovery has to be fast even when the tier it
-// would have multiplied is the 60s push safety net.
+// multiplier on the interval it replaces: recovery has to be fast, and the
+// interval it would have multiplied is the five-minute safety net.
 const ERROR_BASE_MS = 1500;
 const ERROR_MAX_MS = 15000;
 // One failure is a blip that the ladder above heals in ~1.5s. Warning about it
 // is worse than staying quiet — the banner is what made a self-healing hiccup
 // look like a broken game. Speak up once it's clearly not recovering.
 const ERROR_QUIET_STREAK = 1;
-// Deliberately NOT widened alongside the two above. `cadence()` tests
-// document.hidden BEFORE `fast`, so this is also the tier a hidden tab
-// negotiating WebRTC sits on when push is off — raising it would slow voice
-// signaling on the fallback path, which this work is meant to leave untouched.
-// Browsers throttle background timers anyway, so there was little to win.
-const HIDDEN_MS = 10000;
 // How long to wait after an event that implies state moved before reconciling.
-// Not 0: a five-player picking round would otherwise fire a burst of polls at
-// the shared ~1 req/s Odoo budget. Long enough for the state push that normally
-// follows the event to land first, short enough that the fallback isn't the 60s
-// safety net. Coupled to the debounce in reconcileSoon — one timer at a time.
+//
+// KEPT, but no longer for the reason it was written. The old justification was
+// budget — a five-player picking round would fire a burst of polls at a shared
+// ~1 req/s Odoo limit. That limit is no longer on this path. What survives is the
+// case it actually repairs: two picks landing on the SAME state version with
+// different claim maps, where the client holding the emptier one sits at gv == v
+// and a strict `>` would never send it anything again. The delay lets the state
+// push that normally follows the event land first, so the common case costs
+// nothing. Coupled to the debounce in reconcileSoon — one timer at a time.
 const EVENT_RECONCILE_MS = 1200;
 // Events the room renders entirely on their own. Everything else (`pick`,
 // `system`) means the state blob moved, so seeing one without matching state is
@@ -81,20 +79,18 @@ export function createRoomStore(roomId) {
 	let stopped = false;
 	let inFlight = false;
 	let pendingImmediate = false; // an immediate poll was asked for mid-flight
-	let fast = false;
-	// A timestamp, never a boolean: a stuck "is active" flag is the classic
-	// never-turns-off bug, whereas elapsed time is self-healing by construction.
-	// Seeded to now so entering a room starts responsive.
-	let lastActivityAt = Date.now();
 	let errorStreak = 0; // consecutive failed polls — drives the backoff below
 	let tempSeq = 0;
 	let signalHandler = null; // webrtc manager subscribes here
 	let systemHandler = null;
 	let aimHandler = null; // carroms live striker/aim subscribes here
-	let ably = null; // Ably Realtime client (null until/unless push is enabled)
-	let channel = null;
-	let pushConnected = false; // true while the wake-bell is live → poll backs off
-	// Bumped whenever a POST response OR an Ably roster push hands us authoritative
+	// True while the room's socket is up and proven — set on `welcome`, cleared the
+	// moment it drops. Keeps its old name deliberately: it is what cadence() reads
+	// and what the Stage 0a beacon measures, and both mean exactly what they always
+	// did — "real changes are arriving on a wire, so the timer is only a safety
+	// net". Only the wire underneath it changed.
+	let pushConnected = false;
+	// Bumped whenever a POST response OR a roster frame hands us authoritative
 	// room/members. Acts as the version gate those two rows don't otherwise have —
 	// see poll().
 	let roomEpoch = 0;
@@ -102,7 +98,11 @@ export function createRoomStore(roomId) {
 	// out of order and there is no version field to compare.
 	let lastRosterTs = 0;
 	let unsubBanner = null; // store subscription feeding the Stage 0 banner timer
-	let usingSocket = false; // DO socket vs the Ably path — decided by open()
+	// Whether this room gets a socket at all, from the `do` flag on the room detail
+	// response. One flag source feeds both sides, so client and server can never
+	// disagree about the transport — and it is the lever every Playwright spec
+	// leans on to stay on the HTTP path.
+	let usingSocket = false;
 
 	function onSignal(fn) {
 		signalHandler = fn;
@@ -144,8 +144,8 @@ export function createRoomStore(roomId) {
 		};
 	}
 
-	// Event ids already applied — one guard shared by the poll and the Ably push,
-	// so an event delivered by both (a poll in flight when the push lands) isn't
+	// Event ids already applied — one guard shared by the poll and the socket, so
+	// an event delivered by both (a poll in flight when a frame lands) isn't
 	// processed twice. Bounded so it can't grow without limit.
 	// It only ever needs to hold ids ABOVE the poll cursor — anything at or below
 	// it the poll will never ask for again. Sized well past the server's 200-row
@@ -165,7 +165,7 @@ export function createRoomStore(roomId) {
 	}
 
 	/**
-	 * The single apply path for BOTH the poll and the Ably push. Events dedupe by
+	 * The single apply path for BOTH the poll and the socket. Events dedupe by
 	 * id; `state` merges version-gated; `room`/`members` update only when present
 	 * (the push carries neither — presence still rides the poll).
 	 */
@@ -253,17 +253,11 @@ export function createRoomStore(roomId) {
 			// The cursor now advances in exactly one place — see ingest(). The poll's
 			// own watermark is handed over as `upto` rather than assigned here, so
 			// both transports go through the same rule.
-			// Strictly: a real event row, or a state version that actually advanced.
-			// NEVER diff members/room — `online` flips purely with elapsed time, so
-			// that would pin every client at ACTIVE_MS forever and silently double
-			// the Odoo load. (The presence heartbeat writes no event row, so it
-			// can't self-re-arm.)
 			//
-			// `d.state.v > gv`, not a bare truthiness test: the contended phase now
-			// receives state on EVERY poll, equal versions included, so `d.state`
-			// alone would re-arm activity forever — pinning an abandoned thief room
-			// at ACTIVE_MS instead of letting it decay to IDLE_MS.
-			if ((d.events?.length ?? 0) > 0 || d.state?.v > gv) markActive();
+			// The activity bookkeeping that used to live here went with the tier
+			// ladder: there is no longer a cadence for "something changed recently"
+			// to feed, so nothing has to be careful about what counts as a change.
+			//
 			// The HTTP path's `resync`. Our cursor fell below the retained log, so
 			// the server sent the newest page instead of the window we asked for and
 			// continuity cannot be proven — without this the cursor would jump to the
@@ -318,42 +312,27 @@ export function createRoomStore(roomId) {
 		}
 	}
 
-	/** Something genuinely changed — stay responsive for a while. */
-	function markActive() {
-		lastActivityAt = Date.now();
-	}
-
+	/**
+	 * Two states, and that is the whole function.
+	 *
+	 * The tier ladder is gone with the Odoo budget that justified it; what is left
+	 * is "the socket has it" versus "the socket is down, recover". Every tier this
+	 * replaces was an estimate of how likely a change was, which is a question
+	 * nobody has to ask once the change itself arrives on a wire.
+	 *
+	 * `document.hidden` went too. It existed because backgrounding used to change
+	 * how much we could afford to poll; it now says nothing about whether the
+	 * socket is delivering. (onVisibility still matters — it reconnects the socket
+	 * iOS tore down — but that is a socket concern, not a cadence one.)
+	 */
 	function cadence() {
-		// FAILING: its own ladder, and it outranks every tier below — including
-		// `fast`, despite the "never slow WebRTC" rule there. Two reasons. A tier
-		// is an answer to "how likely is something new?", which is the wrong
-		// question while nothing is getting through at all; and 1s polling into a
-		// failing room is exactly the 429 amplifier a backoff exists to prevent.
-		//
-		// This used to be a MULTIPLIER on whatever tier applied, which was
-		// backwards where it mattered most: one timed-out poll while push was
-		// connected gave 60s × 2 = a two-minute frozen board. The socket reporting
-		// "connected" says nothing when it plainly isn't delivering, and the poll
-		// IS the recovery path — so recovery must not inherit the safety-net
-		// interval. 1.5s, 3s, 6s, 12s, then 15s. Coupled to RECONCILE_MS in
-		// LudoBoard: the first three attempts fit inside its 6s window, so a
-		// pending write usually clears silently. Retune the two together.
+		// FAILING outranks both, and still for the original reason: a tier is an
+		// answer to "how likely is something new?", which is the wrong question
+		// while nothing is getting through at all. 1.5s, 3s, 6s, 12s, then 15s.
+		// Coupled to RECONCILE_MS in LudoBoard — the first three attempts fit inside
+		// its 6s window, so a pending write usually clears silently. Retune together.
 		if (errorStreak) return Math.min(ERROR_BASE_MS * 2 ** (errorStreak - 1), ERROR_MAX_MS);
-		// Push connected and not negotiating voice: real changes all arrive on the
-		// socket, so the timer is ONLY a safety net — back off fully even right
-		// after activity. Must outrank the active/base tiers or push saves nothing
-		// during play, and outranks `document.hidden` too: backgrounding a healthy
-		// room used to take it from 60s to 10s, i.e. hiding the tab made it SIX
-		// TIMES noisier against a rate limit the whole room shares.
-		// The `!fast` guard is load-bearing — it leaves the hidden-outranks-fast
-		// ordering below exactly as it was for the push-off WebRTC path.
-		if (pushConnected && !fast) return PUSH_SAFETY_MS;
-		if (document.hidden) return HIDDEN_MS;
-		if (fast) return FAST_MS; // FAST outranks all — never slow WebRTC
-		const quietFor = Date.now() - lastActivityAt;
-		if (quietFor < ACTIVE_WINDOW_MS) return ACTIVE_MS;
-		if (quietFor < IDLE_AFTER_MS) return BASE_MS;
-		return IDLE_MS;
+		return pushConnected ? IDLE_SAFETY_MS : FALLBACK_MS;
 	}
 
 	function schedule(ms) {
@@ -405,7 +384,6 @@ export function createRoomStore(roomId) {
 
 	function onVisibility() {
 		if (!document.hidden) {
-			markActive(); // user is back and looking — be responsive for a bit
 			// iOS tears the WebSocket down whenever the page backgrounds or the
 			// screen locks. That is the NORMAL path there, not an edge case, so a
 			// returning user must reconnect immediately rather than wait out the
@@ -418,21 +396,11 @@ export function createRoomStore(roomId) {
 		}
 	}
 
-	/* ---- realtime wake-bell (Ably) ----------------------------------------
-	   An Ably message on this room's channel just means "something changed" —
-	   we respond with the normal immediate poll, so all secret filtering and
-	   merge logic is unchanged. Best-effort: if realtime is disabled (token
-	   endpoint 501s) or anything throws, we never init Ably and the tuned
-	   polling tiers carry the room as before. The preflight fetch avoids Ably's
-	   retry loop (which would re-hit the token endpoint) when it's off. */
 	/* ---- Durable Object socket -------------------------------------------
-	   One ordered stream per room, terminated by the room's DO. Chosen over the
-	   Ably path below by the `do` flag on the room-detail response, so exactly
-	   one source decides the transport and the two can never disagree.
-
-	   `pushConnected` deliberately keeps its old name and meaning, so cadence()
-	   is untouched: the poll still backs off to PUSH_SAFETY_MS while a socket is
-	   up, and still falls through to the tuned tiers when it is not. */
+	   One ordered stream per room, terminated by the room's object. The only push
+	   transport there is now — Ably and its two-channel split are gone, and with
+	   them the class of bug that came from having no ordering BETWEEN channels.
+	   Enabled per room by the `do` flag on the room-detail response. */
 	const SOCK_BACKOFF_MIN = 500;
 	const SOCK_BACKOFF_MAX = 15000;
 	const SOCK_PING_MS = 25000;
@@ -560,20 +528,17 @@ export function createRoomStore(roomId) {
 					roomEpoch++;
 				}
 				lastRosterTs = f.ts ?? lastRosterTs;
-				markActive();
 				ingest({ events: f.events ?? [], state: f.state, room: f.room, members: f.members, upto: f.upto }, 'push');
 				// Re-arm the poll on the new (much longer) push cadence.
 				schedule();
 				break;
 			}
 			case 'state':
-				markActive();
 				// No `upto` on purpose — a state frame delivers no events, so it may
 				// not move the event cursor. See frames.js stateFrame.
 				ingest({ state: f.state }, 'push');
 				break;
 			case 'event':
-				markActive();
 				ingest({ events: [f.event], upto: f.upto }, 'push');
 				if (!SELF_CONTAINED_EVENTS.has(f.event?.type)) reconcileSoon();
 				break;
@@ -581,94 +546,12 @@ export function createRoomStore(roomId) {
 				if (!(f.ts > lastRosterTs)) return; // an older frame lost the race
 				lastRosterTs = f.ts;
 				roomEpoch++;
-				markActive();
 				ingest({ room: f.room, members: f.members }, 'push');
 				break;
 			case 'aim':
 				// Ephemeral: no state behind it, so deliberately no markActive/reconcile.
 				aimHandler?.(f.data);
 				break;
-		}
-	}
-
-	let userChannel = null;
-	async function connectRealtime() {
-		try {
-			const res = await fetch(`/api/realtime/token?room=${roomId}`);
-			if (!res.ok) {
-				console.warn('[realtime] off — token endpoint returned', res.status, '(staying on polling)');
-				return; // disabled, or not a member — stay on polling
-			}
-			const AblyLib = await import('ably');
-			const Realtime = AblyLib.Realtime || AblyLib.default?.Realtime;
-			if (!Realtime || stopped) return;
-			ably = new Realtime({ authUrl: `/api/realtime/token?room=${roomId}` });
-
-			// public channel: chat + system events for the whole room
-			channel = ably.channels.get(`room:${roomId}`);
-			channel.subscribe('event', (msg) => {
-				markActive();
-				ingest({ events: [msg.data] }, 'push');
-				// A `pick` renders nothing by itself — it is only evidence that the
-				// state blob moved. Without this the client knew something had
-				// changed and still waited out the 60s safety net.
-				if (!SELF_CONTAINED_EVENTS.has(msg.data?.type)) reconcileSoon();
-			});
-			// carroms live striker/aim — ephemeral, no state behind it, so it must
-			// NOT markActive/reconcile. Just hand the cursor data to whoever listens.
-			channel.subscribe('aim', (msg) => aimHandler?.(msg.data));
-			// roster: the room row + member list, which the state push doesn't carry.
-			// Before this they refreshed only on the safety poll, so a join approval,
-			// a role change or a host handover took up to 8s to show.
-			channel.subscribe('roster', (msg) => {
-				const d = msg.data;
-				if (!d || !(d.ts > lastRosterTs)) return; // an older push lost the race
-				lastRosterTs = d.ts;
-				roomEpoch++; // a poll already in flight is now stale — see poll()
-				markActive();
-				ingest({ room: d.room, members: d.members }, 'push');
-			});
-
-			let wasConnected = false;
-			ably.connection.on((sc) => {
-				pushConnected = ably?.connection.state === 'connected';
-				recordPushConnected(pushConnected);
-				console.log('[realtime]', ably?.connection.state, pushConnected ? '(push ON)' : '');
-				if (sc?.reason) console.warn('[realtime] reason:', sc.reason.message);
-				if (pushConnected && !userChannel) {
-					// clientId == our uid — subscribe our private channel for filtered
-					// state + targeted (signal) events.
-					const uid = ably.auth.clientId;
-					userChannel = ably.channels.get(`room:${roomId}:u:${uid}`);
-					userChannel.subscribe('state', (msg) => {
-						markActive();
-						ingest({ state: msg.data }, 'push');
-					});
-					userChannel.subscribe('event', (msg) => {
-						markActive();
-						ingest({ events: [msg.data] }, 'push');
-					});
-				}
-				// Catch-up on EVERY transition into connected, not just the first.
-				// iOS tears the WebSocket down whenever the page backgrounds or the
-				// screen locks, so this is the normal path there, not an edge case —
-				// and `since=cursor` is the only way back to what we missed while
-				// away. Previously this only ran on first connect, so a returning
-				// phone waited for the safety poll; at the new 60s that would be a
-				// very visible stall. This is also why `cursor` tracks the last
-				// POLL and not the last push (see ingest): it has to mean "the
-				// point below which we have everything", not "the highest id
-				// anyone ever pushed at us", or the catch-up skips the gap.
-				// Deliberately schedule(0) and NOT wake(): a socket that just came up
-				// is the one hard piece of evidence the network is healthy again, so
-				// the error backoff would be answering a question already settled. It
-				// can't run away either — Ably's own reconnect backoff paces it.
-				if (pushConnected && !wasConnected) schedule(0);
-				wasConnected = pushConnected;
-			});
-		} catch (e) {
-			pushConnected = false;
-			console.warn('[realtime] connect failed:', e?.message);
 		}
 	}
 
@@ -684,10 +567,10 @@ export function createRoomStore(roomId) {
 		// sites would drift from what the player is actually looking at.
 		unsubBanner = store.subscribe((s) => recordBanner(!!s.error));
 		document.addEventListener('visibilitychange', onVisibility);
-		// One transport or the other, never both — two live push paths would double
-		// every event and race on the roster.
+		// No socket means the poll IS the transport, at FALLBACK_MS. That is the
+		// path every Playwright spec takes (none of them set `do`), and the one a
+		// room takes if DO_ROOMS ever turns off.
 		if (usingSocket) connectSocket();
-		else connectRealtime();
 		poll();
 	}
 
@@ -702,16 +585,6 @@ export function createRoomStore(roomId) {
 		document.removeEventListener('visibilitychange', onVisibility);
 		sockDead = true; // stop the reconnect ladder before tearing the socket down
 		dropSocket();
-		try {
-			channel?.unsubscribe();
-			userChannel?.unsubscribe();
-			ably?.close();
-		} catch {
-			/* ignore teardown errors */
-		}
-		ably = null;
-		channel = null;
-		userChannel = null;
 		pushConnected = false;
 		// leaving the room ends the life of every blob URL we minted for it
 		for (const c of get(store).chat) revokeLocal(c);
@@ -826,7 +699,6 @@ export function createRoomStore(roomId) {
 			}
 			throw e;
 		}
-		markActive(); // we just did something; others are likely to respond
 		if (d?.room || d?.members) roomEpoch++; // ours is newer than any poll in flight
 		// 'echo', NOT the 'poll' default: this is the actor's own write coming back
 		// in its POST response. Counting it as poll would put ~half of a 2-player
@@ -839,13 +711,6 @@ export function createRoomStore(roomId) {
 		return d;
 	}
 
-	/** 1s polling while voice connections are being negotiated. */
-	function setFast(v) {
-		if (fast === !!v) return;
-		fast = !!v;
-		schedule();
-	}
-
 	return {
 		subscribe: store.subscribe,
 		open,
@@ -854,7 +719,6 @@ export function createRoomStore(roomId) {
 		onSignal,
 		onSystem,
 		onAim,
-		setFast,
 		pushLocalChat,
 		pushLocalMedia,
 		resolveLocalChat,

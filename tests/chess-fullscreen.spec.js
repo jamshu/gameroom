@@ -30,7 +30,6 @@ const game = {
 
 async function mockBackend(page) {
 	await page.route('**/api/auth/me', (r) => r.fulfill({ json: { user: ME } }));
-	await page.route('**/api/realtime/token**', (r) => r.fulfill({ status: 501, json: { error: 'off' } }));
 	await page.route('**/api/avatar/**', (r) => r.fulfill({ status: 404, body: '' }));
 	await page.route(/\/api\/rooms\/\d+$/, (r) =>
 		r.fulfill({ json: { room: ROOM, members: MEMBERS, me: { status: 'accepted', role: 'player' } } })
@@ -194,7 +193,6 @@ test('playing a move slides the piece and plays a sound', async ({ browser }) =>
 		clock: { w: 600000, b: 600000, ticking: 'w' }
 	};
 	await page.route('**/api/auth/me', (r) => r.fulfill({ json: { user: ME } }));
-	await page.route('**/api/realtime/token**', (r) => r.fulfill({ status: 501, json: { error: 'off' } }));
 	await page.route('**/api/avatar/**', (r) => r.fulfill({ status: 404, body: '' }));
 	await page.route(/\/api\/rooms\/\d+$/, (r) =>
 		r.fulfill({ json: { room: ROOM, members: MEMBERS, me: { status: 'accepted', role: 'player' } } })

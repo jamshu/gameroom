@@ -15,9 +15,9 @@ compatibility_date = "2026-07-01"
 # the two Buffer decodes are now atob/Uint8Array (src/lib/media.js b64ToBytes)
 # and web-push is now WebCrypto (src/lib/server/push.js). That keeps the Node
 # surface to one well-understood import instead of a transitive http/stream/ECDH
-# stack, and it is why `ably` still resolves to its WebCrypto build — that
-# resolution happens in the Vite build, which this flag does not affect. Verified
-# by grepping the bundle for `ably-node` / `got` / `ws`; re-check after upgrades.
+# stack. (This used to also explain why `ably` resolved to its WebCrypto build
+# rather than its Node one; that dependency is gone as of M2.5, so the only Node
+# surface left is the async_hooks import above.)
 compatibility_flags = ["nodejs_compat"]
 
 # Custom domain. MUST stay above the first [table] header — in TOML every key
@@ -103,7 +103,7 @@ DO_ROOMS = "all"
 
 # Secrets are NOT set here — use `wrangler secret put <NAME>` (or the dashboard).
 # Required: ODOO_URL, ODOO_DB, ODOO_USERNAME, ODOO_API_KEY
-# Optional: ABLY_API_KEY, CF_TURN_KEY_ID, CF_TURN_API_TOKEN,
+# Optional: CF_TURN_KEY_ID, CF_TURN_API_TOKEN,
 #           VAPID_SUBJECT, VAPID_PRIVATE_KEY, VAPID_PUBLIC_KEY,
 #           PUBLIC_VAPID_PUBLIC_KEY, METRICS_SINK
 #
