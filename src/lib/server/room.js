@@ -271,6 +271,19 @@ export async function writeState(roomId, state, extraVals = {}, { guardVersion =
 				// The object bumped the version itself; hand it back on the caller's own
 				// object, because callers go on to use `state.v` and stateView(state).
 				state.v = res.state.v;
+				/* And take back the fields the OBJECT owns, not us — the voice roster.
+				   setState deliberately ignores the copy we just sent (see the note in
+				   RoomDO's setState case), so without this the caller is left holding a
+				   roster that may already have moved: someone joined while we were in
+				   Odoo, or a socket closed and the object dropped them.
+
+				   It matters because ~10 routes answer with stateView(state, uid), and
+				   that echo carries the SAME version as the push the object just sent
+				   every socket. mergeState drops whichever of the two arrives second, so
+				   a stale echo that wins the race sticks until the next state
+				   push — which on a healthy socket is the five-minute safety net away. */
+				state.voice = res.state.voice;
+				state.voiceSince = res.state.voiceSince;
 				// extraVals are x_gameroom COLUMNS (status, host, draws) — the room
 				// registry stays in Odoo, only the state blob moved. The object's copy
 				// of the row is refreshed by the pushRoster every such caller already
@@ -431,8 +444,62 @@ export { PRESENCE_WINDOW_MS, publicRoom, publicMembers };
 // a socket closing is now what ends a call, and that happens inside the object.
 // Imported and re-exported, never `export … from` — dropMember below calls it.
 // Fourth time this file has hit that trap; see the notes above.
-import { syncVoiceSince } from '../shared/gamelogic.js';
-export { syncVoiceSince };
+import { syncVoiceSince, VOICE_CAP } from '../shared/gamelogic.js';
+export { syncVoiceSince, VOICE_CAP };
+
+/**
+ * Change the voice roster — the ONLY way any route may.
+ *
+ * `voice` used to live in the state blob like everything else, which meant every
+ * route that read the blob and wrote it back could erase a join that landed in
+ * between. end/rematch/game-type all run Odoo writes in that window and all run in
+ * the lobby, which is exactly where people press Join voice; the player was
+ * dropped from the call with no error anywhere and no way for their client to
+ * tell. See the note on RoomDO.mutateVoice.
+ *
+ * DO room: a dedicated op, so a join no longer sends the rest of the state blob at
+ * all. The object has already persisted and broadcast by the time this returns —
+ * there is nothing for the caller to write.
+ *
+ * Otherwise (a room the flag never covered, or one that evacuated): mutates the
+ * caller's in-hand `state` and leaves the write to THEM, which is the same
+ * contract dropMember has. That is what lets `leave` keep folding the voice change
+ * into its single writeState instead of paying two.
+ *
+ * Two different booleans, and callers need both. `changed` — the roster actually
+ * moved, so the room is worth announcing it to; a re-entry into a roster you are
+ * already in must not push a second "joined voice" into the feed, which matters
+ * now that the client re-posts a join to heal itself. `needsWrite` — this path
+ * mutated a blob that nobody has persisted yet, which is only ever true off the
+ * object.
+ */
+export async function setVoice(roomId, uid, action, state = null) {
+	const player = Number(uid);
+	// `roomId != null` guards the same hole the `kick` op below does: dropMember's
+	// roomId is optional, and isDoRoom(null) answers `true` under DO_ROOMS = "all".
+	if (roomId != null && isDoRoom(roomId)) {
+		const res = await doOp(roomId, { op: 'voice', action, uid: player });
+		if (res?.ok) return { state: res.state, changed: !!res.changed, needsWrite: false };
+		if (res?.code === 'voice_full') throw httpError(409, res.error, 'voice_full');
+		// Same reasoning as writeState: an object that did not answer may still own
+		// the room, so only a deliberate evacuation makes the Odoo path correct.
+		if (!isEvacuated(res)) throw httpError(503, 'The room is busy — try again', 'do_unreachable');
+	}
+
+	const s = state || { v: 0, voice: [], game: null };
+	s.voice = s.voice || [];
+	const present = s.voice.includes(player);
+	if (action === 'join') {
+		if (present) return { state: s, changed: false, needsWrite: false };
+		if (s.voice.length >= VOICE_CAP) throw httpError(409, 'Voice is full — text chat only', 'voice_full');
+		s.voice = [...s.voice, player];
+	} else {
+		if (!present) return { state: s, changed: false, needsWrite: false };
+		s.voice = s.voice.filter((u) => u !== player);
+	}
+	syncVoiceSince(s); // dropping under two people ends the call
+	return { state: s, changed: true, needsWrite: true };
+}
 
 /** Uids of members currently online (last_seen within the presence window). */
 export function onlineUids(members) {
@@ -536,10 +603,13 @@ export async function dropMember(target, state, roomId = null) {
 	// would retroactively degrade their name to `#uid` across chat history.
 	await adminExecute(MEMBER, 'write', [[target.id], { x_studio_status: 'left' }]);
 	const targetUid = target.x_studio_user_id?.[0];
-	// drop them from voice so the remaining peers tear the connection down
-	// (mesh.sync already prunes anyone absent from the roster)
-	state.voice = (state.voice || []).filter((u) => u !== targetUid);
-	syncVoiceSince(state); // a kick can leave one person alone — that ends the call
+	// Drop them from voice so the remaining peers tear the connection down
+	// (mesh.sync already prunes anyone absent from the roster). Through setVoice,
+	// never by editing the blob: on a DO room the object owns the roster and a
+	// `voice` key in the caller's state is ignored, so doing it inline here would
+	// silently stop removing anyone. On the fallback path setVoice mutates `state`
+	// in hand exactly as this used to, and the caller still persists it.
+	await setVoice(roomId, targetUid, 'leave', state);
 	// Marks them as removed-by-the-host rather than merely gone, which is what
 	// gives their in-flight poll a terminal 403 carrying the real reason instead
 	// of a bare "not a member". NOT a ban: `join` clears this marker. For a private

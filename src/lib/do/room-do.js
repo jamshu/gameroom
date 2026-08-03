@@ -4,7 +4,7 @@
 //
 // ISOMORPHIC BY CONTRACT — no `$lib`, no `$env`. wrangler bundles this outside
 // the SvelteKit build where neither resolves; `check:noenv` enforces it.
-import { stateView, resolveClaims, filterPickRows, syncVoiceSince } from '../shared/gamelogic.js';
+import { stateView, resolveClaims, filterPickRows, syncVoiceSince, VOICE_CAP } from '../shared/gamelogic.js';
 import {
 	migrate, kvGet, kvSet, seedSequence,
 	appendEvent, eventsFor, newestFor, headSeq, oldestSeq, trim, rowsOfType,
@@ -39,7 +39,7 @@ const ORPHAN_CHECK_EVERY_MS = 300_000;
    one-way ownership transfer first. Everything else — pushes from routes that
    still write Odoo themselves, roster updates, ephemeral aim — must NOT trigger
    it, or a room would flip the moment somebody merely spoke in chat. */
-const OWNING_OPS = new Set(['setState', 'append', 'thiefPick']);
+const OWNING_OPS = new Set(['setState', 'append', 'thiefPick', 'voice']);
 
 export class RoomDO {
 	constructor(ctx, env) {
@@ -335,19 +335,61 @@ export class RoomDO {
 	onSocketGone(ws) {
 		const { uid } = ws.deserializeAttachment() ?? {};
 		if (uid && !this.ctx.getWebSockets(`u:${uid}`).some((s) => s !== ws)) {
-			const state = kvGet(this.sql, 'state');
-			if (state?.voice?.includes(uid)) {
-				state.voice = state.voice.filter((u) => u !== uid);
-				syncVoiceSince(state); // dropping under two people ends the call
-				state.v = (Number(state.v) || 0) + 1;
-				kvSet(this.sql, 'state', state);
-				this.broadcastState(state);
-				this.markDirty();
-			}
+			this.mutateVoice(uid, 'leave');
 		}
 		// Presence is derived from live sockets, so a close changes the roster.
 		this.broadcastRoster();
 		this.armAlarms();
+	}
+
+	/**
+	 * THE ONLY WAY THE VOICE ROSTER EVER CHANGES. Mutates `voice`/`voiceSince` and
+	 * nothing else.
+	 *
+	 * `voice` used to travel inside the state blob, which meant every route that
+	 * merely READ the blob and wrote it back could erase a join that landed in
+	 * between — end/rematch/game-type all run Odoo writes in that window, and they
+	 * run in the lobby, which is exactly where people press Join voice. The erasure
+	 * was silent: the clobbering write lands at a higher version, so every client
+	 * accepts it as the newest truth and the dropped player has no way to tell.
+	 *
+	 * So the roster moved out of the blob and behind this method — see the note in
+	 * the `setState` case, which is the other half and only works with this one.
+	 * A socket closing (onSocketGone) and a player pressing the button both land
+	 * here, so the two can never drift.
+	 *
+	 * Idempotent in both directions, and a no-op does NOT bump the version: a
+	 * second `leave` for someone already gone must not push a frame to the room.
+	 * `changed` is what the route gates its "joined voice" announcement on, so a
+	 * client re-entering a roster it is already in stays silent.
+	 *
+	 * Returns `{ state, changed }`, `{ full: true }` when a join would exceed the
+	 * cap, or `null` when the room has no state at all.
+	 */
+	mutateVoice(uid, action) {
+		const state = kvGet(this.sql, 'state');
+		if (!state) return null;
+		const voice = state.voice || [];
+		const present = voice.includes(uid);
+
+		if (action === 'join') {
+			if (present) return { state, changed: false };
+			// Checked HERE, not by the caller against a blob it read a round trip ago:
+			// the object is single-threaded, so two joins arriving together cannot both
+			// pass a cap they are the same read of.
+			if (voice.length >= VOICE_CAP) return { full: true };
+			state.voice = [...voice, uid];
+		} else {
+			if (!present) return { state, changed: false };
+			state.voice = voice.filter((u) => u !== uid);
+		}
+
+		syncVoiceSince(state); // dropping under two people ends the call
+		state.v = (Number(state.v) || 0) + 1;
+		kvSet(this.sql, 'state', state);
+		this.broadcastState(state);
+		this.markDirty();
+		return { state, changed: true };
 	}
 
 	/* ---- frames ----------------------------------------------------------- */
@@ -517,6 +559,25 @@ export class RoomDO {
 					return { ok: false, status: 409, code: 'conflict', error: 'Someone else just changed this — try again' };
 				}
 				const next = op.state ?? {};
+				/* THE VOICE ROSTER IS NOT THE CALLER'S TO SEND, and this line is the
+				   whole reason a join stopped vanishing between games.
+
+				   Every route reads the state blob at the top of the request and writes
+				   it back at the bottom, with Odoo round trips in between (resetRound,
+				   reseatRoles). `voice` used to ride inside that blob, so a join that
+				   landed in the window was overwritten by a route that had nothing to do
+				   with voice — and the reverse: someone the object dropped on a socket
+				   close was resurrected, which is how a room reached VOICE_CAP with
+				   nobody in the call.
+
+				   Taking it from `cur` instead makes those writes structurally incapable
+				   of touching it. mutateVoice is the only writer; see the note there.
+				   Falls back to the incoming blob only when there is no `cur` at all —
+				   a room whose very first write this is. */
+				if (cur) {
+					next.voice = cur.voice ?? [];
+					next.voiceSince = cur.voiceSince ?? null;
+				}
 				next.v = Math.max(Number(cur?.v) || 0, Number(next.v) || 0) + (op.bump === false ? 0 : 1);
 				kvSet(this.sql, 'state', next);
 				this.broadcastState(next);
@@ -528,6 +589,23 @@ export class RoomDO {
 				// sequence was seeded above Odoo's highest id at the ownership transfer.
 				const seq = this.applyEvent({ ...op.event, id: null }, op.targetUid ?? null);
 				return { ok: true, id: seq };
+			}
+			case 'voice': {
+				// The roster's own op, so a join or a leave never has to send — and
+				// therefore never has to re-send — the rest of the state blob. That
+				// cuts the mirror race too: joining voice mid-game used to write back
+				// a `game` read before the last move.
+				const uid = Number(op.uid);
+				if (!Number.isInteger(uid) || uid <= 0) return { ok: false, status: 400, error: 'bad uid' };
+				if (op.action !== 'join' && op.action !== 'leave') {
+					return { ok: false, status: 400, error: 'Invalid action' };
+				}
+				const res = this.mutateVoice(uid, op.action);
+				if (res?.full) {
+					return { ok: false, status: 409, code: 'voice_full', error: 'Voice is full — text chat only' };
+				}
+				if (!res) return { ok: false, status: 409, error: 'The room has no state yet' };
+				return { ok: true, state: res.state, v: res.state.v, changed: res.changed };
 			}
 			case 'thiefPick':
 				return this.thiefPick(op);

@@ -609,6 +609,17 @@ export function carromsApplyShot(game, uid, { positions = [], pocketed = [], str
 }
 
 /**
+ * How many people one room's WebRTC mesh carries before it degrades.
+ *
+ * Lives here rather than in the voice route because the CAP IS ENFORCED IN THE
+ * OBJECT now. The route used to check it against a blob it had already read and
+ * then write back — two joins arriving together both passed. Inside the object
+ * the read and the write are one step, so there is no window; the route still
+ * imports this only to keep one number in one place.
+ */
+export const VOICE_CAP = 8;
+
+/**
  * Keep the call-start stamp in step with the voice roster.
  *
  * A call only exists once there are two people in it, so the clock starts on the

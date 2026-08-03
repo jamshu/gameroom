@@ -91,8 +91,15 @@
 			if (!mesh) {
 				mesh = createVoiceMesh({
 					myUid,
+					// A 403 here is /signal's "Join voice first" — the roster telling us
+					// we are not in it, and the fastest notice we get of a drop. It used
+					// to be swallowed with everything else, which is how a dropped peer
+					// went unnoticed. Pull a fresh state so the heal effect above sees
+					// the real roster now rather than at the next push.
 					sendSignal: (toUid, kind, data) =>
-						store.post('signal', { toUid, kind, data }).catch(() => {}),
+						store.post('signal', { toUid, kind, data }).catch((e) => {
+							if (e?.status === 403) store.pollNow?.();
+						}),
 					onPeersChange: (p) => (voicePeers = p)
 				});
 				store.onSignal((from, payload) => mesh.handleSignal(from, payload));
@@ -128,6 +135,56 @@
 	// keep the mesh reconciled with the server's voice roster
 	$effect(() => {
 		if (inVoice && mesh) mesh.sync($store.voice);
+	});
+
+	/* Self-heal the OTHER direction: the server dropped us while we still think we
+	   are in the call.
+
+	   Two things do that, and neither used to be recoverable. The object drops a
+	   uid from voice whenever its last socket closes — the right call for a closed
+	   tab, but a backgrounded phone or a carrier-NAT blip looks identical. And an
+	   unrelated write used to clobber the roster wholesale (fixed server-side, but
+	   this is what made it terminal rather than a blip).
+
+	   Nothing re-added us. `sync()` filters myUid out of the roster and never asks
+	   whether IT is listed, so the peers stay half-built; every re-offer POSTs
+	   /signal and takes a 403 "Join voice first" that was thrown away; the bar sits
+	   on "Connecting voice…" until the player thinks to press Leave and Join.
+
+	   So re-enter the roster. Bounded, because a socket that keeps flapping would
+	   otherwise turn this into a POST loop — after HEAL_TRIES we give the mic back
+	   and let the button say Join voice again, which is at least honest. */
+	const HEAL_TRIES = 3;
+	let healing = false;
+	let healTries = 0;
+	$effect(() => {
+		if (!inVoice || joining || healing || myUid == null) return;
+		if ($store.voice.includes(myUid)) {
+			healTries = 0; // back in and talking — a later, unrelated drop gets its own budget
+			return;
+		}
+		if (healTries >= HEAL_TRIES) return;
+		healTries++;
+		healing = true;
+		(async () => {
+			try {
+				// A drop we slept through usually took the capture with it (iOS ends the
+				// track on screen-lock). Same treatment the visibility handler gives it:
+				// rebuild the whole mesh rather than re-entering a roster with a dead mic.
+				if (mesh && !mesh.micLive()) {
+					mesh.leave();
+					await joinVoice();
+					return;
+				}
+				await store.post('voice', { action: 'join' });
+				mesh?.sync($store.voice);
+			} catch (e) {
+				error = e.message;
+				await leaveVoice();
+			} finally {
+				healing = false;
+			}
+		})();
 	});
 
 	// Self-heal a stale roster entry. Leaving via browser/home nav can lose the

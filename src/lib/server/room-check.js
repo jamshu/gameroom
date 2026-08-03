@@ -10,7 +10,7 @@
 import assert from 'node:assert';
 import { register } from 'node:module';
 register('./room-stub-loader.mjs', import.meta.url);
-const { reseatRoles, setRoles, resetRound, createRoomMedia, readRoomMedia, deleteRoom, pickSuccessorHost, finishRoom, publicMembers, browseDomain, seatOnAccept, dropMember, writeState, appendEvent, roomSnapshot, syncVoiceSince } =
+const { reseatRoles, setRoles, resetRound, createRoomMedia, readRoomMedia, deleteRoom, pickSuccessorHost, finishRoom, publicMembers, browseDomain, seatOnAccept, dropMember, writeState, appendEvent, roomSnapshot, syncVoiceSince, setVoice } =
 	await import('./room.js');
 
 const member = (id, role, status = 'accepted') => ({
@@ -684,7 +684,7 @@ const resetDo = () => { globalThis.__doOps = []; globalThis.__doResults = []; gl
 //     thrown out of.
 {
 	asDoRoom(71); resetDo();
-	globalThis.__doResults = [{ ok: true }];
+	globalThis.__doResults = [{ ok: true, state: { v: 2, voice: [404] } }, { ok: true }];
 	const target = { id: 3, x_studio_status: 'accepted', x_studio_user_id: [303, 'P3'] };
 	const state = { voice: [303, 404] };
 	await dropMember(target, state, 71);
@@ -692,8 +692,68 @@ const resetDo = () => { globalThis.__doOps = []; globalThis.__doResults = []; gl
 	const kick = globalThis.__doOps.find((o) => o.op === 'kick');
 	assert.ok(kick, 'a removal reaches the object');
 	assert.equal(kick.uid, 303, 'and names the player it removed');
-	assert.ok(!state.voice.includes(303), 'still dropped from voice, as before');
 	assert.ok(state.banned.includes(303), 'and still marked removed-by-host');
+
+	// The roster is the OBJECT's now, so a removal has to say so out loud instead
+	// of editing the blob. Editing it would be worse than a no-op: setState takes
+	// voice from the object and ignores the caller's copy, so the removal would
+	// look like it worked and silently leave them in the call.
+	const voice = globalThis.__doOps.find((o) => o.op === 'voice');
+	assert.ok(voice, 'a removal drops them from voice through the object');
+	assert.equal(voice.uid, 303);
+	assert.equal(voice.action, 'leave');
+	assert.deepEqual(state.voice, [303, 404], 'and leaves the caller s blob alone');
+}
+// 28a. The object owns the roster, so a write has to take its copy BACK — routes
+//      answer with stateView(state, uid), and that echo carries the same version
+//      as the push the object just sent. mergeState drops whichever lands second,
+//      so an echo holding a roster that had already moved can win and stick.
+{
+	asDoRoom(71); resetDo();
+	globalThis.__doResults = [{ ok: true, state: { v: 9, voice: [101, 102], voiceSince: 1234 } }];
+	// What a route read before it spent a few hundred ms in Odoo: 102 had not
+	// joined yet, and the call had not started.
+	const state = { v: 5, voice: [101], voiceSince: null, game: { type: 'chess' } };
+	await writeState(71, state);
+
+	assert.deepEqual(state.voice, [101, 102], 'the join that landed mid-request comes back');
+	assert.equal(state.voiceSince, 1234, 'and so does the clock it started');
+	assert.equal(state.v, 9);
+	assert.deepEqual(state.game, { type: 'chess' }, 'the caller s own change is untouched');
+}
+// 28b. setVoice off the object: mutates in hand and hands the write back to the
+//      caller, which is what lets `leave` fold it into its single writeState.
+{
+	noDoRooms(); resetDo();
+	const state = { v: 3, voice: [101] };
+	const joined = await setVoice(9, 202, 'join', state);
+	assert.deepEqual(joined.state.voice, [101, 202]);
+	assert.ok(joined.changed && joined.needsWrite, 'the caller still owes a write');
+	assert.ok(state.voiceSince, 'two in the call — the clock started');
+	assert.equal(globalThis.__odooCalls.filter((c) => c.method === 'write').length, 0,
+		'and setVoice itself wrote nothing');
+
+	// Idempotent, and a no-op must not be announced or persisted.
+	const again = await setVoice(9, 202, 'join', state);
+	assert.equal(again.changed, false);
+	assert.equal(again.needsWrite, false);
+
+	await assert.rejects(
+		() => setVoice(9, 999, 'join', { v: 1, voice: [1, 2, 3, 4, 5, 6, 7, 8] }),
+		(e) => e.status === 409 && e.code === 'voice_full',
+		'the cap still applies off the object'
+	);
+}
+// 28c. Same split-brain rule as every other write: an object that did not answer
+//      may still own the roster, so a join fails rather than forking it into Odoo.
+{
+	asDoRoom(71); resetDo();
+	globalThis.__doResults = []; // the object did not answer
+	await assert.rejects(
+		() => setVoice(71, 303, 'join', { v: 1, voice: [] }),
+		(e) => e.status === 503 && e.code === 'do_unreachable',
+		'an unreachable object fails the join'
+	);
 }
 // 29. Deleting a room must tell the object BEFORE Odoo's rows go, or it is left
 //     write-behinding a room that no longer exists — and flush() re-arms on

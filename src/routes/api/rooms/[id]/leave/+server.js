@@ -12,7 +12,7 @@ import {
 	resetRound,
 	pushRoster,
 	jsonError,
-	syncVoiceSince
+	setVoice
 } from '$lib/server/room.js';
 import { gameSeatUids } from '$lib/server/gamelogic.js';
 
@@ -43,12 +43,13 @@ export async function POST({ params, cookies }) {
 		const extraVals = {};
 		let dirty = false;
 
-		// drop from voice roster if present
-		if (state.voice?.includes(uid)) {
-			state.voice = state.voice.filter((u) => u !== uid);
-			syncVoiceSince(state); // walking out can end the call, not just leave it
-			dirty = true;
-		}
+		// Drop from the voice roster if present. Through setVoice, never inline: on a
+		// DO room the object owns the roster and ignores a `voice` key in the blob
+		// below, so editing it here would silently stop removing anyone. Off the
+		// object setVoice mutates `state` in hand exactly as this used to, and
+		// `needsWrite` folds it into the single write at the bottom.
+		const { needsWrite } = await setVoice(params.id, uid, 'leave', state);
+		if (needsWrite) dirty = true;
 
 		/* A seated player walking out mid-game wedges it permanently: `game.players`
 		   is a frozen snapshot taken at start and is never reconciled, so the turn
