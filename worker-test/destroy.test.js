@@ -102,6 +102,32 @@ describe('a flush that can never succeed', () => {
 		});
 	});
 
+	it('sets the next check deadline BEFORE awaiting, so a throwing check cannot loop', async () => {
+		// The counter version of this shipped and did not work: production showed
+		// flushFails pinned at 2 and the check never firing, because more than one
+		// path reset it. A deadline only moves forward, so nothing can hold it back
+		// — and it must be written before the await, or a check that throws would
+		// leave the deadline in the past and re-ask on every single alarm.
+		const stub = env.ROOM.get(env.ROOM.idFromName('orphan-deadline'));
+		await runInDurableObject(stub, (instance) => {
+			kvSet(instance.sql, 'hydrated_at', Date.now());
+			kvSet(instance.sql, 'owns_state', 1);
+			kvSet(instance.sql, 'room_id', 42);
+			kvSet(instance.sql, 'state_dirty_at', Date.now());
+			appendEvent(instance.sql, { type: 'chat', sender: 7, payload: {} });
+			expect(kvGet(instance.sql, 'next_orphan_check_at', 0)).toBe(0);
+		});
+
+		await runInDurableObject(stub, (instance) => instance.flush());
+
+		await runInDurableObject(stub, (instance) => {
+			// Odoo is unreachable here, so roomExists threw — and the deadline must
+			// still have advanced.
+			const due = Number(kvGet(instance.sql, 'next_orphan_check_at', 0));
+			expect(due).toBeGreaterThan(Date.now());
+		});
+	});
+
 	it('does NOT self-destruct when Odoo is merely unreachable', async () => {
 		// The distinction that matters. The orphan check asks "is the room gone?";
 		// if that question itself cannot be answered, the answer is not "yes".
@@ -115,7 +141,7 @@ describe('a flush that can never succeed', () => {
 			kvSet(instance.sql, 'room_id', 42);
 			kvSet(instance.sql, 'state', { v: 3, voice: [], game: null });
 			kvSet(instance.sql, 'state_dirty_at', Date.now());
-			kvSet(instance.sql, 'flush_fails', 5); // already past the threshold
+			kvSet(instance.sql, 'next_orphan_check_at', 0); // the check is due
 			appendEvent(instance.sql, { type: 'chat', sender: 7, payload: { text: 'unflushed' } });
 		});
 

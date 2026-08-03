@@ -25,10 +25,15 @@ const ARCHIVE_MS = 15_000; // while state/events are dirty
 const HEARTBEAT_MS = 60_000; // while >=1 socket — keeps Odoo last_seen fresh
 const TRIM_MS = 600_000;
 const IDLE_MS = 300_000; // after the last socket closes
-/* Consecutive failed flushes before spending one read on "does this room still
-   exist?". Low enough that an orphan stops within a minute or so, high enough
-   that an ordinary Odoo blip never pays for the question. */
-const FLUSH_FAILS_BEFORE_ORPHAN_CHECK = 3;
+/* How often a failing object may spend one read asking "does this room still
+   exist?".
+   A TIMESTAMP, NOT A FAILURE COUNT. The count version did not work: production
+   showed flushFails pinned at 2 and the check never firing, because more than
+   one path resets it and the object never accumulated three in a row. A deadline
+   cannot be reset by a well-meaning success elsewhere — it only moves forward —
+   which is the property this needs. Five minutes bounds the cost to one read per
+   object per five minutes even during a full Odoo outage. */
+const ORPHAN_CHECK_EVERY_MS = 300_000;
 
 /* Ops that make this object the source of truth, and therefore have to run the
    one-way ownership transfer first. Everything else — pushes from routes that
@@ -210,7 +215,16 @@ export class RoomDO {
 				oldest: oldestSeq(this.sql),
 				hydratedAt: kvGet(this.sql, 'hydrated_at'),
 				dirtySince: kvGet(this.sql, 'state_dirty_at'),
-				evacuated: !!kvGet(this.sql, 'evacuated')
+				evacuated: !!kvGet(this.sql, 'evacuated'),
+				// The three that explain a misbehaving object without guesswork:
+				// whether it is the writer, how long its flush has been failing, and
+				// how much is still owed to Odoo.
+				owns: !!kvGet(this.sql, 'owns_state'),
+				flushFails: kvGet(this.sql, 'flush_fails', 0),
+				unarchived: [...this.sql.exec('SELECT COUNT(*) AS n FROM events WHERE archived = 0')][0]?.n ?? 0,
+				nextArchiveAt: kvGet(this.sql, 'next_archive_at', 0),
+				nextIdleAt: kvGet(this.sql, 'next_idle_at', 0),
+				roomId: kvGet(this.sql, 'room_id')
 			});
 		}
 
@@ -765,20 +779,23 @@ export class RoomDO {
 		   room still exists. Gone means this object has nothing left to do and
 		   should stop existing; still there means Odoo is merely unhappy, and the
 		   backoff above carries it. */
-		const fails = (Number(kvGet(this.sql, 'flush_fails', 0)) || 0) + 1;
-		kvSet(this.sql, 'flush_fails', fails);
-		if (fails >= FLUSH_FAILS_BEFORE_ORPHAN_CHECK) {
+		kvSet(this.sql, 'flush_fails', (Number(kvGet(this.sql, 'flush_fails', 0)) || 0) + 1);
+
+		const now = Date.now();
+		if (now >= Number(kvGet(this.sql, 'next_orphan_check_at', 0) || 0)) {
+			// Set the next deadline BEFORE the await, so a check that throws still
+			// counts as an attempt and cannot turn into a retry loop of its own.
+			kvSet(this.sql, 'next_orphan_check_at', now + ORPHAN_CHECK_EVERY_MS);
 			try {
 				if (!(await roomExists(this.env, roomId))) {
 					console.log(`room ${roomId} is gone from Odoo — destroying the orphaned object`);
 					await this.destroy();
 					return; // storage is wiped; there is nothing left to re-arm for
 				}
-				// It exists, so this is a real outage. Don't re-ask on every alarm.
-				kvSet(this.sql, 'flush_fails', 1);
 			} catch (e) {
-				// The existence check itself failed, which means Odoo is unreachable
-				// rather than the room being gone — exactly when NOT to self-destruct.
+				// The check ITSELF failing means Odoo is unreachable rather than the
+				// room being gone — exactly when NOT to self-destruct, because that
+				// would discard unflushed state during an ordinary outage.
 				console.error(`orphan check failed for room ${roomId}:`, e?.message);
 			}
 		}
