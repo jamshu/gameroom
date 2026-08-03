@@ -85,7 +85,14 @@
 		wakeLock = null;
 	}
 
-	async function joinVoice() {
+	/**
+	 * `heal` means "we never left — put us back". Recovery paths pass it so the
+	 * room is not told we joined: the object drops a uid the moment its last socket
+	 * closes and appends nothing, so announcing the way back in would leave an
+	 * unpaired "joined voice" in the log for every iOS app switch. Only the button
+	 * is a real join.
+	 */
+	async function joinVoice(heal = false) {
 		joining = true;
 		try {
 			if (!mesh) {
@@ -108,7 +115,7 @@
 			// roster, so peers never offer to someone who can't answer yet
 			await mesh.join();
 			try {
-				await store.post('voice', { action: 'join' });
+				await store.post('voice', { action: 'join', heal });
 			} catch (e) {
 				mesh.leave(); // voice full — release the mic
 				throw e;
@@ -151,9 +158,14 @@
 	   /signal and takes a 403 "Join voice first" that was thrown away; the bar sits
 	   on "Connecting voice…" until the player thinks to press Leave and Join.
 
-	   So re-enter the roster. Bounded, because a socket that keeps flapping would
-	   otherwise turn this into a POST loop — after HEAL_TRIES we give the mic back
-	   and let the button say Join voice again, which is at least honest. */
+	   So re-enter the roster, flagged `heal` so the room is not told we "joined" —
+	   nothing told it we left, and on iOS that drop happens on every app switch.
+
+	   HEAL_TRIES bounds the case where the server keeps REFUSING (voice full, a
+	   room we are no longer in): rather than retry forever we give the mic back and
+	   let the button say Join voice again, which is at least honest. It deliberately
+	   does not bound successful heals — those reset the budget, because one re-entry
+	   per genuine disconnect is exactly the right number. */
 	const HEAL_TRIES = 3;
 	let healing = false;
 	let healTries = 0;
@@ -173,10 +185,10 @@
 				// rebuild the whole mesh rather than re-entering a roster with a dead mic.
 				if (mesh && !mesh.micLive()) {
 					mesh.leave();
-					await joinVoice();
+					await joinVoice(true);
 					return;
 				}
-				await store.post('voice', { action: 'join' });
+				await store.post('voice', { action: 'join', heal: true });
 				mesh?.sync($store.voice);
 			} catch (e) {
 				error = e.message;
@@ -254,7 +266,7 @@
 			// to re-open the mic + rebuild the connections — no manual tap needed.
 			if (mesh && !mesh.micLive()) {
 				mesh.leave();
-				await joinVoice();
+				await joinVoice(true); // coming back from a lock is not a new join
 				return;
 			}
 			store.pollNow?.();

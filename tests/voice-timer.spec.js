@@ -35,6 +35,12 @@ async function mockBackend(page, { voice = [], voiceMs = null } = {}) {
 			}
 		})
 	);
+	// The fixtures below put ME in the roster without the page ever having joined,
+	// which is precisely what the room's self-heal effect POSTs a `leave` for. Left
+	// unrouted that POST reaches the real endpoint, 401s with no session, and api()
+	// redirects the whole page to /login — so the clock under test vanishes and the
+	// failure reads as "element not found" rather than "the mock is incomplete".
+	await page.route('**/api/rooms/*/voice', (r) => r.fulfill({ json: { ok: true, voice } }));
 }
 
 test('no call, no clock', async ({ page }) => {
