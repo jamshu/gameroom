@@ -7,8 +7,10 @@ import {
 	setContextCookie,
 	setUserCookie,
 	refreshSessionCookie,
-	slideIdentityCookies
+	slideIdentityCookies,
+	PREMIUM_TTL_MS
 } from '$lib/server/session.js';
+import { readPremium } from '$lib/server/premium.js';
 
 export const prerender = false;
 
@@ -32,14 +34,29 @@ export async function GET({ cookies }) {
 
 	try {
 		const { result: info, sessionId } = await sessionInfo(sid);
-		const user = { uid: info.uid, name: info.name, login: info.username };
+		// Premium is NOT in session-info, so it can only come from the cookie or a
+		// separate res.users read. Carrying the cached value forward is mandatory:
+		// this endpoint rebuilds `user` from scratch and re-writes the cookie every
+		// 10 minutes, so anything not merged here is erased. Re-read only once the
+		// cached copy is older than the TTL.
+		const fresh = cached?.premiumAt && Date.now() - cached.premiumAt < PREMIUM_TTL_MS;
+		const user = {
+			uid: info.uid,
+			name: info.name,
+			login: info.username,
+			premium: fresh ? !!cached.premium : await readPremium(info.uid),
+			premiumAt: fresh ? cached.premiumAt : Date.now()
+		};
 		// Odoo is alive: sync the rotated id and take its copy as the truth.
 		refreshSessionCookie(cookies, sessionId, sid);
 		setContextCookie(cookies, buildSessionContext(info));
 		setUserCookie(cookies, user);
 		return json({ ok: true, user });
 	} catch {
-		// Odoo session gone (or Odoo briefly unreachable) — stay signed in.
+		// Odoo session gone (or Odoo briefly unreachable) — stay signed in. `cached`
+		// still carries premium, so the flag survives an outage. The ctx-only
+		// fallback below can't: it has no identity beyond the uid, so such a user
+		// reads as non-premium until the next successful /me. Accepted degradation.
 		const user = cached || (ctx?.uid ? { uid: ctx.uid, name: '', login: '' } : null);
 		if (!user) return json({ ok: false }, { status: 401 });
 		slideIdentityCookies(cookies, ctx, user);

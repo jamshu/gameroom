@@ -25,7 +25,16 @@ export async function POST({ request, cookies }) {
 		await createUser({ name: String(name).trim(), login: trimmedLogin, password });
 
 		const { sessionId, info } = await authenticateUser(normalizeLogin(trimmedLogin).login, password);
-		const user = { uid: info.uid, name: info.name, login: info.username };
+		// A user created seconds ago cannot be on the paid tier — createUser doesn't
+		// set the flag — so stamp it false rather than spending an Odoo call to be
+		// told so. premiumAt still starts the TTL, so /me picks up an upgrade later.
+		const user = {
+			uid: info.uid,
+			name: info.name,
+			login: info.username,
+			premium: false,
+			premiumAt: Date.now()
+		};
 		setSessionCookie(cookies, sessionId);
 		setContextCookie(cookies, buildSessionContext(info));
 		setUserCookie(cookies, user);

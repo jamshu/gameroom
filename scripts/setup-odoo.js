@@ -219,6 +219,12 @@ async function main() {
 		column1: 'user_id', column2: 'following_user_id'
 	});
 
+	// Paid tier. Unlocks the chess engine hint. NOTE: every user that existed
+	// before this field reads NULL, not false — so "premium" must be tested as
+	// `=== true` and anything else read as "not premium", the same way
+	// x_studio_visibility treats anything that isn't 'private' as open.
+	await ensureField(usersModel, 'res.users', { name: 'x_studio_is_premium', ttype: 'boolean' });
+
 	/* --------------------------- access rights ----------------------------- */
 	// Players (internal users): NO direct access. All reads AND writes go
 	// through the app proxy with the admin key after app-level authorization.

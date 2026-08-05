@@ -57,14 +57,33 @@ export function getContext(cookies) {
 	}
 }
 
-// Display identity ({ uid, name, login }). Kept so /me can answer without a live
-// Odoo session — Odoo expires its own web sessions long before our 30 days, and
-// that expiry used to bounce people to /login mid-game.
+// Display identity ({ uid, name, login, premium, premiumAt }). Kept so /me can
+// answer without a live Odoo session — Odoo expires its own web sessions long
+// before our 30 days, and that expiry used to bounce people to /login mid-game.
 export const USER_COOKIE = 'app_user';
+
+/**
+ * How long a cached premium flag is trusted before we re-read res.users.
+ *
+ * The flag is not in session-info, so refreshing it costs a real Odoo call. /me
+ * runs every 10 minutes per open tab and Odoo Online rate-limits at roughly
+ * 1 req/s app-wide (see odoo.js), so a read per keepalive is not affordable —
+ * one per user per 6 hours is. The cost is that a tier change can take up to
+ * this long to show up; logging out and back in applies it immediately.
+ */
+export const PREMIUM_TTL_MS = 6 * 60 * 60 * 1000;
 
 export function setUserCookie(cookies, user) {
 	if (!user?.uid) return;
-	cookies.set(USER_COOKIE, JSON.stringify({ uid: user.uid, name: user.name, login: user.login }), {
+	// The key list is a whitelist, deliberately: it is the one place that decides
+	// what lands in the cookie. Anything a caller forgets to pass is DROPPED, not
+	// preserved — /me rebuilds `user` from scratch on every keepalive, so it has
+	// to carry premium/premiumAt forward itself or a paying user silently loses
+	// the flag ten minutes after logging in.
+	const value = { uid: user.uid, name: user.name, login: user.login };
+	if (user.premium) value.premium = true;
+	if (user.premiumAt) value.premiumAt = user.premiumAt;
+	cookies.set(USER_COOKIE, JSON.stringify(value), {
 		path: '/',
 		httpOnly: true,
 		sameSite: 'lax',

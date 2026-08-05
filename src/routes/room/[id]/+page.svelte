@@ -31,6 +31,10 @@
 	let detailTimer = null;
 
 	const myUid = $derived($user?.uid);
+	// Paid tier (x_studio_is_premium on res.users, cached in the identity cookie).
+	// Unlocks the chess engine hint. The engine runs in the browser, so there is no
+	// server round trip to guard — this gate is presentational, not enforcement.
+	const isPremium = $derived(!!$user?.premium);
 
 	async function loadDetail() {
 		try {
@@ -488,7 +492,7 @@
 					{:else if $store.game?.type === 'thief_finder'}
 						<ThiefFinderTable {store} game={$store.game} {members} {myUid} {isHost} />
 					{:else if $store.game?.type === 'chess'}
-						<ChessBoard {store} game={$store.game} {members} {myUid} />
+						<ChessBoard {store} game={$store.game} {members} {myUid} {isPremium} />
 					{:else if $store.game?.type === 'carroms'}
 						<CarromBoard {store} game={$store.game} {members} {myUid} />
 					{:else if $store.game?.type === 'ludo'}

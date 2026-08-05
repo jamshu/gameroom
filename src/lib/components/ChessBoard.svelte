@@ -6,9 +6,10 @@
 	import { createChessClock, formatClock } from '$lib/chessclock.svelte.js';
 	import { createFullscreen, portal } from '$lib/fullscreen.svelte.js';
 	import { createChessTheme, BOARD_THEMES, PIECE_SETS } from '$lib/chessthemes.svelte.js';
+	import { createChessEngine } from '$lib/chessengine.svelte.js';
 	import ThemePicker from './ThemePicker.svelte';
 
-	let { store, game, members, myUid } = $props();
+	let { store, game, members, myUid, isPremium = false } = $props();
 	let selected = $state(null); // square like 'e2'
 	let error = $state('');
 	// own move applied locally before the server confirms — kills the POST+poll lag
@@ -140,6 +141,59 @@
 	const legalTargets = $derived(
 		selected ? chess.moves({ square: selected, verbose: true }).map((m) => m.to) : []
 	);
+
+	/* ---- engine hint (premium) --------------------------------------------- */
+
+	/**
+	 * "What's the best move here?" — advisory only. It never plays anything: the
+	 * suggestion is a highlight plus a SAN label, and the player is free to ignore
+	 * it and move wherever they like.
+	 *
+	 * Deliberately NOT gated on `myTurn`. It analyses whatever position is on
+	 * screen, which is what makes "what is my opponent's best reply?" and "what
+	 * should I have played ten moves ago?" work — the latter for free, because
+	 * `fen` already resolves review and optimistic precedence.
+	 *
+	 * The gate is `isPremium`, and it is presentational: the engine runs in this
+	 * browser, so there is no request for the server to refuse. See the premium
+	 * flag's own comments in src/lib/server/premium.js.
+	 */
+	// Created unconditionally — this allocates nothing but closures. The Worker and
+	// the ~656 KB of WASM behind it are not fetched until `analyse` is first called,
+	// and the only path there is a button that renders for premium users only. That
+	// also keeps `isPremium` reactive: a flag that resolves after mount (the session
+	// check is async) still gets a working button rather than a dead one.
+	const engine = createChessEngine();
+	// { fen, from, to, san } for a real suggestion, or { fen, san: null } when the
+	// position has no move at all. It always carries the fen it answers, which is
+	// what the staleness check below keys on.
+	let hint = $state(null);
+
+	onDestroy(() => engine.dispose());
+
+	// A hint is only meaningful for the position it was computed for. Searches take
+	// ~a second and this button works on the opponent's turn, so an incoming move
+	// lands mid-search routinely; so does stepping through history. Same guard the
+	// optimistic overlay makes against `optimisticBaseFen` further up.
+	$effect(() => {
+		if (hint && hint.fen !== fen) hint = null;
+	});
+
+	async function askHint() {
+		if (engine.busy) return;
+		const asked = fen;
+		error = '';
+		hint = null;
+		try {
+			const best = await engine.analyse(asked);
+			// Superseded while we waited — the board has moved on, so drop it rather
+			// than highlight squares the move is no longer legal on.
+			if (asked !== fen) return;
+			hint = best || { fen: asked, san: null };
+		} catch (e) {
+			error = e?.message || 'Could not reach the engine';
+		}
+	}
 
 	/* ---- board / piece theme + hover tilt --------------------------------- */
 
@@ -460,6 +514,25 @@
 		{/if}
 	{/snippet}
 
+	{#snippet hintBar()}
+		<!-- Deliberately still offered after the game has a result: the review bar
+		     outlives the game too, and "what should I have played?" on a game you
+		     just lost is the most useful thing the engine does. Terminal positions
+		     answer "No moves here" rather than hanging. -->
+		{#if isPremium}
+			<div class="hint">
+				<button class="btn btn--ghost btn--sm" onclick={askHint} disabled={engine.busy}>
+					{engine.busy ? '💡 Thinking…' : '💡 Best move'}
+				</button>
+				{#if hint}
+					<span class="hint-san">
+						{#if hint.san}Best: <b>{hint.san}</b>{:else}No moves here{/if}
+					</span>
+				{/if}
+			</div>
+		{/if}
+	{/snippet}
+
 	{#snippet drawOfferBlock()}
 		{#if drawOfferedToMe}
 			<div class="draw-offer">
@@ -489,6 +562,7 @@
 				<button
 					class="sq {s.dark ? 'sq--dark' : ''} {selected === s.sq ? 'sq--sel' : ''} {legalTargets.includes(s.sq) ? 'sq--hint' : ''}"
 					class:sq--last={lastMove && (lastMove.from === s.sq || lastMove.to === s.sq)}
+					class:sq--best={hint?.san && (hint.from === s.sq || hint.to === s.sq)}
 					class:sq--occupied={!!s.img}
 					data-sq={s.sq}
 					onclick={() => tap(s.sq)}
@@ -535,6 +609,7 @@
 			<div class="fs-draw">{@render drawOfferBlock()}</div>
 			<div class="fs-controls">
 				{@render reviewBar()}
+				{@render hintBar()}
 				{@render matchActions()}
 			</div>
 		{/if}
@@ -544,6 +619,7 @@
 
 	{#if !fs.isFs}
 		{@render reviewBar()}
+		{@render hintBar()}
 		{@render drawOfferBlock()}
 	{/if}
 
@@ -782,7 +858,8 @@
 		justify-content: center;
 		gap: 8px;
 	}
-	.board-wrap--fs .fs-controls :global(.review) {
+	.board-wrap--fs .fs-controls :global(.review),
+	.board-wrap--fs .fs-controls :global(.hint) {
 		margin-top: 0;
 	}
 	/* A draw offer is a question that needs answering, so it goes centre-screen over
@@ -944,6 +1021,19 @@
 			inset 0 0 0 100px color-mix(in srgb, var(--accent-2, #ffcc33) 18%, transparent),
 			inset 0 0 0 4px color-mix(in srgb, var(--accent) 88%, #fff);
 	}
+	/* engine suggestion — deliberately green, so it reads as "advice" and never
+	   collides with the accent (selection/legal moves) or accent-2 (last move) */
+	.sq--best {
+		box-shadow:
+			inset 0 0 0 100px color-mix(in srgb, #22c55e 20%, transparent),
+			inset 0 0 0 4px color-mix(in srgb, #22c55e 80%, #fff);
+	}
+	/* your own selection still wins — you are the one moving, the engine only advises */
+	.sq--best.sq--sel {
+		box-shadow:
+			inset 0 0 0 100px color-mix(in srgb, #22c55e 20%, transparent),
+			inset 0 0 0 4px color-mix(in srgb, var(--accent) 88%, #fff);
+	}
 	/* legal move onto an empty square — a tidy accent dot */
 	.sq--hint:not(:has(.piece))::after {
 		content: '';
@@ -970,6 +1060,20 @@
 		font-variant-numeric: tabular-nums;
 		min-width: 68px;
 		text-align: center;
+	}
+	.hint {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin-top: 10px;
+	}
+	.hint-san {
+		font-size: 0.8rem;
+		color: var(--text-dim);
+	}
+	.hint-san b {
+		color: #22c55e; /* matches the board highlight */
+		font-variant-numeric: tabular-nums;
 	}
 	.draw-offer {
 		display: flex;

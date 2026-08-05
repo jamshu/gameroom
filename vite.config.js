@@ -14,7 +14,11 @@ export default defineConfig({
 			// auto-injected registration never runs. Register manually in client code.
 			injectRegister: false,
 			injectManifest: {
-				globPatterns: ['**/*.{js,css,html,ico,png,svg,webmanifest}']
+				globPatterns: ['**/*.{js,css,html,ico,png,svg,webmanifest}'],
+				// The vendored Stockfish is premium-only, ~656 KB, and fetched on demand.
+				// Its .wasm escapes globPatterns but its glue .js does not, so without this
+				// every user would re-download the engine on each service-worker update.
+				globIgnores: ['**/engine/**']
 			},
 			manifest: {
 				id: '/',
