@@ -8,8 +8,37 @@
 	import { user, checkSession, logout } from '$lib/stores/auth.js';
 	import Avatar from '$lib/components/Avatar.svelte';
 	import { pushSupported, currentSubscription, subscribePush } from '$lib/push.js';
+	import { startRing, arm } from '$lib/sound.js';
 
 	let { children } = $props();
+
+	// Incoming call: the SW forwards a call push to any open window so we can ring
+	// out loud (a bare notification only chimes once) and offer Answer / Decline.
+	let incoming = $state(null); // { title, body, url }
+	let stopRing = null;
+	let ringTimeout = null;
+	function ringDown() {
+		stopRing?.();
+		stopRing = null;
+		clearTimeout(ringTimeout);
+	}
+	function onSwMessage(e) {
+		if (e.data?.type !== 'incoming-call') return;
+		incoming = { title: e.data.title, body: e.data.body, url: e.data.url };
+		ringDown();
+		stopRing = startRing();
+		ringTimeout = setTimeout(declineCall, 30000); // stop ringing after 30s
+	}
+	function answerCall() {
+		const url = incoming?.url || '/';
+		ringDown();
+		incoming = null;
+		goto(url);
+	}
+	function declineCall() {
+		ringDown();
+		incoming = null;
+	}
 
 	// 🔔 shows whenever the browser supports push but isn't confirmed subscribed.
 	// Default 'off' (not 'unknown'): currentSubscription() waits for the SW to go
@@ -47,13 +76,19 @@
 
 	onMount(() => {
 		checkSession();
-		if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+		arm(); // unlock the audio context on the first gesture, so a ring can sound
+		if ('serviceWorker' in navigator) {
+			navigator.serviceWorker.register('/sw.js').catch(() => {});
+			navigator.serviceWorker.addEventListener('message', onSwMessage);
+		}
 		refreshPushState();
 		document.addEventListener('visibilitychange', pingIfVisible);
 		const t = setInterval(pingIfVisible, KEEPALIVE_MS);
 		return () => {
 			clearInterval(t);
 			document.removeEventListener('visibilitychange', pingIfVisible);
+			navigator.serviceWorker?.removeEventListener('message', onSwMessage);
+			ringDown();
 		};
 	});
 
@@ -70,6 +105,19 @@
 		goto('/login');
 	}
 </script>
+
+{#if incoming}
+	<div class="call-toast" role="alertdialog" aria-label="Incoming call">
+		<div class="call-toast-body">
+			<span class="call-toast-title">{incoming.title}</span>
+			<span class="call-toast-sub">{incoming.body}</span>
+		</div>
+		<div class="call-toast-actions">
+			<button class="btn btn--primary btn--sm" onclick={answerCall}>📹 Answer</button>
+			<button class="btn btn--ghost btn--sm" onclick={declineCall}>Decline</button>
+		</div>
+	</div>
+{/if}
 
 <div class="app" class:app--fill={$page.url.pathname === '/'}>
 	{#if $user}
@@ -92,6 +140,51 @@
 </div>
 
 <style>
+	/* incoming-call banner — pinned top-centre, above everything */
+	.call-toast {
+		position: fixed;
+		top: max(12px, env(safe-area-inset-top));
+		left: 50%;
+		transform: translateX(-50%);
+		z-index: 2000;
+		display: flex;
+		align-items: center;
+		gap: 16px;
+		padding: 12px 16px;
+		border-radius: 14px;
+		background: rgba(18, 22, 34, 0.96);
+		color: #fff;
+		box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+		max-width: min(92vw, 460px);
+		animation: call-pulse 1.2s ease-in-out infinite;
+	}
+	@keyframes call-pulse {
+		0%, 100% { box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5); }
+		50% { box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5), 0 0 0 3px var(--accent, #ff4d6d); }
+	}
+	.call-toast-body {
+		display: flex;
+		flex-direction: column;
+		min-width: 0;
+	}
+	.call-toast-title {
+		font-weight: 700;
+	}
+	.call-toast-sub {
+		font-size: 0.85rem;
+		opacity: 0.8;
+	}
+	.call-toast-actions {
+		display: flex;
+		gap: 8px;
+		flex-shrink: 0;
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.call-toast {
+			animation: none;
+		}
+	}
+
 	/* Home is the only short page — fill the viewport so its footer credit can be
 	   pushed to the bottom instead of floating in the middle of empty space. */
 	.app--fill {
