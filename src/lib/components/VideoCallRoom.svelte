@@ -56,14 +56,17 @@
 	// Fullscreen always floats self as a small Google-Meet-style PiP so the remote
 	// owns the screen; windowed, it floats by default but can dock into the grid.
 	let selfDocked = $state(false);
-	const floating = $derived(others.length > 0 && (fs.isFs || !selfDocked));
-	const selfInGrid = $derived(!floating); // docked in the grid, or alone in the room
+	// 3 people (two remotes) reads best as two full-width halves stacked, with self
+	// as a small square below — not a corner PiP over thin side-by-side strips.
+	const stacked = $derived(others.length === 2);
+	const floating = $derived(others.length > 0 && (fs.isFs || (!selfDocked && !stacked)));
+	const selfBelow = $derived(!fs.isFs && stacked && !selfDocked); // small square under the halves
+	const selfInGrid = $derived(!floating && !selfBelow); // docked, or alone in the room
 
-	// Tile size scales with the crowd: fewer tiles → fewer columns → bigger. Count
-	// the self tile only when it actually sits in the grid, so 2 people (self
-	// floating or hidden) = one remote tile = full width.
+	// Tile size scales with the crowd: fewer tiles → fewer columns → bigger. A
+	// 2-tile grid stacks into one column (two halves); 3–4 → 2 cols, 5–6 → 3.
 	const gridCount = $derived(others.length + (selfInGrid ? 1 : 0));
-	const cols = $derived(gridCount <= 1 ? 1 : gridCount <= 4 ? 2 : 3);
+	const cols = $derived(gridCount <= 2 ? 1 : gridCount <= 4 ? 2 : 3);
 
 	/** Bind a MediaStream to a <video> without a reactive round trip. */
 	function srcObject(node, stream) {
@@ -198,6 +201,13 @@
 			</button>
 		{/if}
 
+		<!-- 3-person: self as a small square centred below the two stacked halves -->
+		{#if selfBelow}
+			<button class="tile tile--me tile--self tile--below" onclick={() => (selfDocked = !selfDocked)}>
+				{@render selfInner()}
+			</button>
+		{/if}
+
 		<!-- controls live INSIDE the stage so they travel into fullscreen with it -->
 		<div class="vc-controls">
 			<button class="btn" class:btn--danger={muted} onclick={toggleMute}>
@@ -276,6 +286,12 @@
 	}
 	.tile--self:hover {
 		border-color: color-mix(in srgb, var(--accent, #ff4d6d) 60%, transparent);
+	}
+	/* 3-person: small square self preview, centred below the two stacked halves */
+	.tile--below {
+		width: clamp(120px, 30%, 180px);
+		aspect-ratio: 1 / 1;
+		margin: 10px auto 0;
 	}
 	/* floating picture-in-picture: small, corner, above the grid */
 	.tile--pip {
