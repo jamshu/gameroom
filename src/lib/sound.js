@@ -218,32 +218,6 @@ export function playCarromFoul() {
 	tone(ac, { at: 0.08, freq: 123.5, endFreq: 82, dur: 0.34, type: 'sawtooth', gain: 0.28 });
 }
 
-/**
- * Incoming-call ringtone. Loops a classic two-note warble until you call the
- * returned stop function (answer/decline/timeout). Louder than the UI blips —
- * this one is meant to be heard across the room.
- */
-export function startRing() {
-	if (isMuted()) return () => {};
-	const ac = audio();
-	if (!ac) return () => {};
-	let stopped = false;
-	const burst = () => {
-		if (stopped) return;
-		// two quick warbles, ~1s, then a gap — a phone ring
-		tone(ac, { at: 0.0, freq: 520, dur: 0.4, type: 'sine', gain: 1 });
-		tone(ac, { at: 0.25, freq: 660, dur: 0.4, type: 'sine', gain: 1 });
-		tone(ac, { at: 0.6, freq: 520, dur: 0.4, type: 'sine', gain: 1 });
-		tone(ac, { at: 0.85, freq: 660, dur: 0.4, type: 'sine', gain: 1 });
-	};
-	burst();
-	const iv = setInterval(burst, 2400);
-	return () => {
-		stopped = true;
-		clearInterval(iv);
-	};
-}
-
 /** Brought a token home — bright two-note chime (C6 → G6). */
 export function playHome() {
 	if (isMuted()) return;
