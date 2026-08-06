@@ -1,10 +1,19 @@
 <script>
 	import { onMount, onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
+	import { page } from '$app/stores';
 	import Avatar from './Avatar.svelte';
 	import { createVoiceMesh } from '$lib/webrtc.js';
 
 	let { store, game, members, myUid } = $props();
+	const roomId = $page.params.id;
+
+	// A closed tab / OS back-swipe never runs onDestroy's async leave, so the room
+	// keeps us in the call roster and everyone else sees a frozen "connecting" tile.
+	// A sendBeacon on pagehide is the only thing that survives the page going away.
+	function beaconLeave() {
+		navigator.sendBeacon?.(`/api/rooms/${roomId}/voice`, JSON.stringify({ action: 'leave' }));
+	}
 
 	let mesh = null;
 	let joined = $state(false);
@@ -16,15 +25,41 @@
 	let streams = $state(new Map()); // uid -> MediaStream
 
 	const nameOf = (uid) => members.find((m) => m.uid === uid)?.name || `#${uid}`;
-	// everyone the server lists in the call except me — my tile is separate
-	const others = $derived(($store.voice || []).filter((u) => u !== myUid));
+	const memberUids = $derived(new Set(members.map((m) => m.uid)));
+	// The call roster, gated on current membership: a user who left the call or was
+	// removed from the room can linger in the raw voice roster for a poll. Both the
+	// tiles AND the mesh sync off THIS, so a ghost never gets a frozen tile and the
+	// mesh never sits "connecting…" to someone who is gone.
+	const callUids = $derived(($store.voice || []).filter((u) => memberUids.has(u)));
+	// everyone on the call except me — my tile is separate
+	const others = $derived(callUids.filter((u) => u !== myUid));
 	const stateOf = (uid) => peers.find((p) => p.uid === uid)?.state;
 
-	// Tile size scales with the crowd: 1 up = full width, 2–4 = two columns (big),
-	// 5–6 = three columns (smaller). Fewer columns → wider → taller tiles, so two
-	// people fill the space and a full room packs in without overflowing.
-	const total = $derived(others.length + 1);
-	const cols = $derived(total <= 1 ? 1 : total <= 4 ? 2 : 3);
+	// Drop a departed peer's stream so it can't leave a frozen last frame behind
+	// (and frees the object if they never come back).
+	$effect(() => {
+		const live = new Set(others);
+		let changed = false;
+		for (const uid of streams.keys()) {
+			if (!live.has(uid)) {
+				streams.delete(uid);
+				changed = true;
+			}
+		}
+		if (changed) streams = new Map(streams);
+	});
+
+	// Your own preview floats in the corner (PiP) by default so the others get the
+	// whole stage — tap it to dock it into the grid, tap again to re-float. Alone in
+	// the room there's nobody to give the stage to, so self just fills the grid.
+	let selfDocked = $state(false);
+	const floating = $derived(!selfDocked && others.length > 0);
+
+	// Tile size scales with the crowd: fewer tiles → fewer columns → bigger. Count
+	// the self tile only when it's docked into the grid, so 2 people floating = one
+	// remote tile = full width.
+	const gridCount = $derived(floating ? others.length : others.length + 1);
+	const cols = $derived(gridCount <= 1 ? 1 : gridCount <= 4 ? 2 : 3);
 
 	/** Bind a MediaStream to a <video> without a reactive round trip. */
 	function srcObject(node, stream) {
@@ -51,20 +86,26 @@
 			localStream = mesh.getLocalStream();
 			await store.post('voice', { action: 'join' });
 			joined = true;
-			mesh.sync($store.voice);
+			mesh.sync(callUids);
 		} catch (e) {
 			error = e?.message || 'Could not start your camera';
 		}
+		window.addEventListener('pagehide', beaconLeave);
 	});
 
-	// keep the mesh reconciled with the server's call roster
+	// keep the mesh reconciled — to the MEMBER-gated roster, so it tears down any
+	// peer who left the room but lingers in the raw voice roster (no more stuck
+	// "connecting…" tile for someone who is gone)
 	$effect(() => {
-		if (joined && mesh) mesh.sync($store.voice);
+		if (joined && mesh) mesh.sync(callUids);
 	});
 
 	onDestroy(() => {
+		window.removeEventListener('pagehide', beaconLeave);
 		mesh?.leave();
-		store.post('voice', { action: 'leave' }).catch(() => {});
+		// beacon, not the async post: an onDestroy fired by navigation gets its
+		// fetch cancelled mid-flight, and then the roster keeps the ghost
+		beaconLeave();
 	});
 
 	function toggleMute() {
@@ -85,37 +126,53 @@
 <div class="card vc">
 	<div class="vc-head">
 		<h2 class="section-title">📹 Video Call</h2>
-		<span class="muted">{($store.voice?.length || 0)} on the call</span>
+		<span class="muted">{callUids.length} on the call</span>
 	</div>
 
 	{#if error}
 		<p class="error-text">{error} — check camera/mic permissions and reload.</p>
 	{/if}
 
-	<div class="vc-grid" style="--cols:{cols}">
-		<!-- your own preview -->
-		<div class="tile tile--me">
-			<!-- svelte-ignore a11y_media_has_caption -->
-			<video use:srcObject={localStream} autoplay playsinline muted class:off={camOff}></video>
-			{#if camOff}
-				<div class="tile-avatar"><Avatar uid={myUid} name={nameOf(myUid)} size={64} /></div>
+	{#snippet selfInner()}
+		<!-- svelte-ignore a11y_media_has_caption -->
+		<video use:srcObject={localStream} autoplay playsinline muted class:off={camOff}></video>
+		{#if camOff}
+			<div class="tile-avatar"><Avatar uid={myUid} name={nameOf(myUid)} size={floating ? 40 : 64} /></div>
+		{/if}
+		<span class="tile-name">{nameOf(myUid)} (you){muted ? ' 🔇' : ''}</span>
+		<span class="tile-hint">{floating ? 'tap to dock' : 'tap to float'}</span>
+	{/snippet}
+
+	<div class="vc-stage">
+		<div class="vc-grid" style="--cols:{cols}">
+			<!-- self docks in as the first grid tile when not floating -->
+			{#if !floating}
+				<button class="tile tile--me tile--self" onclick={() => (selfDocked = !selfDocked)}>
+					{@render selfInner()}
+				</button>
 			{/if}
-			<span class="tile-name">{nameOf(myUid)} (you){muted ? ' 🔇' : ''}</span>
+
+			{#each others as uid (uid)}
+				<div class="tile">
+					<!-- svelte-ignore a11y_media_has_caption -->
+					<video use:srcObject={streams.get(uid)} autoplay playsinline></video>
+					{#if !streams.get(uid) || stateOf(uid) !== 'connected'}
+						<div class="tile-avatar">
+							<Avatar uid={uid} name={nameOf(uid)} size={64} />
+							<span class="tile-status">{stateOf(uid) === 'failed' ? 'lost' : 'connecting…'}</span>
+						</div>
+					{/if}
+					<span class="tile-name">{nameOf(uid)}</span>
+				</div>
+			{/each}
 		</div>
 
-		{#each others as uid (uid)}
-			<div class="tile">
-				<!-- svelte-ignore a11y_media_has_caption -->
-				<video use:srcObject={streams.get(uid)} autoplay playsinline></video>
-				{#if !streams.get(uid) || stateOf(uid) !== 'connected'}
-					<div class="tile-avatar">
-						<Avatar uid={uid} name={nameOf(uid)} size={64} />
-						<span class="tile-status">{stateOf(uid) === 'failed' ? 'lost' : 'connecting…'}</span>
-					</div>
-				{/if}
-				<span class="tile-name">{nameOf(uid)}</span>
-			</div>
-		{/each}
+		<!-- floating picture-in-picture self preview -->
+		{#if floating}
+			<button class="tile tile--me tile--self tile--pip" onclick={() => (selfDocked = !selfDocked)}>
+				{@render selfInner()}
+			</button>
+		{/if}
 	</div>
 
 	<div class="vc-controls">
@@ -156,6 +213,9 @@
 			grid-template-columns: repeat(min(var(--cols, 2), 2), 1fr);
 		}
 	}
+	.vc-stage {
+		position: relative; /* anchor for the floating PiP self tile */
+	}
 	.tile {
 		position: relative;
 		aspect-ratio: 4 / 3;
@@ -165,6 +225,45 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
+	}
+	/* the self tile is a button (tap to dock/float) — strip the native chrome */
+	.tile--self {
+		padding: 0;
+		border: 2px solid transparent;
+		font: inherit;
+		color: inherit;
+		cursor: pointer;
+		width: 100%;
+	}
+	.tile--self:hover {
+		border-color: color-mix(in srgb, var(--accent, #ff4d6d) 60%, transparent);
+	}
+	/* floating picture-in-picture: small, corner, above the grid */
+	.tile--pip {
+		position: absolute;
+		right: 12px;
+		bottom: 12px;
+		width: clamp(120px, 28%, 200px);
+		z-index: 5;
+		box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+		border-color: rgba(255, 255, 255, 0.5);
+	}
+	.tile-hint {
+		position: absolute;
+		top: 6px;
+		right: 8px;
+		padding: 2px 7px;
+		border-radius: 999px;
+		background: rgba(10, 12, 18, 0.55);
+		color: #fff;
+		font-size: 0.68rem;
+		opacity: 0;
+		transition: opacity 0.15s;
+		pointer-events: none;
+	}
+	.tile--self:hover .tile-hint,
+	.tile--pip .tile-hint {
+		opacity: 0.9;
 	}
 	.tile video {
 		width: 100%;
