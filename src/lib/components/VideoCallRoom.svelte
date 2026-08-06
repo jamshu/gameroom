@@ -167,47 +167,62 @@
 		{#if camOff}
 			<div class="tile-avatar"><Avatar uid={myUid} name={nameOf(myUid)} size={floating ? 40 : 64} /></div>
 		{/if}
-		<span class="tile-name">{nameOf(myUid)} (you){muted ? ' 🔇' : ''}</span>
-		<span class="tile-hint">{floating ? 'tap to dock' : 'tap to float'}</span>
 	{/snippet}
 
 	<div class="vc-stage" class:vc-stage--fs={fs.isFs} bind:this={stageEl} use:portal={fs.isFs}>
-		<div class="vc-grid" style="--cols:{cols}">
-			<!-- self docks in as the first grid tile (hidden entirely in fullscreen) -->
-			{#if selfInGrid}
-				<button class="tile tile--me tile--self" onclick={() => (selfDocked = !selfDocked)}>
+		<!-- the frame is the video area only: it anchors the floating PiP, so the PiP can
+		     never reach the controls below no matter how many rows they wrap into -->
+		<div class="vc-frame">
+			<div class="vc-grid" style="--cols:{cols}">
+				<!-- self docks in as the first grid tile (always floats in fullscreen) -->
+				{#if selfInGrid}
+					<button
+						class="tile tile--me tile--self"
+						aria-label="Your video"
+						onclick={() => (selfDocked = !selfDocked)}
+					>
+						{@render selfInner()}
+					</button>
+				{/if}
+
+				{#each others as uid (uid)}
+					<div class="tile">
+						<!-- svelte-ignore a11y_media_has_caption -->
+						<video use:srcObject={streams.get(uid)} autoplay playsinline></video>
+						{#if !streams.get(uid) || stateOf(uid) !== 'connected'}
+							<div class="tile-avatar">
+								<Avatar uid={uid} name={nameOf(uid)} size={64} />
+								<span class="tile-status">{stateOf(uid) === 'failed' ? 'lost' : 'connecting…'}</span>
+							</div>
+						{/if}
+						<span class="tile-name">{nameOf(uid)}</span>
+					</div>
+				{/each}
+			</div>
+
+			<!-- floating picture-in-picture self preview. Sibling of .vc-grid, never a child:
+			     as a grid child it would match the fullscreen `height: 100%` fill rule below. -->
+			{#if floating}
+				<button
+					class="tile tile--me tile--self tile--pip"
+					aria-label="Your video"
+					onclick={() => (selfDocked = !selfDocked)}
+				>
 					{@render selfInner()}
 				</button>
 			{/if}
 
-			{#each others as uid (uid)}
-				<div class="tile">
-					<!-- svelte-ignore a11y_media_has_caption -->
-					<video use:srcObject={streams.get(uid)} autoplay playsinline></video>
-					{#if !streams.get(uid) || stateOf(uid) !== 'connected'}
-						<div class="tile-avatar">
-							<Avatar uid={uid} name={nameOf(uid)} size={64} />
-							<span class="tile-status">{stateOf(uid) === 'failed' ? 'lost' : 'connecting…'}</span>
-						</div>
-					{/if}
-					<span class="tile-name">{nameOf(uid)}</span>
-				</div>
-			{/each}
+			<!-- 3-person: self as a small square centred below the two stacked halves -->
+			{#if selfBelow}
+				<button
+					class="tile tile--me tile--self tile--below"
+					aria-label="Your video"
+					onclick={() => (selfDocked = !selfDocked)}
+				>
+					{@render selfInner()}
+				</button>
+			{/if}
 		</div>
-
-		<!-- floating picture-in-picture self preview -->
-		{#if floating}
-			<button class="tile tile--me tile--self tile--pip" onclick={() => (selfDocked = !selfDocked)}>
-				{@render selfInner()}
-			</button>
-		{/if}
-
-		<!-- 3-person: self as a small square centred below the two stacked halves -->
-		{#if selfBelow}
-			<button class="tile tile--me tile--self tile--below" onclick={() => (selfDocked = !selfDocked)}>
-				{@render selfInner()}
-			</button>
-		{/if}
 
 		<!-- controls live INSIDE the stage so they travel into fullscreen with it -->
 		<div class="vc-controls">
@@ -264,7 +279,12 @@
 		}
 	}
 	.vc-stage {
-		position: relative; /* anchor for the floating PiP self tile */
+		position: relative;
+	}
+	/* anchor for the floating PiP self tile — must stay unconditional, or the PiP
+	   re-anchors to .vc-stage and starts covering the controls again */
+	.vc-frame {
+		position: relative;
 	}
 	.tile {
 		position: relative;
@@ -309,23 +329,6 @@
 		box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
 		border-color: rgba(255, 255, 255, 0.5);
 	}
-	.tile-hint {
-		position: absolute;
-		top: 6px;
-		right: 8px;
-		padding: 2px 7px;
-		border-radius: 999px;
-		background: rgba(10, 12, 18, 0.55);
-		color: #fff;
-		font-size: 0.68rem;
-		opacity: 0;
-		transition: opacity 0.15s;
-		pointer-events: none;
-	}
-	.tile--self:hover .tile-hint,
-	.tile--pip .tile-hint {
-		opacity: 0.9;
-	}
 	.tile video {
 		width: 100%;
 		height: 100%;
@@ -369,6 +372,9 @@
 		gap: 10px;
 		margin-top: 14px;
 		justify-content: center;
+		/* keep Leave/Exit above any absolutely-positioned tile, whatever happens */
+		position: relative;
+		z-index: 6;
 	}
 	.vc-invite {
 		display: flex;
@@ -390,6 +396,14 @@
 		padding: 14px;
 		gap: 12px;
 	}
+	/* the frame carries the flex chain down to the grid — without this the grid is no
+	   longer a flex child and its `flex: 1` below does nothing, collapsing the tiles */
+	.vc-stage--fs .vc-frame {
+		flex: 1;
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+	}
 	.vc-stage--fs .vc-grid {
 		flex: 1;
 		min-height: 0;
@@ -410,6 +424,6 @@
 		height: auto;
 		aspect-ratio: 4 / 3;
 		right: 18px;
-		bottom: 78px; /* clear of the controls bar */
+		bottom: 12px; /* relative to the frame, so it's clear of the controls by construction */
 	}
 </style>
