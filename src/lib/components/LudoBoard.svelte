@@ -171,14 +171,17 @@
 		return { r, c, ...metaAt(r, c) };
 	});
 
-	// token → centre [row,col] in grid units for its current pos
-	function tokenCentre(uid, i) {
-		const color = game.colors[uid];
-		const pos = game.tokens[uid][i];
+	// centre [row,col] in grid units for a colour's token index at an arbitrary pos.
+	// Split out from tokenCentre so the hop animation can walk intermediate cells.
+	function centreForPos(color, i, pos) {
 		if (pos === -1) return YARD_SPOTS[color][i];
 		if (pos <= 50) { const [r, c] = TRACK[(START_OFFSET[color] + pos) % 52]; return [r + 0.5, c + 0.5]; }
 		if (pos <= 55) { const [r, c] = HOME_LANES[color][pos - 51]; return [r + 0.5, c + 0.5]; }
 		return CENTER_SPOT[color]; // finished
+	}
+	// token → centre [row,col] in grid units for its current pos
+	function tokenCentre(uid, i) {
+		return centreForPos(game.colors[uid], i, game.tokens[uid][i]);
 	}
 	const pct = (v) => `${(v / N) * 100}%`;
 
@@ -232,6 +235,85 @@
 			});
 		}
 		return out;
+	});
+
+	/* ---- cell-by-cell token hop (LudoKing feel) --------------------------------
+	   The token's resting top/left stays owned by Svelte (final, fanned centre); we
+	   only paint a transform OFFSET that walks it back to where it started and hops
+	   it forward one cell at a time, with a little arc per cell. The CSS top/left
+	   transition is suppressed while hopping so the two don't fight. Runs in a plain
+	   $effect off `tokens`, so spectators watch the same walk. */
+	let boardEl = $state(null);
+	let reduceMotion = false;
+	$effect(() => {
+		reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+	});
+	const prevPos = new Map(); // key -> last pos seen
+	const hopRaf = new Map(); // el -> raf id in flight
+
+	function cancelHop(el) {
+		const id = hopRaf.get(el);
+		if (id != null) cancelAnimationFrame(id);
+		hopRaf.delete(el);
+	}
+	function finishHop(el) {
+		el.classList.remove('token--hopping');
+		el.style.transform = '';
+		el.style.zIndex = '';
+		hopRaf.delete(el);
+	}
+
+	function hopToken(el, t, oldPos) {
+		const color = t.color;
+		// waypoint centres in grid units: start, then each visited cell
+		const pts = [centreForPos(color, t.i, oldPos)];
+		for (const p of hopPositions(oldPos, t.pos)) pts.push(centreForPos(color, t.i, p));
+		pts[pts.length - 1] = [t.cr, t.cc]; // land on the fanned resting centre
+		const segs = pts.length - 1;
+		if (segs < 1) return;
+		const backward = t.pos < oldPos;
+		const total = backward ? 300 : Math.max(170, segs * 130);
+		const hop = backward ? 0.18 : 0.14; // arc height, in cells
+		const rect = boardEl.getBoundingClientRect();
+		const W = rect.width, H = rect.height, cellPx = H / N;
+		const [fr, fc] = [t.cr, t.cc]; // final centre — the transform origin
+
+		cancelHop(el);
+		el.classList.add('token--hopping');
+		el.style.zIndex = '6';
+		const start = performance.now();
+		const tick = (now) => {
+			const p = Math.min(1, (now - start) / total);
+			const fp = p * segs;
+			const seg = Math.min(segs - 1, Math.floor(fp));
+			const f = fp - seg;
+			const [r0, c0] = pts[seg];
+			const [r1, c1] = pts[seg + 1];
+			const cr = r0 + (r1 - r0) * f;
+			const cc = c0 + (c1 - c0) * f;
+			const dx = ((cc - fc) / N) * W;
+			const dy = ((cr - fr) / N) * H - Math.sin(Math.PI * f) * hop * cellPx;
+			el.style.transform = `translate(calc(-50% + ${dx.toFixed(1)}px), calc(-50% + ${dy.toFixed(1)}px))`;
+			if (p < 1) hopRaf.set(el, requestAnimationFrame(tick));
+			else finishHop(el);
+		};
+		hopRaf.set(el, requestAnimationFrame(tick));
+	}
+
+	$effect(() => {
+		const list = tokens; // re-run whenever any token position changes
+		if (!boardEl) {
+			for (const t of list) prevPos.set(t.key, t.pos);
+			return;
+		}
+		for (const t of list) {
+			const had = prevPos.has(t.key);
+			const oldPos = prevPos.get(t.key);
+			prevPos.set(t.key, t.pos);
+			if (!had || oldPos === t.pos || reduceMotion) continue;
+			const el = boardEl.querySelector(`[data-key="${t.key}"]`);
+			if (el) hopToken(el, t, oldPos);
+		}
 	});
 
 	onMount(() => {
@@ -520,7 +602,7 @@
 		{@render errorLine()}
 	{/if}
 	<div class="board-wrap">
-		<div class="board">
+		<div class="board" bind:this={boardEl}>
 			{#each cells as cell (cell.r * N + cell.c)}
 				<div
 					class="cell cell--{cell.kind}"
@@ -538,6 +620,7 @@
 					class:token--movable={movable.has(tk.i) && tk.uid === myUid}
 					class:token--mine={tk.uid === myUid}
 					class:token--block={tk.block}
+					data-key={tk.key}
 					style="top:{pct(tk.cr)}; left:{pct(tk.cc)}; --tc:{cssColor(tk.color)}"
 					disabled={!(movable.has(tk.i) && tk.uid === myUid)}
 					onclick={() => move(tk.i)}
@@ -864,6 +947,11 @@
 		transition: top 0.32s cubic-bezier(0.34, 1.2, 0.5, 1), left 0.32s cubic-bezier(0.34, 1.2, 0.5, 1);
 		z-index: 2;
 	}
+	/* while the JS hop drives the transform, top/left snap to final with no glide so
+	   the CSS transition doesn't double-move the token underneath the arc */
+	.token--hopping {
+		transition: none !important;
+	}
 	/* glossy specular highlight (top-left) — pure decoration, never intercepts taps */
 	.token::before {
 		content: '';
@@ -887,7 +975,7 @@
 		cursor: pointer;
 		z-index: 3;
 		box-shadow: 0 0 0 3px color-mix(in srgb, var(--tc) 60%, transparent), 0 3px 7px rgba(0, 0, 0, 0.5);
-		animation: bob 0.9s ease-in-out infinite, token-glow 1.4s ease-in-out infinite;
+		animation: bob 1.8s ease-in-out infinite, token-glow 2.6s ease-in-out infinite;
 	}
 	.token--movable:hover { filter: brightness(1.12); }
 	/* your own tokens carry a thin bright outline so they read at a glance */
@@ -903,12 +991,12 @@
 	}
 	@keyframes bob {
 		0%, 100% { transform: translate(-50%, -50%) scale(1); }
-		50% { transform: translate(-50%, -62%) scale(1.06); }
+		50% { transform: translate(-50%, -55%) scale(1.03); }
 	}
-	/* glow pulse for movable tokens — animates the ring only, leaving bob to own transform */
+	/* gentle breathe for movable tokens — animates the ring only, leaving bob to own transform */
 	@keyframes token-glow {
-		0%, 100% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--tc) 55%, transparent), 0 3px 7px rgba(0, 0, 0, 0.5); }
-		50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--tc) 30%, transparent), 0 3px 9px rgba(0, 0, 0, 0.55); }
+		0%, 100% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--tc) 45%, transparent), 0 3px 7px rgba(0, 0, 0, 0.5); }
+		50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--tc) 28%, transparent), 0 3px 8px rgba(0, 0, 0, 0.52); }
 	}
 
 	.controls {

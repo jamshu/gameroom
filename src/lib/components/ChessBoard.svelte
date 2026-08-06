@@ -84,7 +84,8 @@
 				break;
 			}
 			fens.push(c.fen());
-			movesAt.push({ from: mv.from, to: mv.to, captured: !!mv.captured });
+			// captured/color carried so the effect can play the take (fadeCaptured)
+			movesAt.push({ from: mv.from, to: mv.to, captured: mv.captured || null, color: mv.color });
 		}
 		return { fens, movesAt };
 	});
@@ -252,9 +253,9 @@
 	// its old position (a FLIP): no per-piece identity tracking needed, which
 	// castling, captures and promotions would all complicate.
 	let boardEl = $state(null);
-	const SLIDE_MS = 210;
+	const SLIDE_MS = 240;
 
-	function slide(from, to) {
+	function slide(from, to, mv = null) {
 		if (reduceMotion || !boardEl) return;
 		const a = boardEl.querySelector(`[data-sq="${from}"]`);
 		const b = boardEl.querySelector(`[data-sq="${to}"]`);
@@ -265,18 +266,55 @@
 		const dx = ra.left - rb.left;
 		const dy = ra.top - rb.top;
 		if (!dx && !dy) return;
-		mover.animate(
-			[{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'translate(0px, 0px)' }],
-			{ duration: SLIDE_MS, easing: 'cubic-bezier(.22,.61,.36,1)' }
-		);
-		// the captured/landing square gets a brief pop
+		// a taken piece recedes as the mover arrives on its square
+		if (mv?.captured) fadeCaptured(b, mv);
+		// the sliding piece rides above its neighbours and lifts slightly mid-travel
+		// (chess.com "pick up and place"), then drops onto the square
+		b.style.zIndex = '5';
+		const done = () => { b.style.zIndex = ''; };
+		mover
+			.animate(
+				[
+					{ transform: `translate(${dx}px, ${dy}px) scale(1)` },
+					{ transform: `translate(${(dx * 0.5).toFixed(1)}px, ${(dy * 0.5).toFixed(1)}px) scale(1.1)`, offset: 0.5 },
+					{ transform: 'translate(0px, 0px) scale(1)' }
+				],
+				{ duration: SLIDE_MS, easing: 'cubic-bezier(.22,.61,.36,1)' }
+			)
+			.finished.then(done, done);
+		// the landing piece gets a soft pop + shadow, softer than the old flash
 		const img = mover.querySelector('.piece');
 		if (img) {
 			img.animate(
-				[{ filter: 'brightness(1.35)' }, { filter: 'brightness(1)' }],
+				[
+					{ filter: 'brightness(1.18) drop-shadow(0 9px 11px rgba(0,0,0,.45))' },
+					{ filter: 'brightness(1) drop-shadow(0 3px 4px rgba(0,0,0,.34))' }
+				],
 				{ duration: SLIDE_MS + 120, easing: 'ease-out' }
 			);
 		}
+	}
+
+	/**
+	 * The mover renders from the new FEN, so the taken piece is already gone. Drop a
+	 * transient copy on the square and let it shrink away under the incoming piece.
+	 * (En-passant takes on an adjacent square — rare; a ghost on `to` reads fine.)
+	 */
+	function fadeCaptured(sqEl, mv) {
+		const capColor = mv.color === 'w' ? 'b' : 'w';
+		const ghost = document.createElement('img');
+		ghost.src = theme.src(capColor, mv.captured);
+		ghost.className = 'capture-ghost';
+		sqEl.appendChild(ghost);
+		ghost
+			.animate(
+				[
+					{ opacity: 1, transform: 'scale(1) rotate(0deg)' },
+					{ opacity: 0, transform: 'scale(.35) rotate(-14deg)' }
+				],
+				{ duration: 240, easing: 'ease-in' }
+			)
+			.finished.finally(() => ghost.remove());
 	}
 
 	/** A piece landing, or a heavier thwack when it takes something. */
@@ -305,7 +343,7 @@
 			return;
 		}
 		if (mv) {
-			slide(mv.from, mv.to);
+			slide(mv.from, mv.to, mv);
 			// state-driven, so spectators and the waiting player hear it too
 			playMoveSound(mv);
 		}
@@ -426,7 +464,7 @@
 			}
 			// play the piece across as soon as it has rendered on its new square
 			selfAnimated = { from, to: sq };
-			tick().then(() => slide(from, sq));
+			tick().then(() => slide(from, sq, played));
 			playMoveSound({ captured: !!played.captured });
 			try {
 				await store.post('chess/move', { from, to: sq });
@@ -959,6 +997,16 @@
 		pointer-events: none;
 		transition: opacity 0.25s ease;
 		background: radial-gradient(circle at 50% 42%, rgba(255, 255, 255, 0.5), transparent 68%);
+	}
+	/* transient copy of a taken piece, receding under the incoming mover */
+	.capture-ghost {
+		position: absolute;
+		inset: -5%;
+		width: 110%;
+		height: 110%;
+		pointer-events: none;
+		z-index: 1;
+		filter: drop-shadow(0 3px 4px rgba(0, 0, 0, 0.34));
 	}
 	.piece {
 		/* 110% so the glyph (SVGs carry transparent padding) fills the square edge-
