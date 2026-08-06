@@ -20,6 +20,12 @@
 	const others = $derived(($store.voice || []).filter((u) => u !== myUid));
 	const stateOf = (uid) => peers.find((p) => p.uid === uid)?.state;
 
+	// Tile size scales with the crowd: 1 up = full width, 2–4 = two columns (big),
+	// 5–6 = three columns (smaller). Fewer columns → wider → taller tiles, so two
+	// people fill the space and a full room packs in without overflowing.
+	const total = $derived(others.length + 1);
+	const cols = $derived(total <= 1 ? 1 : total <= 4 ? 2 : 3);
+
 	/** Bind a MediaStream to a <video> without a reactive round trip. */
 	function srcObject(node, stream) {
 		node.srcObject = stream || null;
@@ -86,7 +92,7 @@
 		<p class="error-text">{error} — check camera/mic permissions and reload.</p>
 	{/if}
 
-	<div class="vc-grid" style="--n:{others.length + 1}">
+	<div class="vc-grid" style="--cols:{cols}">
 		<!-- your own preview -->
 		<div class="tile tile--me">
 			<!-- svelte-ignore a11y_media_has_caption -->
@@ -139,13 +145,15 @@
 	}
 	.vc-grid {
 		display: grid;
-		/* up to 6 tiles: 1 col for 1, 2 cols for 2-4, 3 cols beyond */
+		/* --cols comes from the component: 1 / 2 / 3 by head-count, so tiles grow as
+		   the call shrinks */
 		grid-template-columns: repeat(var(--cols, 2), 1fr);
 		gap: 10px;
 	}
-	@media (min-width: 640px) {
+	/* a phone in portrait can't hold three across — cap at two, tiles stay legible */
+	@media (max-width: 460px) {
 		.vc-grid {
-			--cols: 3;
+			grid-template-columns: repeat(min(var(--cols, 2), 2), 1fr);
 		}
 	}
 	.tile {

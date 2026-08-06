@@ -407,6 +407,13 @@ export async function appendEvent(roomId, type, payload, senderUid, targetUid = 
 		// correct again. An unreachable object may still own the log.
 		if (!isEvacuated(res)) throw httpError(503, 'The room is busy — try again', 'do_unreachable');
 	}
+	// Past here is the Odoo fallback (non-DO room, or an evacuated object). WebRTC
+	// signals must NEVER take this path: publishEvent above is a no-op off the DO,
+	// so a signal only reaches its peer through the 2s poll — useless for ICE — yet
+	// a mesh would still write one x_room_event per frame and rate-limit the whole
+	// app (429). Drop it, exactly as the aim cursor is publish-only. Video calls
+	// need the DO transport; on a non-DO room they simply don't connect.
+	if (type === 'signal') return null;
 	const vals = {
 		x_name: type,
 		x_studio_room_id: Number(roomId),
