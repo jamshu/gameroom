@@ -4,6 +4,7 @@
 	import { page } from '$app/stores';
 	import Avatar from './Avatar.svelte';
 	import { createVoiceMesh } from '$lib/webrtc.js';
+	import { createFullscreen, portal } from '$lib/fullscreen.svelte.js';
 
 	let { store, game, members, myUid } = $props();
 	const roomId = $page.params.id;
@@ -121,6 +122,9 @@
 		await store.post('voice', { action: 'leave' }).catch(() => {});
 		goto('/');
 	}
+
+	let stageEl = $state(null);
+	const fs = createFullscreen(() => stageEl);
 </script>
 
 <div class="card vc">
@@ -143,7 +147,7 @@
 		<span class="tile-hint">{floating ? 'tap to dock' : 'tap to float'}</span>
 	{/snippet}
 
-	<div class="vc-stage">
+	<div class="vc-stage" class:vc-stage--fs={fs.isFs} bind:this={stageEl} use:portal={fs.isFs}>
 		<div class="vc-grid" style="--cols:{cols}">
 			<!-- self docks in as the first grid tile when not floating -->
 			{#if !floating}
@@ -173,16 +177,20 @@
 				{@render selfInner()}
 			</button>
 		{/if}
-	</div>
 
-	<div class="vc-controls">
-		<button class="btn" class:btn--danger={muted} onclick={toggleMute}>
-			{muted ? '🔇 Unmute' : '🎤 Mute'}
-		</button>
-		<button class="btn" class:btn--danger={camOff} onclick={toggleCam}>
-			{camOff ? '📷 Camera on' : '🎥 Camera off'}
-		</button>
-		<button class="btn btn--danger" onclick={leaveCall}>✕ Leave call</button>
+		<!-- controls live INSIDE the stage so they travel into fullscreen with it -->
+		<div class="vc-controls">
+			<button class="btn" class:btn--danger={muted} onclick={toggleMute}>
+				{muted ? '🔇 Unmute' : '🎤 Mute'}
+			</button>
+			<button class="btn" class:btn--danger={camOff} onclick={toggleCam}>
+				{camOff ? '📷 Camera on' : '🎥 Camera off'}
+			</button>
+			<button class="btn" onclick={fs.toggle}>
+				{fs.isFs ? '✕ Exit' : '⛶ Fullscreen'}
+			</button>
+			<button class="btn btn--danger" onclick={leaveCall}>✕ Leave call</button>
+		</div>
 	</div>
 </div>
 
@@ -308,5 +316,35 @@
 		gap: 10px;
 		margin-top: 14px;
 		justify-content: center;
+	}
+
+	/* ---- fullscreen: portaled to <body>, fills the screen, big tiles ---------- */
+	.vc-stage--fs {
+		position: fixed;
+		inset: 0;
+		z-index: 1000;
+		background: #0a0c12;
+		display: flex;
+		flex-direction: column;
+		padding: 14px;
+		gap: 12px;
+	}
+	.vc-stage--fs .vc-grid {
+		flex: 1;
+		min-height: 0;
+		/* fill the height too, so the video is as big as the screen allows */
+		grid-auto-rows: 1fr;
+	}
+	.vc-stage--fs .tile {
+		aspect-ratio: auto; /* let the grid rows drive the height instead */
+		height: 100%;
+	}
+	.vc-stage--fs .vc-controls {
+		margin-top: 0;
+	}
+	.vc-stage--fs .tile--pip {
+		width: clamp(160px, 22vw, 340px);
+		right: 18px;
+		bottom: 78px; /* clear of the controls bar */
 	}
 </style>
