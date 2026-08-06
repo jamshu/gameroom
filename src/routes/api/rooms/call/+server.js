@@ -57,7 +57,10 @@ export async function POST({ request, cookies }) {
 		await sendToUser(target, {
 			title: '📹 Incoming call',
 			body: `${me?.name || 'Someone'} is calling you`,
-			url: `/room/${roomId}`
+			url: `/room/${roomId}?call=1`,
+			requireInteraction: true, // stay on screen until they answer
+			tag: `call-${roomId}`,
+			vibrate: [600, 400, 600, 400, 600, 400, 600, 400, 600, 400, 600] // ~6s ring
 		});
 		return json({ ok: true, roomId });
 	} catch (e) {

@@ -73,6 +73,22 @@
 		}
 	}
 
+	// Ring an invited (or absent) member's device — a push that opens this room so
+	// they walk straight in. Video-call rooms especially want this from the lobby.
+	const acceptedUids = $derived(new Set(accepted.map((m) => m.uid)));
+	let ringing = $state(0);
+	async function ring(uid) {
+		if (ringing) return;
+		ringing = uid;
+		error = '';
+		try {
+			await store.post('call', { toUid: uid });
+		} catch (e) {
+			error = e.message;
+		}
+		setTimeout(() => (ringing = 0), 4000);
+	}
+
 	// What switching to `pick` would do to the seating, worked out client-side
 	// from the same capacity rule the server applies — no extra request.
 	// untracked seed + an effect that follows: the select is local (you can browse
@@ -317,6 +333,16 @@
 				<span class="member-name">{u.name}</span>
 				{#if u.uid === room.hostUid}<span class="chip chip--amber">you</span>{/if}
 				{#if u.uid !== room.hostUid}
+					{#if !acceptedUids.has(u.uid)}
+						<button
+							class="btn btn--ghost btn--sm invite-btn"
+							onclick={() => ring(u.uid)}
+							disabled={ringing === u.uid}
+							title="Call {u.name} to join"
+						>
+							{ringing === u.uid ? '📲 Ringing…' : '📹 Call'}
+						</button>
+					{/if}
 					<button
 						class="btn btn--ghost btn--sm invite-btn"
 						onclick={() => invite(u.uid, 'remove')}

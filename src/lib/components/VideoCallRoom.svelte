@@ -374,8 +374,10 @@
 		/* fill the height too, so the video is as big as the screen allows */
 		grid-auto-rows: 1fr;
 	}
-	.vc-stage--fs .tile {
-		aspect-ratio: auto; /* let the grid rows drive the height instead */
+	/* grid tiles fill the screen — but NOT the floating PiP (it's absolute, so
+	   height:100% would stretch it to full height). Scope the fill to grid tiles. */
+	.vc-stage--fs .vc-grid > .tile {
+		aspect-ratio: auto;
 		height: 100%;
 	}
 	.vc-stage--fs .vc-controls {
@@ -383,6 +385,8 @@
 	}
 	.vc-stage--fs .tile--pip {
 		width: clamp(110px, 15vw, 200px); /* small Google-Meet-style box */
+		height: auto;
+		aspect-ratio: 4 / 3;
 		right: 18px;
 		bottom: 78px; /* clear of the controls bar */
 	}

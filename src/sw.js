@@ -28,6 +28,13 @@ self.addEventListener('push', (event) => {
 			body,
 			icon: '/icon-192.png',
 			badge: '/icon-192.png',
+			// an incoming call sets these: stay on screen until tapped/dismissed
+			// (requireInteraction) and buzz a ring-like pattern; a `tag` collapses
+			// repeat rings into the same notification
+			requireInteraction: !!payload.requireInteraction,
+			tag: payload.tag,
+			renotify: payload.tag ? true : undefined,
+			vibrate: payload.vibrate,
 			data: { url }
 		})
 	);

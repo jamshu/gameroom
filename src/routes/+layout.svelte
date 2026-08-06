@@ -11,11 +11,20 @@
 
 	let { children } = $props();
 
-	// 🔔 shows only when the browser supports push but isn't subscribed yet.
-	let pushState = $state('unknown'); // 'unknown' | 'off' | 'on'
+	// 🔔 shows whenever the browser supports push but isn't confirmed subscribed.
+	// Default 'off' (not 'unknown'): currentSubscription() waits for the SW to go
+	// active — up to 30s on a first load — and gating the bell on that window is why
+	// it used to appear only after a re-login. Offer it immediately; flip to 'on'
+	// only once we positively see a subscription.
+	const canPush = pushSupported();
+	let pushState = $state('off'); // 'off' | 'on'
 	async function refreshPushState() {
-		if (!pushSupported()) return;
-		pushState = (await currentSubscription()) ? 'on' : 'off';
+		if (!canPush) return;
+		try {
+			pushState = (await currentSubscription()) ? 'on' : 'off';
+		} catch {
+			pushState = 'off'; // uncertain → keep offering the bell
+		}
 	}
 	async function enablePush() {
 		try {
@@ -68,7 +77,7 @@
 			<a class="brand" href="/">🎲 Gamerooms</a>
 			<div class="topbar-right">
 				<a href="/people" class="btn btn--ghost btn--sm" title="Find people">👥</a>
-				{#if pushState === 'off'}
+				{#if canPush && pushState !== 'on'}
 					<button class="btn btn--ghost btn--sm" title="Enable notifications" onclick={enablePush}>🔔</button>
 				{/if}
 				<a href="/profile" class="profile-link" title="Profile">

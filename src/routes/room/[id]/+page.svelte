@@ -29,6 +29,7 @@
 	let voicePeers = $state([]); // [{uid, state}] from the mesh
 	let inVoice = $state(false);
 	let joining = $state(false); // a join is mid-flight (mic perm + roster POST)
+	let autoJoined = false; // one-shot: auto-join when arriving from a call push
 	let detailTimer = null;
 
 	const myUid = $derived($user?.uid);
@@ -48,6 +49,13 @@
 				// and before the only store.open() call, so there is exactly one place
 				// that knows and no window where the store guesses.
 				store.open({ useSocket: d.do === true });
+			} else if ($page.url.searchParams.get('call') && !autoJoined) {
+				// Arrived from a call push (?call=1): walk straight in instead of
+				// showing a Join button. Private/call rooms auto-accept the callee, so
+				// the join lands them accepted and loadDetail re-runs into the branch
+				// above. Guarded so a public room that only makes them pending doesn't loop.
+				autoJoined = true;
+				await requestJoin();
 			}
 		} catch (e) {
 			error = e.message;
