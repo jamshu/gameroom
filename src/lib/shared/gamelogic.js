@@ -93,6 +93,12 @@ export function initGame(gameType, playerUids, room) {
 			result: null // winner uid once the game ends
 		};
 	}
+	if (gameType === 'videocall') {
+		// No board, no turns — the room IS the call. State is just the roster of who
+		// may be on it; the mesh + presence ride the existing voice roster/signal.
+		if (playerUids.length < 2) throw httpError(400, 'Video Call needs at least 2 players');
+		return { type: 'videocall', players: playerUids, result: null };
+	}
 	throw httpError(400, 'Unknown game type');
 }
 

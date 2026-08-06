@@ -1,12 +1,18 @@
 import { json } from '@sveltejs/kit';
-import { requireMember, parseState, writeState, appendEvent, jsonError, httpError, setVoice } from '$lib/server/room.js';
+import { requireMemberCached, parseState, writeState, appendEvent, jsonError, httpError, setVoice } from '$lib/server/room.js';
 import { stateView } from '$lib/server/gamelogic.js';
 
 export const prerender = false;
 
 export async function POST({ params, request, cookies }) {
 	try {
-		const { uid, room } = await requireMember(cookies, params.id);
+		// Cached membership, not the uncached requireMember's two Odoo reads: a
+		// video-call room churns join/leave as peers come and go, and every remaining
+		// peer's re-sync compounds it into a 429 storm. Membership from the 750ms
+		// cache is safe — the object does the roster read+write atomically, so
+		// `parseState(room).voice` here is only a baseline hint, and it comes off the
+		// DO-fresh state overlay anyway.
+		const { uid, room } = await requireMemberCached(cookies, params.id);
 		const { action, heal } = await request.json();
 		if (action !== 'join' && action !== 'leave') throw httpError(400, 'Invalid action');
 

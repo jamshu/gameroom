@@ -8,7 +8,8 @@ export const GAMES = [
 	{ id: 'thief_finder', label: 'Thief Finder', emoji: '🕵️', needs: 'at least 3 players' },
 	{ id: 'chess', label: 'Chess', emoji: '♟️', needs: 'exactly 2 players' },
 	{ id: 'carroms', label: 'Carroms', emoji: '🎯', needs: '2 or 4 players' },
-	{ id: 'ludo', label: 'Ludo', emoji: '🎲', needs: '2 to 4 players' }
+	{ id: 'ludo', label: 'Ludo', emoji: '🎲', needs: '2 to 4 players' },
+	{ id: 'videocall', label: 'Video Call', emoji: '📹', needs: '2 to 6 players' }
 ];
 
 export const GAME_TYPES = GAMES.map((g) => g.id);
@@ -28,6 +29,7 @@ export function playerCapacity(gameType, maxPlayers) {
 	if (gameType === 'chess') return 2;
 	if (gameType === 'carroms') return 4;
 	if (gameType === 'ludo') return 4;
+	if (gameType === 'videocall') return 6;
 	return maxPlayers || 10;
 }
 

@@ -14,6 +14,7 @@
 	import ChessBoard from '$lib/components/ChessBoard.svelte';
 	import CarromBoard from '$lib/components/CarromBoard.svelte';
 	import LudoBoard from '$lib/components/LudoBoard.svelte';
+	import VideoCallRoom from '$lib/components/VideoCallRoom.svelte';
 	import Leaderboard from '$lib/components/Leaderboard.svelte';
 	import { createHold } from '$lib/holdclock.svelte.js';
 
@@ -211,6 +212,9 @@
 	let voiceSelfHealed = false;
 	$effect(() => {
 		if (voiceSelfHealed || !accepted || inVoice || joining || myUid == null) return;
+		// the video-call room legitimately puts us in the voice roster while this
+		// shell's own inVoice stays false — don't mistake that for a stale ghost
+		if ($store.game?.type === 'videocall') return;
 		if ($store.voice.includes(myUid)) {
 			voiceSelfHealed = true;
 			store.post('voice', { action: 'leave' }).catch(() => {});
@@ -350,7 +354,10 @@
 	   element itself is conditional. */
 	const showChat = $derived(room?.status !== 'playing');
 	const showVoice = $derived(
-		!(room?.gameType === 'thief_finder' && room?.status === 'playing')
+		!(room?.gameType === 'thief_finder' && room?.status === 'playing') &&
+			// the video-call room runs its OWN media mesh on the same signal channel;
+			// a second voice mesh here would fight it for the single signal handler
+			$store.game?.type !== 'videocall'
 	);
 
 	/* Room-level news that isn't visible anywhere else. A host handover mid-game
@@ -497,6 +504,8 @@
 						<CarromBoard {store} game={$store.game} {members} {myUid} />
 					{:else if $store.game?.type === 'ludo'}
 						<LudoBoard {store} game={$store.game} {members} {myUid} />
+					{:else if $store.game?.type === 'videocall'}
+						<VideoCallRoom {store} game={$store.game} {members} {myUid} />
 					{:else}
 						<p class="muted">Loading game…</p>
 					{/if}

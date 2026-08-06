@@ -7,7 +7,7 @@
 // from the yard (-1→0), a capture sending it home (→ -1), or reaching the finish
 // (56) — is a single hop, so we return just the endpoint.
 export function hopPositions(oldPos, newPos) {
-	const forward = newPos > oldPos && oldPos >= 0 && newPos <= 55;
+	const forward = newPos > oldPos && oldPos >= 0 && newPos <= 56;
 	if (!forward) return [newPos];
 	const out = [];
 	for (let p = oldPos + 1; p <= newPos; p++) out.push(p);

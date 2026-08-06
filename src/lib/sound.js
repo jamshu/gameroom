@@ -202,8 +202,11 @@ export function playCarromPocket(kind = 'coin') {
 		tone(ac, { at: 0.09, freq: 1174.7, dur: 0.26, gain: 0.9 });
 		return;
 	}
-	tone(ac, { freq: 520, endFreq: 180, dur: 0.16, type: 'triangle', gain: 0.7 });
-	tone(ac, { at: 0.05, freq: 150, endFreq: 80, dur: 0.16, type: 'sine', gain: 0.5 });
+	// a rounder "thock": a bright rim tick, the coin's body dropping, and a deep
+	// thud as it hits the net — more satisfying than the old two-note blip
+	tone(ac, { at: 0.0, freq: 1500, endFreq: 700, dur: 0.03, type: 'square', gain: 0.28 });
+	tone(ac, { at: 0.01, freq: 520, endFreq: 180, dur: 0.16, type: 'triangle', gain: 0.7 });
+	tone(ac, { at: 0.06, freq: 150, endFreq: 70, dur: 0.2, type: 'sine', gain: 0.55 });
 }
 
 /** Your own striker went down — a flat, unhappy buzz. */

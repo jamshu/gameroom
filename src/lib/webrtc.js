@@ -7,7 +7,10 @@ const FALLBACK_ICE = [{ urls: 'stun:stun.l.google.com:19302' }];
 
 const ICE_FLUSH_MS = 300; // batch outgoing candidates into one POST per tick
 
-export function createVoiceMesh({ myUid, sendSignal, onPeersChange }) {
+// Also drives the video-call room: pass `video: true` and an `onStream(uid, stream)`
+// callback and each peer's media is handed to the caller to bind to a <video>
+// (which plays its audio too), instead of the hidden <Audio> the voice bar uses.
+export function createVoiceMesh({ myUid, sendSignal, onPeersChange, onStream = null, video = false }) {
 	const peers = new Map(); // uid -> { pc, audioEl, pendingIce, outIce, flushTimer, createdAt }
 	let localStream = null;
 	let joined = false;
@@ -25,7 +28,7 @@ export function createVoiceMesh({ myUid, sendSignal, onPeersChange }) {
 
 	async function ensureMic() {
 		if (!localStream) {
-			localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+			localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video });
 		}
 		return localStream;
 	}
@@ -67,7 +70,9 @@ export function createVoiceMesh({ myUid, sendSignal, onPeersChange }) {
 		pc.onicecandidate = (e) => {
 			if (e.candidate) queueIce(uid, entry, e.candidate);
 		};
-		pc.ontrack = (e) => playRemote(entry, e.streams[0]);
+		// video mode hands the stream to the component (a <video> plays its audio);
+		// voice mode plays it through a hidden <Audio> as before
+		pc.ontrack = (e) => (onStream ? onStream(uid, e.streams[0]) : playRemote(entry, e.streams[0]));
 		pc.onconnectionstatechange = () => {
 			// 'disconnected' is transient — only tear down on hard failure; the
 			// roster-driven sync() then rebuilds the pair (lower uid re-offers)
@@ -189,6 +194,18 @@ export function createVoiceMesh({ myUid, sendSignal, onPeersChange }) {
 		for (const t of localStream.getAudioTracks()) t.enabled = !muted;
 	}
 
+	/** Camera on/off for the video room — toggles the local video track's `enabled`,
+	 *  which every peer sees go black without renegotiating. */
+	function setCameraOff(off) {
+		if (!localStream) return;
+		for (const t of localStream.getVideoTracks()) t.enabled = !off;
+	}
+
+	/** The local capture, for the video room's own self-preview tile. */
+	function getLocalStream() {
+		return localStream;
+	}
+
 	/**
 	 * The live capture, for anything else that needs the mic (chat voice
 	 * messages) — never opens one, so a caller can tell "already capturing" from
@@ -207,5 +224,5 @@ export function createVoiceMesh({ myUid, sendSignal, onPeersChange }) {
 		return !!localStream && localStream.getAudioTracks().some((t) => t.readyState === 'live');
 	}
 
-	return { join, leave, sync, handleSignal, setMuted, micStream, micLive, get joined() { return joined; } };
+	return { join, leave, sync, handleSignal, setMuted, setCameraOff, getLocalStream, micStream, micLive, get joined() { return joined; } };
 }

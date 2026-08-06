@@ -43,6 +43,7 @@
 
 	onMount(() => {
 		muted = isMuted();
+		loadCoins();
 		// the AudioContext needs a gesture that has ALREADY happened — waiting until
 		// the first shot would silence it (the flick's own pointerup is too late)
 		arm();
@@ -145,6 +146,127 @@
 		ctx.stroke();
 	}
 
+	// Real coin/striker faces (turned-wood SVGs). Loaded once; draw() falls back to
+	// the flat gradient disc until they arrive, so a missed load never blanks a coin.
+	const COIN_SRC = { white: '/carrom/coin-white.svg', black: '/carrom/coin-black.svg', striker: '/carrom/striker.svg' };
+	const coinImg = {};
+	function loadCoins() {
+		for (const [k, src] of Object.entries(COIN_SRC)) {
+			const img = new Image();
+			img.onload = () => { coinImg[k] = img; draw(); };
+			img.src = src;
+		}
+	}
+
+	/** disc() but with a photographic coin face clipped inside — keeps the drop
+	 *  shadow and rim so it seats on the felt the same way. */
+	function texturedDisc(ctx, x, y, r, img, fallback) {
+		if (!img) return disc(ctx, x, y, r, fallback);
+		ctx.save();
+		ctx.shadowColor = 'rgba(0,0,0,0.45)';
+		ctx.shadowBlur = 9;
+		ctx.shadowOffsetY = 4;
+		ctx.beginPath();
+		ctx.arc(x, y, r, 0, Math.PI * 2);
+		ctx.fillStyle = '#0008';
+		ctx.fill(); // casts the shadow; the clipped image covers this fill
+		ctx.restore();
+		ctx.save();
+		ctx.beginPath();
+		ctx.arc(x, y, r, 0, Math.PI * 2);
+		ctx.clip();
+		ctx.drawImage(img, x - r, y - r, r * 2, r * 2);
+		ctx.restore();
+		ctx.beginPath();
+		ctx.arc(x, y, r, 0, Math.PI * 2);
+		ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+		ctx.lineWidth = 1.5;
+		ctx.stroke();
+	}
+
+	/* ---- pocket splash + quick replay ----------------------------------------- */
+	const SPLASH_MS = 420;
+	let splashes = []; // {x, y, start} rings drawn when a coin drops
+	let splashRaf = null;
+	let replayActive = $state(false); // drives the REPLAY badge
+	let replayZoom = null; // {x, y, s} focus while replaying — read by draw()
+	let replaySkip = false;
+	let reduceMotion = false;
+	$effect(() => {
+		reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+	});
+
+	const nearestPocket = (x, y) =>
+		POCKETS.reduce((best, p) => (Math.hypot(x - p[0], y - p[1]) < Math.hypot(x - best[0], y - best[1]) ? p : best));
+
+	function addSplash(x, y) {
+		if (reduceMotion) return;
+		splashes.push({ x, y, start: performance.now() });
+		if (!splashRaf) {
+			const loop = () => {
+				draw();
+				splashes = splashes.filter((s) => performance.now() - s.start < SPLASH_MS);
+				splashRaf = splashes.length ? requestAnimationFrame(loop) : null;
+			};
+			splashRaf = requestAnimationFrame(loop);
+		}
+	}
+
+	function drawSplashes(ctx) {
+		const now = performance.now();
+		for (const s of splashes) {
+			const k = (now - s.start) / SPLASH_MS;
+			if (k >= 1) continue;
+			const r = BOARD.POCKET_R * (0.6 + k * 1.7);
+			ctx.save();
+			ctx.globalAlpha = (1 - k) * 0.8;
+			ctx.beginPath();
+			ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
+			ctx.strokeStyle = ACCENT;
+			ctx.lineWidth = 4 * (1 - k) + 1;
+			ctx.stroke();
+			for (let i = 0; i < 7; i++) {
+				const a = (Math.PI * 2 * i) / 7 + k * 2;
+				ctx.globalAlpha = (1 - k) * 0.9;
+				ctx.beginPath();
+				ctx.arc(s.x + Math.cos(a) * r * 0.92, s.y + Math.sin(a) * r * 0.92, 3 * (1 - k) + 1, 0, Math.PI * 2);
+				ctx.fillStyle = '#ffd54a';
+				ctx.fill();
+			}
+			ctx.restore();
+		}
+	}
+
+	/** Slow, zoomed action-replay of the frames just played, centred on the pocket
+	 *  the first coin dropped into. Skippable by a tap. */
+	async function showReplay(frames, events, token) {
+		if (reduceMotion) return;
+		const pk = events.find((e) => e.type === 'pocket' && e.id !== 's');
+		if (!pk || token !== shotToken) return;
+		const last = frames.length - 1;
+		const from = Math.max(0, pk.step - 110);
+		const pb = frames[Math.min(pk.step, last)]?.find((x) => x.id === pk.id);
+		const [fx, fy] = pb ? nearestPocket(pb.x, pb.y) : [BOARD.SIZE / 2, BOARD.SIZE / 2];
+		replayZoom = { x: fx, y: fy, s: 1.7 };
+		replayActive = true;
+		replaySkip = false;
+		const SPS = SHOT_STEPS_PER_SEC * 0.5;
+		await new Promise((resolve) => {
+			const start = performance.now();
+			const total = ((last - from) / SPS) * 1000;
+			const frame = (t) => {
+				if (token !== shotToken || replaySkip) return resolve();
+				const k = Math.min(1, (t - start) / total);
+				animBodies = frames[Math.min(from + Math.round(k * (last - from)), last)];
+				if (k < 1) requestAnimationFrame(frame);
+				else resolve();
+			};
+			requestAnimationFrame(frame);
+		});
+		replayActive = false;
+		replayZoom = null;
+	}
+
 	function draw() {
 		if (!canvas) return;
 		const ctx = canvas.getContext('2d');
@@ -159,6 +281,13 @@
 		ctx.translate(C, C);
 		ctx.rotate(viewTheta);
 		ctx.translate(-C, -C);
+
+		// action-replay zoom: scale the whole board about the pocket in focus
+		if (replayZoom) {
+			ctx.translate(replayZoom.x, replayZoom.y);
+			ctx.scale(replayZoom.s, replayZoom.s);
+			ctx.translate(-replayZoom.x, -replayZoom.y);
+		}
 
 		// felt — radial wood gradient, lit at the centre and deepening to the frame
 		const felt = ctx.createRadialGradient(C, C, S * 0.1, C, C, S * 0.72);
@@ -245,7 +374,8 @@
 			: (displayPieces || game.pieces).filter((p) => !p.pocketed && p.color !== 'q');
 		for (const p of pieces) {
 			if (colorOf(p) === 'q') continue;
-			disc(ctx, p.x, p.y, BOARD.R, colorOf(p) === 'w' ? pal.white : pal.black);
+			const white = colorOf(p) === 'w';
+			texturedDisc(ctx, p.x, p.y, BOARD.R, white ? coinImg.white : coinImg.black, white ? pal.white : pal.black);
 		}
 
 		// Striker. Mine while I'm on strike, the animating one during any shot, and
@@ -266,14 +396,12 @@
 		}
 		if (sx != null) {
 			ctx.save();
-			if (ghost) ctx.globalAlpha = 0.3;
-			disc(ctx, sx, sy, BOARD.STRIKER_R, pal.striker);
-			if (!ghost) {
-				// centre pip
-				ctx.beginPath();
-				ctx.arc(sx, sy, BOARD.STRIKER_R * 0.28, 0, Math.PI * 2);
-				ctx.fillStyle = shade(pal.striker, -0.3);
-				ctx.fill();
+			if (ghost) {
+				// faint whose-side marker — the plain disc reads better dimmed
+				ctx.globalAlpha = 0.3;
+				disc(ctx, sx, sy, BOARD.STRIKER_R, pal.striker);
+			} else {
+				texturedDisc(ctx, sx, sy, BOARD.STRIKER_R, coinImg.striker, pal.striker);
 			}
 			ctx.restore();
 		}
@@ -303,6 +431,8 @@
 			ctx.stroke();
 			ctx.setLineDash([]);
 		}
+
+		drawSplashes(ctx);
 
 		ctx.restore();
 	}
@@ -373,6 +503,9 @@
 					const e = events[ev++];
 					const now = performance.now();
 					if (e.type === 'pocket') {
+						// splash at the pocket the coin/striker dropped into
+						const b = animBodies?.find((x) => x.id === e.id);
+						if (b) { const [px, py] = nearestPocket(b.x, b.y); addSplash(px, py); }
 						if (e.id === 's') playCarromFoul();
 						else playCarromPocket('coin');
 					} else if (now - lastClickAt >= MIN_CLICK_GAP_MS) {
@@ -406,6 +539,8 @@
 		playCarromFlick(Math.hypot(shot.vx, shot.vy) / 40);
 		await playShot(frames, result.events, () => token !== shotToken);
 		// A newer state already claimed the board — don't clear ITS animation
+		if (token !== shotToken) return;
+		await showReplay(frames, result.events, token);
 		if (token !== shotToken) return;
 		animBodies = null; // hand the board back to the authoritative positions
 	}
@@ -496,6 +631,7 @@
 	}
 
 	function down(e) {
+		if (replayActive) { replaySkip = true; return; } // tap through a replay
 		if (!myTurn || animBodies) return;
 		const p = canvasPoint(e);
 		const s = strikerPos(mySide, strikerT);
@@ -584,6 +720,11 @@
 		} finally {
 			posting = false;
 			animBodies = null;
+		}
+		// a satisfying slow-mo of the drop, once the shot is safely posted
+		if (token === shotToken) {
+			await showReplay(frames, result.events, token);
+			if (token === shotToken) animBodies = null;
 		}
 	}
 
@@ -681,6 +822,9 @@
 			ontouchmove={move}
 			ontouchend={up}
 		></canvas>
+		{#if replayActive}
+			<div class="replay-badge">⟲ REPLAY <span class="replay-skip">tap to skip</span></div>
+		{/if}
 		<button
 			class="btn btn--ghost btn--sm fs-btn"
 			onclick={fs.toggle}
@@ -739,11 +883,38 @@
 	   draw() is $effect-driven, and a second persistent loop would fight the one
 	   playing back shots. */
 	.carrom-canvas--live {
-		animation: board-live 1s steps(1, end) infinite;
+		animation: board-live 2.4s ease-in-out infinite;
 	}
+	/* a soft breathe, not a hard blink — the old steps(1) toggle flickered the whole
+	   board's shadow on/off every second, which is exactly the kind of idle motion
+	   that tires the eye */
 	@keyframes board-live {
-		0%, 49% { box-shadow: 0 0 0 2px var(--accent), 0 0 24px 0 var(--accent); }
-		50%, 100% { box-shadow: 0 0 0 2px transparent, 0 0 4px -2px var(--accent); }
+		0%, 100% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent), 0 0 10px -2px var(--accent); }
+		50% { box-shadow: 0 0 0 2px var(--accent), 0 0 20px 0 var(--accent); }
+	}
+	.replay-badge {
+		position: absolute;
+		top: 10px;
+		left: 50%;
+		transform: translateX(-50%);
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 5px 12px;
+		border-radius: 999px;
+		background: rgba(15, 18, 28, 0.82);
+		color: #fff;
+		font-weight: 700;
+		letter-spacing: 0.08em;
+		font-size: 0.82rem;
+		pointer-events: none;
+		z-index: 4;
+	}
+	.replay-skip {
+		font-weight: 400;
+		opacity: 0.7;
+		letter-spacing: 0;
+		font-size: 0.72rem;
 	}
 	@media (prefers-reduced-motion: reduce) {
 		.carrom-canvas--live {
