@@ -63,10 +63,11 @@
 	const selfBelow = $derived(!fs.isFs && stacked && !selfDocked); // small square under the halves
 	const selfInGrid = $derived(!floating && !selfBelow); // docked, or alone in the room
 
-	// Tile size scales with the crowd: fewer tiles → fewer columns → bigger. A
-	// 2-tile grid stacks into one column (two halves); 3–4 → 2 cols, 5–6 → 3.
+	// Split HORIZONTALLY: tiles stack into rows (full-width bands) rather than thin
+	// side-by-side columns. Up to 3 tiles = one column of stacked halves/thirds;
+	// 4–6 fall back to two columns so the bands don't get too short.
 	const gridCount = $derived(others.length + (selfInGrid ? 1 : 0));
-	const cols = $derived(gridCount <= 2 ? 1 : gridCount <= 4 ? 2 : 3);
+	const cols = $derived(gridCount <= 3 ? 1 : 2);
 
 	/** Bind a MediaStream to a <video> without a reactive round trip. */
 	function srcObject(node, stream) {
@@ -274,6 +275,11 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
+	}
+	/* stacked grid tiles are wide bands (short + full width) so two or three fill a
+	   tall portrait phone as horizontal halves/thirds rather than thin columns */
+	.vc-grid > .tile {
+		aspect-ratio: 16 / 9;
 	}
 	/* the self tile is a button (tap to dock/float) — strip the native chrome */
 	.tile--self {
