@@ -53,13 +53,16 @@
 	// Your own preview floats in the corner (PiP) by default so the others get the
 	// whole stage — tap it to dock it into the grid, tap again to re-float. Alone in
 	// the room there's nobody to give the stage to, so self just fills the grid.
+	// Fullscreen always floats self as a small Google-Meet-style PiP so the remote
+	// owns the screen; windowed, it floats by default but can dock into the grid.
 	let selfDocked = $state(false);
-	const floating = $derived(!selfDocked && others.length > 0);
+	const floating = $derived(others.length > 0 && (fs.isFs || !selfDocked));
+	const selfInGrid = $derived(!floating); // docked in the grid, or alone in the room
 
 	// Tile size scales with the crowd: fewer tiles → fewer columns → bigger. Count
-	// the self tile only when it's docked into the grid, so 2 people floating = one
-	// remote tile = full width.
-	const gridCount = $derived(floating ? others.length : others.length + 1);
+	// the self tile only when it actually sits in the grid, so 2 people (self
+	// floating or hidden) = one remote tile = full width.
+	const gridCount = $derived(others.length + (selfInGrid ? 1 : 0));
 	const cols = $derived(gridCount <= 1 ? 1 : gridCount <= 4 ? 2 : 3);
 
 	/** Bind a MediaStream to a <video> without a reactive round trip. */
@@ -149,8 +152,8 @@
 
 	<div class="vc-stage" class:vc-stage--fs={fs.isFs} bind:this={stageEl} use:portal={fs.isFs}>
 		<div class="vc-grid" style="--cols:{cols}">
-			<!-- self docks in as the first grid tile when not floating -->
-			{#if !floating}
+			<!-- self docks in as the first grid tile (hidden entirely in fullscreen) -->
+			{#if selfInGrid}
 				<button class="tile tile--me tile--self" onclick={() => (selfDocked = !selfDocked)}>
 					{@render selfInner()}
 				</button>
@@ -343,7 +346,7 @@
 		margin-top: 0;
 	}
 	.vc-stage--fs .tile--pip {
-		width: clamp(160px, 22vw, 340px);
+		width: clamp(110px, 15vw, 200px); /* small Google-Meet-style box */
 		right: 18px;
 		bottom: 78px; /* clear of the controls bar */
 	}
