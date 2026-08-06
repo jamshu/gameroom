@@ -28,7 +28,13 @@ export function createVoiceMesh({ myUid, sendSignal, onPeersChange, onStream = n
 
 	async function ensureMic() {
 		if (!localStream) {
-			localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video });
+			// Explicit AEC/NS/AGC: `audio: true` leaves them to the UA default, which
+			// is why the remote's voice off the speaker leaked back as echo. Asking
+			// for them turns the browser's echo canceller on for the capture.
+			localStream = await navigator.mediaDevices.getUserMedia({
+				audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+				video
+			});
 		}
 		return localStream;
 	}
