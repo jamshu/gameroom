@@ -1,5 +1,6 @@
 <script>
 	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
 	import { api } from '$lib/api.js';
 	import Avatar from '$lib/components/Avatar.svelte';
 	import { following, followingPeople, follow } from '$lib/stores/follow.js';
@@ -41,6 +42,21 @@
 		}
 		timer = setTimeout(run, DEBOUNCE_MS);
 	}
+
+	// One tap: create a video-call room, seat both, ring them, then walk in.
+	let calling = $state(0); // uid being called, 0 when idle
+	async function callUser(uid) {
+		if (calling) return;
+		calling = uid;
+		error = '';
+		try {
+			const d = await api('/api/rooms/call', { method: 'POST', body: { toUid: uid } });
+			goto(`/room/${d.roomId}`);
+		} catch (e) {
+			error = e.message;
+			calling = 0;
+		}
+	}
 </script>
 
 <div class="fade-in" style="max-width:440px; margin:0 auto;">
@@ -69,6 +85,14 @@
 				<span class="person-name">{u.name}</span>
 				<button
 					class="btn btn--ghost btn--sm"
+					disabled={calling === u.uid}
+					onclick={() => callUser(u.uid)}
+					title="Video call {u.name}"
+				>
+					{calling === u.uid ? '📲 Calling…' : '📹 Call'}
+				</button>
+				<button
+					class="btn btn--ghost btn--sm"
 					onclick={() => follow.toggle(u.uid, u.name)}
 					title={$following.has(u.uid) ? `Unfollow ${u.name}` : `Follow ${u.name}`}
 				>
@@ -85,6 +109,14 @@
 				<div class="person">
 					<Avatar uid={p.uid} name={p.name} size={30} />
 					<span class="person-name">{p.name}</span>
+					<button
+						class="btn btn--ghost btn--sm"
+						disabled={calling === p.uid}
+						onclick={() => callUser(p.uid)}
+						title="Video call {p.name}"
+					>
+						{calling === p.uid ? '📲 Calling…' : '📹 Call'}
+					</button>
 					<button
 						class="btn btn--ghost btn--sm"
 						onclick={() => follow.toggle(p.uid, p.name)}
