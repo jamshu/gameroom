@@ -14,8 +14,10 @@ export function hopPositions(oldPos, newPos) {
 	return out;
 }
 
-// ponytail: self-check — run with `node src/lib/games/ludo-hop.js`
-if (import.meta.url === `file://${process.argv[1]}`) {
+// ponytail: self-check — run with `node src/lib/games/ludo-hop.js`. Guard on
+// `process`: this module is bundled into the browser/Workers build too, where
+// `process` is undefined and touching `process.argv` at import throws (500).
+if (typeof process !== 'undefined' && import.meta.url === `file://${process.argv[1]}`) {
 	const eq = (a, b, msg) => {
 		if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(`${msg}: ${JSON.stringify(a)} !== ${JSON.stringify(b)}`);
 	};

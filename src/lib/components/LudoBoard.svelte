@@ -12,6 +12,7 @@
 		ludoBlockedCells,
 		ludoLegalMoves
 	} from '$lib/ludo-rules.js';
+	import { hopPositions } from '$lib/games/ludo-hop.js';
 	import ThemePicker from './ThemePicker.svelte';
 
 	let { store, game, members, myUid } = $props();
@@ -249,21 +250,32 @@
 		reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 	});
 	const prevPos = new Map(); // key -> last pos seen
-	const hopRaf = new Map(); // el -> raf id in flight
+	const hopAnim = new Map(); // el -> running WAAPI Animation
 
 	function cancelHop(el) {
-		const id = hopRaf.get(el);
-		if (id != null) cancelAnimationFrame(id);
-		hopRaf.delete(el);
+		const a = hopAnim.get(el);
+		if (a) a.cancel();
+		hopAnim.delete(el);
 	}
 	function finishHop(el) {
 		el.classList.remove('token--hopping');
-		el.style.transform = '';
 		el.style.zIndex = '';
-		hopRaf.delete(el);
+		hopAnim.delete(el);
 	}
 
-	function hopToken(el, t, oldPos) {
+	// Discrete jumps: each cell is its own hop (HOP_MS) then a short settle
+	// (DWELL_MS) where the token rests square on the cell — jump, land, jump.
+	const FWD_HOP_MS = 200, FWD_DWELL_MS = 55, BACK_HOP_MS = 300;
+	const hopMs = (backward) => (backward ? BACK_HOP_MS : FWD_HOP_MS);
+	const dwellMs = (backward) => (backward ? 0 : FWD_DWELL_MS);
+	/** Total animation time for a move — used to hold a capture until the mover lands. */
+	function hopDuration(oldPos, newPos) {
+		const segs = hopPositions(oldPos, newPos).length;
+		const backward = newPos < oldPos;
+		return segs * (hopMs(backward) + dwellMs(backward));
+	}
+
+	function hopToken(el, t, oldPos, holdMs = 0) {
 		const color = t.color;
 		// waypoint centres in grid units: start, then each visited cell
 		const pts = [centreForPos(color, t.i, oldPos)];
@@ -272,32 +284,66 @@
 		const segs = pts.length - 1;
 		if (segs < 1) return;
 		const backward = t.pos < oldPos;
-		const total = backward ? 300 : Math.max(170, segs * 130);
-		const hop = backward ? 0.18 : 0.14; // arc height, in cells
+		const HOP_MS = hopMs(backward);
+		const DWELL_MS = dwellMs(backward);
+		const segMs = HOP_MS + DWELL_MS;
+		const hop = backward ? 0.34 : 0.32; // arc height, in cells
 		const rect = boardEl.getBoundingClientRect();
 		const W = rect.width, H = rect.height, cellPx = H / N;
 		const [fr, fc] = [t.cr, t.cc]; // final centre — the transform origin
+		const total = segs * segMs;
+
+		// The transform is a WAAPI animation, NOT inline style: the token's
+		// top/left/--tc ride a reactive `style=` attribute, and any state update
+		// mid-hop (chat, voice, another player) makes Svelte rewrite that whole
+		// attribute — which would wipe an inline transform and snap the token
+		// straight to the destination. A WAAPI animation composites on top of the
+		// style attribute and survives those rewrites.
+		const transformAt = (elapsed) => {
+			const seg = Math.min(segs - 1, Math.floor(elapsed / segMs));
+			const local = elapsed - seg * segMs;
+			const hp = Math.min(1, local / HOP_MS);
+			const e = hp < 0.5 ? 2 * hp * hp : 1 - (-2 * hp + 2) ** 2 / 2; // ease in-out
+			const [r0, c0] = pts[seg];
+			const [r1, c1] = pts[seg + 1];
+			const cr = r0 + (r1 - r0) * e;
+			const cc = c0 + (c1 - c0) * e;
+			const lift = Math.sin(Math.PI * hp); // 0 at cell centres, 1 mid-air
+			const dx = ((cc - fc) / N) * W;
+			const dy = ((cr - fr) / N) * H - lift * hop * cellPx;
+			// squash flat on launch/landing, stretch tall at the apex — cartoon boing;
+			// relax back to round across the settle so the last cell doesn't stay flat
+			const landF = 1 - lift;
+			let sx = 1 - 0.16 * landF + 0.06 * lift;
+			let sy = 1 + 0.18 * lift - 0.14 * landF;
+			if (DWELL_MS > 0 && local > HOP_MS) {
+				const d = Math.min(1, (local - HOP_MS) / DWELL_MS);
+				sx += (1 - sx) * d;
+				sy += (1 - sy) * d;
+			}
+			return `translate(calc(-50% + ${dx.toFixed(1)}px), calc(-50% + ${dy.toFixed(1)}px)) scale(${sx.toFixed(3)}, ${sy.toFixed(3)})`;
+		};
+		// sample the motion into keyframes (~16ms apart)
+		const frames = [];
+		for (let tms = 0; tms <= total; tms += 16) {
+			frames.push({ transform: transformAt(tms), offset: tms / total });
+		}
+		frames.push({ transform: 'translate(-50%, -50%) scale(1, 1)', offset: 1 });
 
 		cancelHop(el);
 		el.classList.add('token--hopping');
 		el.style.zIndex = '6';
-		const start = performance.now();
-		const tick = (now) => {
-			const p = Math.min(1, (now - start) / total);
-			const fp = p * segs;
-			const seg = Math.min(segs - 1, Math.floor(fp));
-			const f = fp - seg;
-			const [r0, c0] = pts[seg];
-			const [r1, c1] = pts[seg + 1];
-			const cr = r0 + (r1 - r0) * f;
-			const cc = c0 + (c1 - c0) * f;
-			const dx = ((cc - fc) / N) * W;
-			const dy = ((cr - fr) / N) * H - Math.sin(Math.PI * f) * hop * cellPx;
-			el.style.transform = `translate(calc(-50% + ${dx.toFixed(1)}px), calc(-50% + ${dy.toFixed(1)}px))`;
-			if (p < 1) hopRaf.set(el, requestAnimationFrame(tick));
-			else finishHop(el);
-		};
-		hopRaf.set(el, requestAnimationFrame(tick));
+		// holdMs delays a captured token's knock-home until the mover has landed;
+		// fill:'backwards' pins it on its old cell (transformAt(0)) during the wait
+		const anim = el.animate(frames, {
+			duration: total,
+			delay: holdMs,
+			easing: 'linear',
+			fill: holdMs > 0 ? 'backwards' : 'none'
+		});
+		hopAnim.set(el, anim);
+		anim.onfinish = () => finishHop(el);
+		anim.oncancel = () => {};
 	}
 
 	$effect(() => {
@@ -306,13 +352,26 @@
 			for (const t of list) prevPos.set(t.key, t.pos);
 			return;
 		}
+		// First collect who moved, and how long the advancing token takes: a captured
+		// token (sent back to its yard) must wait for the mover to LAND before it
+		// gets knocked home, not fly off the instant the state changes.
+		const moves = [];
+		let moverMs = 0;
 		for (const t of list) {
 			const had = prevPos.has(t.key);
 			const oldPos = prevPos.get(t.key);
 			prevPos.set(t.key, t.pos);
 			if (!had || oldPos === t.pos || reduceMotion) continue;
 			const el = boardEl.querySelector(`[data-key="${t.key}"]`);
-			if (el) hopToken(el, t, oldPos);
+			if (!el) continue;
+			const forward = t.pos > oldPos && oldPos >= 0;
+			moves.push({ el, t, oldPos, forward });
+			if (forward) moverMs = Math.max(moverMs, hopDuration(oldPos, t.pos));
+		}
+		for (const m of moves) {
+			// capture = a token thrown back toward the yard; hold it until the mover lands
+			const hold = m.t.pos < m.oldPos ? moverMs : 0;
+			hopToken(m.el, m.t, m.oldPos, hold);
 		}
 	});
 
