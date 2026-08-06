@@ -23,6 +23,7 @@ self.addEventListener('push', (event) => {
 	const title = payload.title || 'Gamerooms';
 	const body = payload.body ?? payload.options?.body ?? '';
 	const url = payload.url ?? payload.options?.data?.url ?? '/';
+	const isCall = String(payload.tag || '').startsWith('call-');
 	event.waitUntil(
 		self.registration.showNotification(title, {
 			body,
@@ -35,6 +36,17 @@ self.addEventListener('push', (event) => {
 			tag: payload.tag,
 			renotify: payload.tag ? true : undefined,
 			vibrate: payload.vibrate,
+			// A call gets the platform's LOOPING ringtone + Answer/Decline call
+			// buttons + DND break-through, on browsers that support it (installed
+			// PWAs on Chromium/Edge). Everywhere else these keys are ignored and it
+			// falls back to a normal notification — no regression.
+			...(isCall && {
+				scenario: 'incoming-call',
+				actions: [
+					{ action: 'answer', title: '📹 Answer' },
+					{ action: 'decline', title: 'Decline' }
+				]
+			}),
 			data: { url }
 		})
 	);
@@ -42,6 +54,8 @@ self.addEventListener('push', (event) => {
 
 self.addEventListener('notificationclick', (event) => {
 	event.notification.close();
+	// Decline just dismisses — no navigation, no server call.
+	if (event.action === 'decline') return;
 	const target = event.notification.data?.url || '/';
 	event.waitUntil(
 		(async () => {
