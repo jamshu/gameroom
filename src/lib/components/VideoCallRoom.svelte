@@ -128,6 +128,23 @@
 
 	let stageEl = $state(null);
 	const fs = createFullscreen(() => stageEl);
+
+	// Ring an absent member's device (web push → opens this room → auto-joins).
+	const absent = $derived(members.filter((m) => m.uid !== myUid && !callUids.includes(m.uid)));
+	let ringing = $state(new Set());
+	async function ring(uid) {
+		ringing = new Set(ringing).add(uid);
+		try {
+			await store.post('call', { toUid: uid });
+		} catch (e) {
+			error = e?.message || 'Could not ring that user';
+		}
+		setTimeout(() => {
+			const next = new Set(ringing);
+			next.delete(uid);
+			ringing = next;
+		}, 4000);
+	}
 </script>
 
 <div class="card vc">
@@ -195,6 +212,17 @@
 			<button class="btn btn--danger" onclick={leaveCall}>✕ Leave call</button>
 		</div>
 	</div>
+
+	{#if absent.length}
+		<div class="vc-invite">
+			<span class="muted">📞 Ring to join:</span>
+			{#each absent as m (m.uid)}
+				<button class="btn btn--sm" disabled={ringing.has(m.uid)} onclick={() => ring(m.uid)}>
+					{ringing.has(m.uid) ? '📲 Ringing…' : m.name}
+				</button>
+			{/each}
+		</div>
+	{/if}
 </div>
 
 <style>
@@ -318,6 +346,14 @@
 		flex-wrap: wrap;
 		gap: 10px;
 		margin-top: 14px;
+		justify-content: center;
+	}
+	.vc-invite {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 8px;
+		margin-top: 12px;
 		justify-content: center;
 	}
 
