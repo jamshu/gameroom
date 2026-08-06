@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import { requireUser } from '$lib/server/auth.js';
-import { getRoom, getMembers, publicRoom, publicMembers, isPrivate, allowedUids, jsonError, httpError } from '$lib/server/room.js';
+import { getRoom, getMembers, publicRoom, publicMembers, isPrivate, allowedUids, requireHost, deleteRoom, jsonError, httpError } from '$lib/server/room.js';
 import { isDoRoom } from '$lib/server/doflag.js';
 
 export const prerender = false;
@@ -48,6 +48,20 @@ export async function GET({ params, cookies }) {
 			// inside ws-auth.
 			do: isDoRoom(params.id)
 		});
+	} catch (e) {
+		const { body, status } = jsonError(e);
+		return json(body, { status });
+	}
+}
+
+/** Host tears the whole room down — chat, state, media and members go with it
+ *  (deleteRoom cascades and evacuates the DO). Everyone else is kicked to the
+ *  dashboard by their poll's terminal 403 on the next read. */
+export async function DELETE({ params, cookies }) {
+	try {
+		await requireHost(cookies, params.id);
+		await deleteRoom(params.id);
+		return json({ ok: true, deleted: true });
 	} catch (e) {
 		const { body, status } = jsonError(e);
 		return json(body, { status });

@@ -261,6 +261,20 @@
 		goto('/');
 	}
 
+	let deleting = $state(false);
+	async function deleteRoom() {
+		if (!confirm('Delete this room for everyone? This cannot be undone.')) return;
+		deleting = true;
+		try {
+			if (inVoice) await leaveVoice();
+			await api(`/api/rooms/${roomId}`, { method: 'DELETE' });
+			goto('/');
+		} catch (e) {
+			error = e.message;
+			deleting = false;
+		}
+	}
+
 	onMount(() => {
 		loadDetail();
 		detailTimer = setInterval(() => {
@@ -475,6 +489,11 @@
 				{#if isHost && room.status === 'playing'}
 					<button class="btn btn--ghost btn--sm" onclick={endGame} disabled={ending}>
 						{ending ? 'Ending…' : 'End game'}
+					</button>
+				{/if}
+				{#if isHost}
+					<button class="btn btn--ghost btn--sm btn--danger" onclick={deleteRoom} disabled={deleting}>
+						{deleting ? 'Deleting…' : '🗑 Delete'}
 					</button>
 				{/if}
 				<button class="btn btn--ghost btn--sm" onclick={leaveRoom}>Leave</button>
