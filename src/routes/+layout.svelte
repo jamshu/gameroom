@@ -45,9 +45,27 @@
 		if ($user && document.visibilityState === 'visible') checkSession();
 	}
 
+	// A tapped call notification stashes its room URL in the Cache (see sw.js); on
+	// launch we consume it and route there. This is what lands the callee IN the
+	// room even on iOS PWAs, which otherwise always cold-start on the dashboard.
+	async function consumePendingNav() {
+		if (!('caches' in window)) return;
+		try {
+			const c = await caches.open('gr-nav');
+			const res = await c.match('/__pending_nav');
+			if (!res) return;
+			await c.delete('/__pending_nav');
+			const { url, at } = await res.json();
+			if (url && Date.now() - at < 60000) goto(url);
+		} catch {
+			/* no pending nav — nothing to do */
+		}
+	}
+
 	onMount(() => {
 		checkSession();
 		if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+		consumePendingNav();
 		refreshPushState();
 		document.addEventListener('visibilitychange', pingIfVisible);
 		const t = setInterval(pingIfVisible, KEEPALIVE_MS);

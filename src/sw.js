@@ -45,12 +45,19 @@ self.addEventListener('notificationclick', (event) => {
 	const target = event.notification.data?.url || '/';
 	event.waitUntil(
 		(async () => {
+			// Stash the destination so the app can self-route on launch. iOS home-
+			// screen PWAs IGNORE the URL passed to openWindow()/navigate() and always
+			// start at the manifest start_url (the dashboard) — reading this on mount
+			// is the only reliable way to land them in the room across platforms.
+			try {
+				const c = await caches.open('gr-nav');
+				await c.put('/__pending_nav', new Response(JSON.stringify({ url: target, at: Date.now() })));
+			} catch {
+				/* cache unavailable — fall back to navigate/openWindow below */
+			}
 			const wins = await clients.matchAll({ type: 'window', includeUncontrolled: true });
 			const client = wins.find((w) => w.url.includes(self.location.origin));
 			if (client) {
-				// Focus the open app AND drive it to the room. navigate() is what was
-				// missing/failing before — without a reliable navigate the focused tab
-				// just sat on the dashboard. Fall back to a fresh window if it can't.
 				try {
 					await client.focus();
 					if (client.navigate) {
@@ -58,7 +65,7 @@ self.addEventListener('notificationclick', (event) => {
 						return;
 					}
 				} catch {
-					/* navigate blocked (cross-scope, or unsupported) — open instead */
+					/* navigate blocked — open a fresh window instead */
 				}
 			}
 			await clients.openWindow(target);
