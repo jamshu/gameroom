@@ -622,6 +622,10 @@ export async function dropMember(target, state, roomId = null) {
 	// of a bare "not a member". NOT a ban: `join` clears this marker. For a private
 	// room the guest list is the actual gate; this only supplies the message.
 	state.banned = [...new Set([...(state.banned || []), targetUid])];
+	// Their scoreboard tally goes with them — the board lists people in the room,
+	// and a removed player's trophies hanging around is just a stale row nobody
+	// can clear. Rejoining starts them from zero, same as any new arrival.
+	if (state.wins) delete state.wins[targetUid];
 	target.x_studio_status = 'left';
 	// Close their sockets. Without this a removed player keeps a live connection
 	// and keeps receiving every state and roster frame until they happen to
@@ -847,6 +851,16 @@ const SWEEP_BATCH = 60;
  * storage one: hiding them is a change to browseDomain, not to this.
  */
 export async function sweepAbandonedRooms() {
+	/* DISABLED — rooms are now deleted by their host and by nobody else.
+	   Left in place rather than ripped out because the cron plumbing around it is
+	   real (wrap-worker.mjs generates a `scheduled` handler that posts to
+	   /api/cron/sweep by path, and the endpoint has to keep answering), and
+	   because this is the second of the two automatic deletions: the trigger is
+	   gone from wrangler.toml, and this guard is what makes re-adding a schedule —
+	   or any other caller — harmless rather than a silent mass delete.
+	   Everything below is intact so the behaviour can be restored by deleting
+	   these two lines. */
+	return 0;
 	try {
 		const cutoff = new Date(Date.now() - ABANDON_MIN * 60000)
 			.toISOString()
@@ -879,15 +893,47 @@ export async function sweepAbandonedRooms() {
  * they're independent rows and can at least go out together instead of one
  * blocking round trip each.
  */
-export async function finishRoom(roomId, members, scoresByUid = {}, room = null) {
+export async function finishRoom(roomId, members, scoresByUid = {}, room = null, opts = {}) {
+	const { state = null, winners = [] } = opts;
 	const scored = members.filter(
 		(m) => m.x_studio_user_id?.[0] != null && scoresByUid[m.x_studio_user_id[0]] != null
 	);
+
+	/* The cumulative room scoreboard: one point per win, per winner.
+	   It lives on `state` and NOT on x_studio_score, which is the per-ROUND score
+	   this same function writes below — resetRound zeroes that on every rematch,
+	   which is exactly the opposite of what a running tally needs.
+	   Callers pass `winners` (from winnerUids) rather than us deriving it: the
+	   winner lives in state.game, which finishRoom has never been handed, and the
+	   call sites already import the gamelogic helper that knows how to read it. */
+	/* `awarded` is what keeps this safe to run twice, and it is needed because
+	   every OTHER write in here is idempotent and this one is not: writing
+	   x_studio_score or `finished` a second time changes nothing, whereas a second
+	   +1 is a wrong tally that never corrects itself. Turn-based routes can't
+	   double-fire (the mover's own `if (game.result) throw 409` guard sees it), but
+	   a clock claim is not turn-gated — two clients watching the same expired chess
+	   clock can both read result:null and both call flag. Marked on the game, which
+	   resetRound nulls, so it cannot leak into the next round. */
+	if (state && winners.length && !state.game?.awarded) {
+		state.wins = state.wins || {};
+		for (const uid of winners) state.wins[uid] = (state.wins[uid] || 0) + 1;
+		if (state.game) state.game.awarded = true;
+	}
+
 	await Promise.all([
 		...scored.map((m) =>
 			adminExecute(MEMBER, 'write', [[m.id], { x_studio_score: scoresByUid[m.x_studio_user_id[0]] }])
 		),
-		adminExecute(ROOM, 'write', [[Number(roomId)], { x_studio_status: 'finished' }])
+		/* The status flip rides writeState when we have state to persist, so the new
+		   `wins` and `finished` land in one write and one broadcast. Callers have
+		   usually written state already a few lines earlier; this second write is
+		   deliberate and safe rather than something to optimize away — no expectV is
+		   passed, so the object's `Math.max(current, incoming) + 1` cannot conflict,
+		   and it hands `state.v` back so the caller's own stateView echo stays
+		   current. Once per finished game is not worth reordering eight routes for. */
+		state
+			? writeState(roomId, state, { x_studio_status: 'finished' })
+			: adminExecute(ROOM, 'write', [[Number(roomId)], { x_studio_status: 'finished' }])
 	]);
 
 	// Every game ends through here, so this is the one place that has to announce

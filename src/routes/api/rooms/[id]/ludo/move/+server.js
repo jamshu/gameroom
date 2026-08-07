@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import { requireMember, parseState, writeState, appendEvent, finishRoom, jsonError, httpError } from '$lib/server/room.js';
-import { ludoMove, ludoScores, stateView } from '$lib/server/gamelogic.js';
+import { ludoMove, ludoScores, stateView, winnerUids } from '$lib/server/gamelogic.js';
 
 export const prerender = false;
 
@@ -20,7 +20,7 @@ export async function POST({ params, request, cookies }) {
 		await appendEvent(params.id, 'move', { kind, uid, token: Number(token) }, uid);
 
 		if (game.result) {
-			await finishRoom(params.id, members, ludoScores(game), room);
+			await finishRoom(params.id, members, ludoScores(game), room, { state, winners: winnerUids(game) });
 			await appendEvent(params.id, 'system', { kind: 'game-over', winner: game.result }, uid);
 		}
 		return json({ ok: true, state: stateView(state, uid) });

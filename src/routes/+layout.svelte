@@ -3,6 +3,7 @@
 	import '@fontsource-variable/inter';
 	import '../app.css';
 	import { onMount } from 'svelte';
+	import { get } from 'svelte/store';
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 	import { user, checkSession, logout } from '$lib/stores/auth.js';
@@ -44,21 +45,54 @@
 	function pingIfVisible() {
 		if ($user && document.visibilityState === 'visible') checkSession();
 	}
+	// Coming back to the tab. Separate from the keepalive interval above on
+	// purpose: a notification tapped while we were backgrounded left its
+	// destination in the cache, and a RESUME is the only moment we get to act on
+	// it — checking the cache every ten minutes on a timer would just be a
+	// caches.open per tick that finds nothing.
+	function onVisible() {
+		pingIfVisible();
+		if (document.visibilityState === 'visible') consumePendingNav();
+	}
 
-	// A tapped call notification stashes its room URL in the Cache (see sw.js); on
-	// launch we consume it and route there. This is what lands the callee IN the
-	// room even on iOS PWAs, which otherwise always cold-start on the dashboard.
+	// A tapped call/wave notification stashes its room URL in the Cache (see sw.js);
+	// we consume it and route there. This is what lands the recipient IN the room
+	// even on iOS PWAs, which otherwise always start on the dashboard.
+	//
+	// RUN ON RESUME AS WELL AS ON MOUNT, and that is the whole fix for "the
+	// notification put me on the dashboard". Tapping a notification while the PWA
+	// is merely backgrounded RESUMES the existing window — onMount does not run
+	// again — and iOS ignores the URL handed to client.navigate()/openWindow(), so
+	// the stashed destination was written and never read. Cold start worked; warm
+	// resume, which is the common case, did not.
+	const PENDING_NAV_MS = 5 * 60 * 1000;
+	let consuming = false; // mount and visibilitychange can both fire at once
 	async function consumePendingNav() {
-		if (!('caches' in window)) return;
+		if (!('caches' in window) || consuming) return;
+		consuming = true;
 		try {
 			const c = await caches.open('gr-nav');
 			const res = await c.match('/__pending_nav');
 			if (!res) return;
-			await c.delete('/__pending_nav');
 			const { url, at } = await res.json();
-			if (url && Date.now() - at < 60000) goto(url);
+			if (!url || Date.now() - at > PENDING_NAV_MS) {
+				await c.delete('/__pending_nav'); // genuinely stale — drop it
+				return;
+			}
+			await goto(url);
+			// DELETED ONLY ONCE WE ARE ACTUALLY THERE — goto resolving is not the same
+			// as having stayed. On a cold start this runs while checkSession() is still
+			// in flight, and the auth gate below redirects to /signup or / the moment it
+			// settles; deleting on the strength of goto alone would throw the
+			// destination away in exactly the race this ordering exists to survive.
+			// Left in the cache, the next visibilitychange tries again.
+			if (get(page).url.pathname === new URL(url, location.origin).pathname) {
+				await c.delete('/__pending_nav');
+			}
 		} catch {
-			/* no pending nav — nothing to do */
+			/* no pending nav, or the cache is unavailable — nothing to do */
+		} finally {
+			consuming = false;
 		}
 	}
 
@@ -67,11 +101,11 @@
 		if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 		consumePendingNav();
 		refreshPushState();
-		document.addEventListener('visibilitychange', pingIfVisible);
+		document.addEventListener('visibilitychange', onVisible);
 		const t = setInterval(pingIfVisible, KEEPALIVE_MS);
 		return () => {
 			clearInterval(t);
-			document.removeEventListener('visibilitychange', pingIfVisible);
+			document.removeEventListener('visibilitychange', onVisible);
 		};
 	});
 

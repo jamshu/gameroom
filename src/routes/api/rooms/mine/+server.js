@@ -16,19 +16,33 @@ export async function GET({ cookies }) {
 			['x_studio_room_id', 'x_studio_status', 'x_studio_role']
 		]);
 		const roomIds = [...new Set(memberships.map((m) => m.x_studio_room_id?.[0]).filter(Boolean))];
-		if (!roomIds.length) return json({ ok: true, rooms: [] });
 		// No visibility gate needed: a member row already means you were let in.
 		// Invited-but-not-yet-joined rooms have no member row, so they show up in
 		// browse rather than here — that's correct, not a gap.
-		const rooms = await adminExecute(ROOM, 'read', [roomIds], {
-			fields: ['x_name', 'x_studio_game_type', 'x_studio_status', 'x_studio_host_id',
+		//
+		// The `|` arm is what keeps a room you HOST listed once your own member row
+		// says 'left'. Nothing deletes rooms automatically any more and DELETE answers
+		// to the recorded host, so dropping an owned room off this list is the same as
+		// losing the only way to remove it. Folded into this search_read rather than
+		// added as its own search: the dashboard hits this on every load, and Odoo is
+		// roughly 1 req/s shared across the whole app — a third call here is not free.
+		const rooms = await adminExecute(ROOM, 'search_read', [
+			['|', ['id', 'in', roomIds], ['x_studio_host_id', '=', uid]],
+			['x_name', 'x_studio_game_type', 'x_studio_status', 'x_studio_host_id',
 				'x_studio_visibility']
-		});
+		]);
+		if (!rooms.length) return json({ ok: true, rooms: [] });
 		const byRoom = Object.fromEntries(memberships.map((m) => [m.x_studio_room_id?.[0], m]));
 		return json({
 			ok: true,
 			rooms: rooms
-				.filter((r) => r.x_studio_status !== 'finished' || byRoom[r.id]?.x_studio_status === 'accepted')
+				.filter(
+					(r) =>
+						r.x_studio_status !== 'finished' ||
+						byRoom[r.id]?.x_studio_status === 'accepted' ||
+						// a room you own is yours to see (and delete) in any status
+						r.x_studio_host_id?.[0] === uid
+				)
 				.map((r) => ({
 					id: r.id,
 					name: r.x_name,

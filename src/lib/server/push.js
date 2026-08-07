@@ -215,16 +215,33 @@ export async function sendPush(sub, payload) {
 	}
 }
 
-/** Send to all devices registered for one user. */
-export async function sendToUser(userId, payload) {
-	const [u] = await adminExecute('res.users', 'read', [[userId]], { fields: ['partner_id'] });
-	const partnerId = u?.partner_id?.[0];
-	if (!partnerId) return;
+/**
+ * Send to all devices registered for a SET of users — two Odoo calls total,
+ * however many recipients.
+ *
+ * The batching is the whole point. Ringing is 1:1 so a per-user helper cost
+ * nothing, but a room-wide notify (wave) done one user at a time is 2 sequential
+ * Odoo round trips EACH, and Odoo is the scarce resource here — a six-person
+ * room would spend twelve calls of a ~1 req/s budget to send six pushes. The
+ * pushes themselves go to Apple/Google/Mozilla and are free of that constraint,
+ * so they stay parallel and unbatched.
+ */
+export async function sendToUsers(userIds, payload) {
+	const ids = [...new Set(userIds.map(Number).filter(Boolean))];
+	if (!ids.length) return;
+	const users = await adminExecute('res.users', 'read', [ids], { fields: ['partner_id'] });
+	const partnerIds = users.map((u) => u?.partner_id?.[0]).filter(Boolean);
+	if (!partnerIds.length) return;
 	const rows = await adminExecute(
 		DEVICE_MODEL,
 		'search_read',
-		[[['partner_id', '=', partnerId]]],
+		[[['partner_id', 'in', partnerIds]]],
 		{ fields: ['endpoint', 'keys'] }
 	);
 	await Promise.allSettled(rows.map((r) => sendPush(deviceToSub(r), payload)));
+}
+
+/** Send to all devices registered for one user. */
+export function sendToUser(userId, payload) {
+	return sendToUsers([userId], payload);
 }

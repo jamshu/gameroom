@@ -89,6 +89,22 @@
 		setTimeout(() => (ringing = 0), 4000);
 	}
 
+	// Wave at the whole room at once — the group version of ring. The guard is the
+	// same shape as ringing's: it stops a double-tap, not an attacker, and the
+	// notification `tag` collapses anything that gets past it on the device.
+	let waving = $state(false);
+	async function wave() {
+		if (waving) return;
+		waving = true;
+		error = '';
+		try {
+			await store.post('wave', {});
+		} catch (e) {
+			error = e.message;
+		}
+		setTimeout(() => (waving = false), 4000);
+	}
+
 	// What switching to `pick` would do to the seating, worked out client-side
 	// from the same capacity rule the server applies — no extra request.
 	// untracked seed + an effect that follows: the select is local (you can browse
@@ -226,7 +242,19 @@
 		<hr style="border-color:var(--border); margin:14px 0;" />
 	{/if}
 
-	<h3 class="label">Members ({accepted.length})</h3>
+	<div class="members-head">
+		<h3 class="label">Members ({accepted.length})</h3>
+		{#if accepted.length > 1}
+			<button
+				class="btn btn--ghost btn--sm"
+				onclick={wave}
+				disabled={waving}
+				title="Notify everyone who isn't here"
+			>
+				{waving ? '👋 Waved!' : '👋 Wave'}
+			</button>
+		{/if}
+	</div>
 	{#each accepted as m (m.id)}
 		<div class="member-row">
 			<Avatar uid={m.uid} name={m.name} size={30} />
@@ -417,6 +445,12 @@
 </div>
 
 <style>
+	.members-head {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 10px;
+	}
 	.member-row {
 		display: flex;
 		align-items: center;

@@ -6,7 +6,6 @@ import {
 	appendEvent,
 	parseState,
 	writeState,
-	deleteRoom,
 	pickSuccessorHost,
 	setHost,
 	resetRound,
@@ -19,29 +18,38 @@ import { gameSeatUids } from '$lib/server/gamelogic.js';
 export const prerender = false;
 
 /**
- * Leave a room. Last member out → room deleted.
+ * Leave a room. The room ALWAYS survives — only the host's Delete button removes
+ * one.
  *
- * A leaving HOST now hands the room to the longest-standing remaining member
- * instead of closing it: the room, its chat and its voice call outlive whoever
- * happened to create it.
+ * The last member out used to take the room with them. That is gone: a room is
+ * now a place that persists, so people can wander off and come back to the same
+ * chat, scoreboard and settings. The consequence to know about is that a room
+ * whose last member leaves keeps naming the departed host in x_studio_host_id,
+ * so `mine` and DELETE both have to recognise a host whose own member row says
+ * 'left' — see the notes on each.
+ *
+ * A leaving HOST hands the room to the longest-standing remaining member: the
+ * room, its chat and its voice call outlive whoever happened to create it. With
+ * nobody left to hand it to, pickSuccessorHost returns null and the departing
+ * host stays on the record as owner — which is what keeps the room deletable.
  */
 export async function POST({ params, cookies }) {
 	try {
 		const { uid, room, member, members } = await requireMember(cookies, params.id);
 		await adminExecute(MEMBER, 'write', [[member.id], { x_studio_status: 'left' }]);
 
-		// nobody active left → delete the whole room (abandoned)
-		const activeRemain = members.some(
-			(m) => m.id !== member.id && ['accepted', 'pending'].includes(m.x_studio_status)
-		);
-		if (!activeRemain) {
-			await deleteRoom(params.id);
-			return json({ ok: true, deleted: true });
-		}
-
 		const state = parseState(room) || { v: 0, voice: [], game: null };
 		const extraVals = {};
 		let dirty = false;
+
+		// Their scoreboard tally leaves with them, same as being removed by the host.
+		// `dirty` must be set explicitly: the write at the bottom is gated on it, and
+		// otherwise only the voice and mid-game paths set it — so a spectator walking
+		// out would drop no state at all and their trophies would linger.
+		if (state.wins?.[uid] != null) {
+			delete state.wins[uid];
+			dirty = true;
+		}
 
 		// Drop from the voice roster if present. Through setVoice, never inline: on a
 		// DO room the object owns the roster and ignores a `voice` key in the blob

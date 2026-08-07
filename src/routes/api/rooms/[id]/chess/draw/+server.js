@@ -8,7 +8,7 @@ import {
 	jsonError,
 	httpError
 } from '$lib/server/room.js';
-import { stateView, chessScores } from '$lib/server/gamelogic.js';
+import { stateView, chessScores, winnerUids } from '$lib/server/gamelogic.js';
 
 export const prerender = false;
 
@@ -61,7 +61,7 @@ export async function POST({ params, request, cookies }) {
 			if (game.clock) game.clock.turnStartedAt = null;
 
 			await writeState(params.id, state);
-			await finishRoom(params.id, members, chessScores(game), room);
+			await finishRoom(params.id, members, chessScores(game), room, { state, winners: winnerUids(game) });
 			await appendEvent(
 				params.id,
 				'system',

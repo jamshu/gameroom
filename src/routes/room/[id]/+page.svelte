@@ -16,6 +16,7 @@
 	import LudoBoard from '$lib/components/LudoBoard.svelte';
 	import VideoCallRoom from '$lib/components/VideoCallRoom.svelte';
 	import Leaderboard from '$lib/components/Leaderboard.svelte';
+	import Scoreboard from '$lib/components/Scoreboard.svelte';
 	import { createHold } from '$lib/holdclock.svelte.js';
 
 	const roomId = $page.params.id;
@@ -261,6 +262,33 @@
 		goto('/');
 	}
 
+	/* Inline rename, host only. Kept in the header next to the title rather than
+	   behind a settings panel — there is no settings panel, and the thing being
+	   edited is right there. */
+	let renaming = $state(false);
+	let renameText = $state('');
+	let savingName = $state(false);
+	function startRename() {
+		renameText = room?.name ?? '';
+		renaming = true;
+	}
+	async function saveName() {
+		const clean = renameText.trim();
+		if (!clean || clean === room?.name) {
+			renaming = false;
+			return;
+		}
+		savingName = true;
+		try {
+			await store.post('name', { name: clean });
+			renaming = false;
+		} catch (e) {
+			error = e.message;
+		} finally {
+			savingName = false;
+		}
+	}
+
 	let deleting = $state(false);
 	async function deleteRoom() {
 		if (!confirm('Delete this room for everyone? This cannot be undone.')) return;
@@ -453,6 +481,11 @@
 			// a game that simply finished — say who did it and that it was cut short
 			const name = who(ev.senderUid);
 			say(`🛑 ${name} ended the game — back to the lobby.`);
+		} else if (kind === 'room-renamed') {
+			say(`✏️ ${who(ev.senderUid)} renamed the room to “${ev.payload.name}”.`);
+		} else if (kind === 'wave') {
+			// only worth saying when someone else waved — the sender knows they did
+			if (Number(ev.payload.uid) !== myUid) say(`👋 ${who(ev.payload.uid)} waved!`);
 		} else if (kind === 'role-changed') {
 			// the player who lost their seat is the one who has to be told: the role
 			// chip flips in a list they may not be looking at, and they'd otherwise
@@ -480,7 +513,32 @@
 	<div class="room fade-in">
 		<header class="room-head">
 			<div>
-				<h1 class="room-title">{room.name}</h1>
+				{#if renaming}
+					<form class="rename-row" onsubmit={(e) => { e.preventDefault(); saveName(); }}>
+						<!-- svelte-ignore a11y_autofocus -->
+						<input
+							class="input rename-input"
+							bind:value={renameText}
+							maxlength="60"
+							autofocus
+							aria-label="Room name"
+							onkeydown={(e) => e.key === 'Escape' && (renaming = false)}
+						/>
+						<button class="btn btn--primary btn--sm" type="submit" disabled={savingName}>
+							{savingName ? 'Saving…' : 'Save'}
+						</button>
+						<button class="btn btn--ghost btn--sm" type="button" onclick={() => (renaming = false)}>
+							Cancel
+						</button>
+					</form>
+				{:else}
+					<h1 class="room-title">
+						{room.name}
+						{#if isHost}
+							<button class="rename-btn" onclick={startRename} title="Rename room" aria-label="Rename room">✏️</button>
+						{/if}
+					</h1>
+				{/if}
 				<span class="chip chip--accent">{gameLabel(room.gameType)}</span>
 				{#if room.visibility === 'private'}<span class="chip" title="Invite only">🔒 private</span>{/if}
 				<span class="chip">{room.status}</span>
@@ -517,6 +575,17 @@
 				{/if}
 			</div>
 		{:else}
+			<!-- Outside the status if/else below on purpose: the tally has to survive
+			     lobby → playing → finished, and anything inside that chain is
+			     unmounted the moment the room changes status.
+			     Hidden WHILE PLAYING, though, and that is about vertical space, not
+			     taste: --board-cap below has a hard 520px floor, so the board cannot
+			     give any height back — a bar above the grid just pushes the board down
+			     and makes a 720px-tall screen scroll mid-game. The standings matter in
+			     the lobby and on the results screen, which is where they still are. -->
+			{#if room.status !== 'playing'}
+				<Scoreboard {members} wins={$store.wins} />
+			{/if}
 			<div class="room-grid" class:room-grid--playing={room.status === 'playing'}>
 				<main class="room-main">
 					{#if room.status === 'finished' && !finalReveal.holding}
@@ -589,6 +658,30 @@
 	.room-notice {
 		display: inline-block;
 		margin-bottom: 12px;
+	}
+	/* ✏️ rides inside the <h1> so it sits on the title's baseline however the
+	   name wraps — a sibling would drift on a two-line title */
+	.rename-btn {
+		border: 0;
+		background: none;
+		padding: 0 0 0 6px;
+		font-size: 0.7em;
+		line-height: 1;
+		cursor: pointer;
+		opacity: 0.55;
+	}
+	.rename-btn:hover {
+		opacity: 1;
+	}
+	.rename-row {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
+		margin-bottom: 6px;
+	}
+	.rename-input {
+		width: min(320px, 60vw);
 	}
 	.room-title {
 		display: inline;

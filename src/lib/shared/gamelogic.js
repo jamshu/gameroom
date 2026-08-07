@@ -428,6 +428,43 @@ export function chessScores(game) {
 }
 
 /**
+ * Who WON — the uids that earn a point on the room scoreboard. Pure.
+ *
+ * Each game stores its outcome differently (chess a colour, ludo a uid, carroms
+ * a team, thief a totals map), so this is the one place that knows how to read
+ * all four. Returns [] for a draw, an unfinished game, or a type that never ends.
+ *
+ * NOT derived by taking the top of `scoresByUid`, which is the obvious shortcut
+ * and is wrong twice over: chess scores a draw 1-1, and both carrom teammates
+ * carry their team's pocketed count, so an "outright top scorer" rule would
+ * silently award nobody for a doubles win. Read the result field instead.
+ */
+export function winnerUids(game) {
+	if (!game) return [];
+	if (game.type === 'chess') {
+		if (!game.result || game.result === 'draw') return [];
+		return [game.players[game.result]].filter((u) => u != null);
+	}
+	if (game.type === 'ludo') return game.result ? [game.result] : [];
+	if (game.type === 'carroms') {
+		// result is a TEAM — everyone on it scores, so 2v2 pays both partners
+		if (!game.result) return [];
+		return game.players.filter((u) => carromTeamOf(game, u) === game.result);
+	}
+	if (game.type === 'thief_finder') {
+		if (game.phase !== 'finished') return [];
+		const totals = game.totals || {};
+		const top = Math.max(0, ...Object.values(totals));
+		if (top <= 0) return [];
+		// ties all score: the round genuinely had joint winners
+		return Object.keys(totals)
+			.filter((u) => totals[u] === top)
+			.map(Number);
+	}
+	return []; // videocall and anything new that never finishes
+}
+
+/**
  * The uids holding a seat in `game`. Chess keys its two seats by colour, the
  * other games use a turn-order array — callers that only ask "is this player in
  * the game?" shouldn't have to know which. Pure.
@@ -475,6 +512,11 @@ export function stateView(state, uid) {
 		// clock above: an absolute server timestamp differenced against the
 		// client's Date.now() would show the viewer's clock skew as call duration.
 		voiceMs: state.voiceSince ? Math.max(0, Date.now() - state.voiceSince) : null,
+		// Cumulative room scoreboard, { uid: wins }. This list is an ALLOWLIST —
+		// anything not named here never reaches a client, however faithfully it is
+		// persisted, because the socket push, the poll envelope and the DO's welcome
+		// frame all serialize through this one function.
+		wins: state.wins || {},
 		game: gameView(state.game, uid)
 	};
 }

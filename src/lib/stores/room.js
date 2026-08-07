@@ -67,6 +67,7 @@ export function createRoomStore(roomId) {
 		voice: [],
 		voiceMs: null, // elapsed call time at the last server snapshot; null = no call
 		voiceAt: null, // when that snapshot arrived, so the tick can extrapolate
+		wins: {}, // cumulative room scoreboard, { uid: games won }
 		game: null,
 		gv: 0,
 		error: null,
@@ -139,6 +140,9 @@ export function createRoomStore(roomId) {
 			// than differencing an absolute stamp against a possibly-skewed clock.
 			voiceMs: state.voiceMs ?? null,
 			voiceAt: state.voiceMs == null ? null : Date.now(),
+			// cumulative room scoreboard — survives every rematch, unlike the
+			// per-round `score` on the member rows
+			wins: state.wins || {},
 			game: state.game ? { ...state.game, v: state.v } : null,
 			gv: state.v
 		};

@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import { requireUser } from '$lib/server/auth.js';
-import { getRoom, getMembers, publicRoom, publicMembers, isPrivate, allowedUids, requireHost, deleteRoom, jsonError, httpError } from '$lib/server/room.js';
+import { getRoom, getMembers, publicRoom, publicMembers, isPrivate, allowedUids, deleteRoom, jsonError, httpError } from '$lib/server/room.js';
 import { isDoRoom } from '$lib/server/doflag.js';
 
 export const prerender = false;
@@ -54,12 +54,33 @@ export async function GET({ params, cookies }) {
 	}
 }
 
-/** Host tears the whole room down — chat, state, media and members go with it
- *  (deleteRoom cascades and evacuates the DO). Everyone else is kicked to the
- *  dashboard by their poll's terminal 403 on the next read. */
+/**
+ * Host tears the whole room down — chat, state, media and members go with it
+ * (deleteRoom cascades and evacuates the DO). Everyone else is kicked to the
+ * dashboard by their poll's terminal 403 on the next read.
+ *
+ * Deliberately NOT requireHost, and this is the change that keeps rooms
+ * deletable now that nothing deletes them automatically. requireHost runs
+ * through requireMember, which rejects any member row that is not `accepted` —
+ * so once the last person walks out, the host's own row says 'left' and the only
+ * account permitted to delete the room can no longer prove it belongs to them.
+ * That would strand it forever, since manual deletion is now the only kind.
+ *
+ * Two ways in, both narrow:
+ *   - you are the recorded host, member row or not;
+ *   - you are an accepted member and the LAST one, which rescues a room whose
+ *     host's account has since been deleted.
+ */
 export async function DELETE({ params, cookies }) {
 	try {
-		await requireHost(cookies, params.id);
+		const { uid } = await requireUser(cookies);
+		const room = await getRoom(params.id);
+		if (room.x_studio_host_id?.[0] !== uid) {
+			const members = await getMembers(params.id);
+			const accepted = members.filter((m) => m.x_studio_status === 'accepted');
+			const meAccepted = accepted.some((m) => m.x_studio_user_id?.[0] === uid);
+			if (!meAccepted || accepted.length > 1) throw httpError(403, 'Host only');
+		}
 		await deleteRoom(params.id);
 		return json({ ok: true, deleted: true });
 	} catch (e) {
