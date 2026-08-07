@@ -224,8 +224,11 @@
 <div class="card chat">
 	<p class="chat-safety">
 		<span class="emo">🔒</span>
-		<span>Sent over a secure connection. All chat auto-deletes forever when everyone
-			leaves the room — nothing is kept.</span>
+		<!-- The auto-delete half of this line is gone because it stopped being true:
+		     a room used to vanish when the last member left, taking its chat with it.
+		     Rooms now persist until their host deletes them, so promising otherwise
+		     here would be a privacy claim the app no longer keeps. -->
+		<span>Sent over a secure connection.</span>
 	</p>
 	<div class="chat-list" bind:this={listEl}>
 		{#each rows as { msg, mine, head } (msg.id)}
