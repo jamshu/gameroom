@@ -105,8 +105,27 @@ export function createRoomStore(roomId) {
 	// leans on to stay on the HTTP path.
 	let usingSocket = false;
 
+	/**
+	 * Claim the WebRTC signal channel. Returns a disposer — CALL IT ON UNMOUNT.
+	 *
+	 * One slot, last writer wins, and for a long time there was no way to give it
+	 * back. That is what wedged voice after a video call: VideoCallRoom claimed the
+	 * slot, was destroyed without releasing it, and every subsequent offer/answer/ice
+	 * was handed to a mesh whose `joined` was already false — which silently buffers
+	 * signals into preJoinSignals and drains them only from join(), a call that
+	 * never comes again for a mesh whose component is gone. No error, no state
+	 * change, just "connecting…" forever.
+	 *
+	 * The `signalHandler === fn` check is the load-bearing part, not defensiveness:
+	 * Svelte destroys the outgoing component and mounts the incoming one in the same
+	 * flush with no ordering guarantee, so a late disposer must not wipe a handler
+	 * its successor has already installed.
+	 */
 	function onSignal(fn) {
 		signalHandler = fn;
+		return () => {
+			if (signalHandler === fn) signalHandler = null;
+		};
 	}
 	function onSystem(fn) {
 		systemHandler = fn;
@@ -662,9 +681,25 @@ export function createRoomStore(roomId) {
 	}
 
 	// `chat` inserts optimistically, so its echo poll would fetch a message we
-	// already have. `signal` keeps its echo on purpose: it's how the sender picks
-	// up the peer's reply, and voice negotiation is worth the extra request.
+	// already have.
 	const NO_ECHO_POLL = new Set(['chat', 'carroms/aim']);
+
+	/**
+	 * `signal` is conditional, which is why it can't just join the set above.
+	 *
+	 * Its echo poll used to be unconditional and justified as "how the sender picks
+	 * up the peer's reply". That was true of the old poll-based signalling and is
+	 * not true over the socket: the object fans a signal out to the target the
+	 * instant it lands. So while the socket is up the echo bought nothing and cost
+	 * a great deal — an offer, an answer and an ICE batch every 300ms, PER PEER,
+	 * each dragging a full extra poll behind it, all queued against the same
+	 * single-threaded object that is trying to serialize the negotiation itself.
+	 *
+	 * With the socket down there is no fan-out and the reasoning still holds, so
+	 * the echo stays. `pushConnected` is cleared the moment the socket drops, which
+	 * makes this fall back on its own during a reconnect.
+	 */
+	const skipEchoPoll = (path) => NO_ECHO_POLL.has(path) || (path === 'signal' && pushConnected);
 
 	/**
 	 * POST to a room sub-route. If the response carried our new state (and/or a
@@ -711,7 +746,7 @@ export function createRoomStore(roomId) {
 		if (d?.state || d?.room || d?.members) {
 			ingest({ state: d.state, room: d.room, members: d.members }, 'echo');
 		}
-		else if (!NO_ECHO_POLL.has(path)) wake();
+		else if (!skipEchoPoll(path)) wake();
 		return d;
 	}
 

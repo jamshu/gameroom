@@ -12,6 +12,14 @@ const ICE_FLUSH_MS = 300; // batch outgoing candidates into one POST per tick
 // (which plays its audio too), instead of the hidden <Audio> the voice bar uses.
 export function createVoiceMesh({ myUid, sendSignal, onPeersChange, onStream = null, video = false }) {
 	const peers = new Map(); // uid -> { pc, audioEl, pendingIce, outIce, flushTimer, createdAt }
+	/* uid -> candidates that arrived before we had a peer for them.
+	   They used to be dropped on the floor, which cost a full 15s STALE_MS cycle to
+	   recover from. The race is real for the higher-uid side, which has no peer
+	   object at all until the offer lands — and sending the first candidate straight
+	   away (see queueIce) makes ICE-before-offer MORE likely, not less. Bounded,
+	   because a uid that never follows up with an offer must not grow this forever. */
+	const earlyIce = new Map();
+	const EARLY_ICE_MAX = 30;
 	let localStream = null;
 	// Which camera the current video track came from, so flipCamera knows what to
 	// ask for next and ensureMic re-opens the one the user chose after a rejoin.
@@ -70,6 +78,17 @@ export function createVoiceMesh({ myUid, sendSignal, onPeersChange, onStream = n
 
 	function queueIce(uid, entry, candidate) {
 		entry.outIce.push(candidate);
+		/* The FIRST candidate goes out immediately; only the tail is batched.
+		   The timer used to be armed by the first candidate rather than debounced
+		   from the last, so the host/srflx candidate — the one most likely to be
+		   half of the winning pair — was held 300ms on each side. A connectivity
+		   check needs both ends, so that was an unconditional tax on the fastest
+		   possible path, paid on every single connection. */
+		if (!entry.sentFirstIce) {
+			entry.sentFirstIce = true;
+			sendSignal(uid, 'ice', { candidates: entry.outIce.splice(0) });
+			return;
+		}
 		if (!entry.flushTimer) {
 			entry.flushTimer = setTimeout(() => {
 				entry.flushTimer = null;
@@ -81,7 +100,15 @@ export function createVoiceMesh({ myUid, sendSignal, onPeersChange, onStream = n
 
 	function newPeer(uid) {
 		const pc = new RTCPeerConnection({ iceServers });
-		const entry = { pc, audioEl: null, pendingIce: [], outIce: [], flushTimer: null, createdAt: Date.now() };
+		const entry = { pc, audioEl: null, pendingIce: [], outIce: [], flushTimer: null, sentFirstIce: false, createdAt: Date.now() };
+		// Candidates that beat the offer here have been waiting for this object —
+		// see earlyIce. They belong to the negotiation we are about to run, so they
+		// go on the same queue the pre-remoteDescription candidates use.
+		const early = earlyIce.get(uid);
+		if (early) {
+			entry.pendingIce.push(...early);
+			earlyIce.delete(uid);
+		}
 		for (const track of localStream.getTracks()) pc.addTrack(track, localStream);
 		pc.onicecandidate = (e) => {
 			if (e.candidate) queueIce(uid, entry, e.candidate);
@@ -108,6 +135,10 @@ export function createVoiceMesh({ myUid, sendSignal, onPeersChange, onStream = n
 	}
 
 	function drop(uid) {
+		// Whatever was held for a peer that never materialised belongs to a
+		// negotiation that is now over. Cleared even when there is no entry, so a
+		// `bye` from someone we never connected to still tidies up.
+		earlyIce.delete(uid);
 		const entry = peers.get(uid);
 		if (!entry) return;
 		clearTimeout(entry.flushTimer);
@@ -170,13 +201,19 @@ export function createVoiceMesh({ myUid, sendSignal, onPeersChange, onStream = n
 		} else if (kind === 'answer' && entry) {
 			await entry.pc.setRemoteDescription(data.sdp);
 			for (const c of entry.pendingIce.splice(0)) await entry.pc.addIceCandidate(c).catch(() => {});
-		} else if (kind === 'ice' && entry) {
-			await addIce(entry, data);
+		} else if (kind === 'ice') {
+			if (entry) await addIce(entry, data);
+			else {
+				// No peer object yet — hold them for the offer that is on its way rather
+				// than discarding, which used to cost a 15s watchdog cycle to recover.
+				const list = data.candidates || (data.candidate ? [data.candidate] : []);
+				const held = earlyIce.get(fromUid) || [];
+				earlyIce.set(fromUid, [...held, ...list].slice(-EARLY_ICE_MAX));
+			}
 		}
 	}
 
-	async function join() {
-		await ensureMic();
+	async function fetchIce() {
 		try {
 			const res = await fetch('/api/turn');
 			const d = await res.json();
@@ -184,6 +221,16 @@ export function createVoiceMesh({ myUid, sendSignal, onPeersChange, onStream = n
 		} catch {
 			iceServers = FALLBACK_ICE;
 		}
+	}
+
+	async function join() {
+		/* IN PARALLEL, not one after the other. These share no data — iceServers is
+		   read only when the first RTCPeerConnection is constructed, well after both
+		   have settled — and ensureMic can sit on an OS permission prompt for as long
+		   as the user takes to look at it. Waiting all of that out before so much as
+		   issuing the credential fetch put the whole TURN round trip on the critical
+		   path for no reason. */
+		await Promise.all([ensureMic(), fetchIce()]);
 		joined = true;
 		// replay anything that arrived during the permission prompt
 		const buffered = preJoinSignals.splice(0);
@@ -193,6 +240,7 @@ export function createVoiceMesh({ myUid, sendSignal, onPeersChange, onStream = n
 	function leave() {
 		joined = false;
 		preJoinSignals = [];
+		earlyIce.clear();
 		for (const uid of [...peers.keys()]) {
 			try {
 				sendSignal(uid, 'bye', {});

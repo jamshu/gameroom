@@ -17,6 +17,7 @@
 	}
 
 	let mesh = null;
+	let dropSignal = null; // releases the shared signal channel on unmount
 	let joined = $state(false);
 	let error = $state('');
 	let muted = $state(false);
@@ -91,9 +92,11 @@
 				streams = new Map(streams);
 			}
 		});
-		// single-subscriber: the room page hides its voice bar for this game type, so
-		// nothing else is claiming the signal channel
-		store.onSignal((from, payload) => mesh.handleSignal(from, payload));
+		// Single-subscriber channel: the room page hides its voice bar for this game
+		// type, so nothing else claims it while we are mounted — AND we must hand it
+		// back on unmount (see onDestroy). Claiming without releasing is what left the
+		// lobby's voice permanently stuck on "connecting…" after a call ended.
+		dropSignal = store.onSignal((from, payload) => mesh.handleSignal(from, payload));
 		try {
 			await mesh.join(); // camera + mic permission, then TURN creds
 			localStream = mesh.getLocalStream();
@@ -119,6 +122,13 @@
 
 	onDestroy(() => {
 		window.removeEventListener('pagehide', beaconLeave);
+		// BEFORE mesh.leave(), and not optional: a left mesh has joined === false, and
+		// handleSignal on such a mesh swallows every signal into a buffer that only
+		// join() drains — a call that never comes again once this component is gone.
+		// Leaving the handler installed therefore black-holes the room's signalling
+		// for the rest of the session.
+		dropSignal?.();
+		dropSignal = null;
 		mesh?.leave();
 		// beacon, not the async post: an onDestroy fired by navigation gets its
 		// fetch cancelled mid-flight, and then the roster keeps the ghost

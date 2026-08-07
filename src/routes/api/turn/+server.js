@@ -8,6 +8,28 @@ const STUN_ONLY = [{ urls: 'stun:stun.l.google.com:19302' }];
 const TTL = 4 * 3600; // short-lived TURN credentials
 
 /**
+ * Reuse a minted credential for an hour of its four-hour life.
+ *
+ * This endpoint sits directly on the critical path of a voice join — the first
+ * RTCPeerConnection cannot be constructed until it answers — and it used to make
+ * an external HTTPS round trip to Cloudflare on EVERY join, to mint a credential
+ * good for four hours and then throw it away. Rejoining ten seconds later paid
+ * the whole cost again.
+ *
+ * Sharing one credential between callers is safe: generate-ice-servers scopes
+ * them to the KEY, not to a user, so a cached response grants nothing a fresh
+ * mint wouldn't. requireUser still runs first, so the endpoint stays
+ * authenticated.
+ *
+ * The hour is deliberately a fraction of the TTL, so even the last client served
+ * from cache gets three hours of validity. Module scope means this is per-isolate
+ * and best-effort — it helps repeated joins and bursts within a session and does
+ * nothing on a cold isolate, which is a fine trade for four lines.
+ */
+const CACHE_MS = 3600_000;
+let cached = null; // { iceServers, at }
+
+/**
  * ICE servers for voice. With CF_TURN_KEY_ID + CF_TURN_API_TOKEN set, mints
  * short-lived Cloudflare TURN credentials; otherwise STUN-only (direct-path
  * NATs still work, CGNAT pairs won't).
@@ -22,6 +44,10 @@ export async function GET({ cookies }) {
 	const keyId = env.CF_TURN_KEY_ID;
 	const token = env.CF_TURN_API_TOKEN;
 	if (!keyId || !token) return json({ ok: true, iceServers: STUN_ONLY, turn: false });
+
+	if (cached && Date.now() - cached.at < CACHE_MS) {
+		return json({ ok: true, iceServers: cached.iceServers, turn: true });
+	}
 
 	try {
 		const res = await fetch(
@@ -50,6 +76,7 @@ export async function GET({ cookies }) {
 		// offers TURN over 53/udp, 80/tcp and 443/tls — ports that survive
 		// restrictive mobile carriers and corporate firewalls where 3478 is
 		// blocked outright, which is exactly the case STUN alone cannot rescue.
+		cached = { iceServers: ice, at: Date.now() };
 		return json({ ok: true, iceServers: ice, turn: true });
 	} catch (e) {
 		// Deliberately still ok:true with STUN — voice degrades rather than dies.

@@ -27,6 +27,7 @@
 	let error = $state('');
 	let blocked = $state(false); // private room we're not invited to — stop retrying
 	let mesh = null;
+	let dropSignal = null; // releases the shared signal channel — see joinVoice
 	let voicePeers = $state([]); // [{uid, state}] from the mesh
 	let inVoice = $state(false);
 	let joining = $state(false); // a join is mid-flight (mic perm + roster POST)
@@ -123,8 +124,16 @@
 						}),
 					onPeersChange: (p) => (voicePeers = p)
 				});
-				store.onSignal((from, payload) => mesh.handleSignal(from, payload));
 			}
+			/* OUTSIDE the `if (!mesh)` above, and that placement is the fix rather than
+			   tidiness. `mesh` is created once and never nulled, so a second join
+			   skipped this line entirely — and if a video call had come and gone in
+			   between, the shared signal channel was still pointing at ITS mesh (or,
+			   once that component learned to release it, at nobody). Either way every
+			   offer and answer went nowhere and the bar sat on "connecting…" forever.
+			   Re-claiming on every join costs one assignment and closes both cases. */
+			dropSignal?.();
+			dropSignal = store.onSignal((from, payload) => mesh.handleSignal(from, payload));
 			// mic permission + TURN credentials FIRST — only then enter the
 			// roster, so peers never offer to someone who can't answer yet
 			await mesh.join();
@@ -149,6 +158,10 @@
 		inVoice = false;
 		voicePeers = [];
 		releaseWake();
+		// Hand the channel back rather than leaving a left mesh holding it — the same
+		// reasoning as VideoCallRoom's onDestroy. joinVoice re-claims it.
+		dropSignal?.();
+		dropSignal = null;
 		mesh?.leave();
 		await store.post('voice', { action: 'leave' }).catch(() => {});
 	}
