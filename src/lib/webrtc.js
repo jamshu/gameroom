@@ -13,6 +13,13 @@ const ICE_FLUSH_MS = 300; // batch outgoing candidates into one POST per tick
 export function createVoiceMesh({ myUid, sendSignal, onPeersChange, onStream = null, video = false }) {
 	const peers = new Map(); // uid -> { pc, audioEl, pendingIce, outIce, flushTimer, createdAt }
 	let localStream = null;
+	// Which camera the current video track came from, so flipCamera knows what to
+	// ask for next and ensureMic re-opens the one the user chose after a rejoin.
+	let facing = 'user';
+	// Mirrored from setCameraOff. Lives HERE rather than in the component because
+	// a flip acquires a fresh track, and a fresh track arrives enabled — without
+	// this, flipping would silently un-blank a camera the user turned off.
+	let camOff = false;
 	let joined = false;
 	let iceServers = FALLBACK_ICE;
 	// signals arriving while getUserMedia/permission prompt is still up would
@@ -33,7 +40,10 @@ export function createVoiceMesh({ myUid, sendSignal, onPeersChange, onStream = n
 			// for them turns the browser's echo canceller on for the capture.
 			localStream = await navigator.mediaDevices.getUserMedia({
 				audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-				video
+				// Soft (non-`exact`) facingMode: a desktop webcam that reports no facing
+				// mode is unaffected, and the voice-only mesh still passes plain `false`.
+				// flipCamera uses `exact` — there it has to actually change the device.
+				video: video ? { facingMode: facing } : false
 			});
 		}
 		return localStream;
@@ -203,8 +213,104 @@ export function createVoiceMesh({ myUid, sendSignal, onPeersChange, onStream = n
 	/** Camera on/off for the video room — toggles the local video track's `enabled`,
 	 *  which every peer sees go black without renegotiating. */
 	function setCameraOff(off) {
+		// Remembered even with no stream yet, so it survives a flip (which opens a
+		// brand-new, enabled track) and a rejoin.
+		camOff = off;
 		if (!localStream) return;
 		for (const t of localStream.getVideoTracks()) t.enabled = !off;
+	}
+
+	/** The other camera's deviceId, for the fallback in flipCamera. */
+	async function otherCameraId(currentId) {
+		const devices = await navigator.mediaDevices.enumerateDevices();
+		const cams = devices.filter((d) => d.kind === 'videoinput');
+		if (cams.length < 2) return null;
+		const i = cams.findIndex((d) => d.deviceId === currentId);
+		return cams[(i + 1) % cams.length]?.deviceId ?? null;
+	}
+
+	/**
+	 * Swap the local camera between front and back.
+	 *
+	 * NO RENEGOTIATION: a same-kind replaceTrack does not fire `negotiationneeded`,
+	 * so every peer just starts seeing the other camera mid-call. Returns the new
+	 * facing mode ('user' | 'environment'), or null if there was nothing to flip.
+	 *
+	 * Has to live in here rather than in the component: the senders are never
+	 * retained and `peers` is closure-private, so there is no way to reach an
+	 * RTCRtpSender from outside.
+	 */
+	async function flipCamera() {
+		if (!video || !localStream) return null;
+		const oldTrack = localStream.getVideoTracks()[0];
+		if (!oldTrack) return null;
+
+		const next = facing === 'user' ? 'environment' : 'user';
+		const oldId = oldTrack.getSettings?.().deviceId;
+		/* STOP THE OLD TRACK FIRST. Holding two camera captures open at once
+		   misbehaves on iOS — the same hazard media.js documents for the mic — so
+		   the release has to precede the acquire, and the cost is that a failure
+		   below leaves us with no camera until the rollback re-opens one. */
+		oldTrack.stop();
+
+		const open = (constraints) =>
+			navigator.mediaDevices.getUserMedia({ video: constraints, audio: false });
+
+		let fresh;
+		try {
+			// `exact` on purpose. A soft { facingMode: next } is NOT a usable fallback:
+			// the browser is free to hand back the very same camera and report success,
+			// so the user taps Flip, nothing changes, and nothing reports an error.
+			// Cycling deviceId is the honest second attempt.
+			try {
+				fresh = await open({ facingMode: { exact: next } });
+			} catch {
+				const id = await otherCameraId(oldId);
+				if (!id) throw new Error('No second camera available');
+				fresh = await open({ deviceId: { exact: id } });
+			}
+		} catch (e) {
+			// Put the camera we just stopped back, so a failed flip costs a flicker
+			// rather than the rest of the call. This is a fresh acquisition too and
+			// can fail in turn — then the stream is audio-only and the caller is told.
+			try {
+				const back = await open({ facingMode: facing });
+				await adoptVideoTrack(oldTrack, back.getVideoTracks()[0]);
+			} catch {
+				localStream.removeTrack(oldTrack);
+			}
+			throw e;
+		}
+
+		await adoptVideoTrack(oldTrack, fresh.getVideoTracks()[0]);
+		facing = next;
+		return facing;
+	}
+
+	/**
+	 * Put `newTrack` in `oldTrack`'s place, everywhere it needs to be.
+	 *
+	 * The local stream is mutated IN PLACE rather than replaced wholesale, and that
+	 * is load-bearing twice over: newPeer re-reads localStream.getTracks() for every
+	 * peer that arrives later, so a swapped-out stream object would hand a late
+	 * joiner the old stopped track; and the component is holding this exact object
+	 * as its <video> srcObject.
+	 */
+	async function adoptVideoTrack(oldTrack, newTrack) {
+		if (!newTrack) return;
+		newTrack.enabled = !camOff; // a fresh track is enabled — honour camera-off
+		localStream.removeTrack(oldTrack);
+		localStream.addTrack(newTrack);
+		await Promise.all(
+			[...peers.values()].map((p) =>
+				p.pc
+					.getSenders()
+					.find((s) => s.track?.kind === 'video')
+					?.replaceTrack(newTrack)
+					// one dead peer must not abort the swap for the rest
+					?.catch(() => {})
+			)
+		);
 	}
 
 	/** The local capture, for the video room's own self-preview tile. */
@@ -230,5 +336,22 @@ export function createVoiceMesh({ myUid, sendSignal, onPeersChange, onStream = n
 		return !!localStream && localStream.getAudioTracks().some((t) => t.readyState === 'live');
 	}
 
-	return { join, leave, sync, handleSignal, setMuted, setCameraOff, getLocalStream, micStream, micLive, get joined() { return joined; } };
+	return { join, leave, sync, handleSignal, setMuted, setCameraOff, flipCamera, getLocalStream, micStream, micLive, get joined() { return joined; } };
+}
+
+/**
+ * Does this device have a camera to flip TO?
+ *
+ * Call it after the mesh has joined: before permission is granted some browsers
+ * report a single placeholder videoinput, so asking too early hides the button
+ * on a phone that has two. False on any failure — a missing flip button is a far
+ * better outcome than one that can't work.
+ */
+export async function hasMultipleCameras() {
+	try {
+		const devices = await navigator.mediaDevices.enumerateDevices();
+		return devices.filter((d) => d.kind === 'videoinput').length >= 2;
+	} catch {
+		return false;
+	}
 }

@@ -3,7 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import Avatar from './Avatar.svelte';
-	import { createVoiceMesh } from '$lib/webrtc.js';
+	import { createVoiceMesh, hasMultipleCameras } from '$lib/webrtc.js';
 	import { createFullscreen, portal } from '$lib/fullscreen.svelte.js';
 
 	let { store, game, members, myUid } = $props();
@@ -21,6 +21,11 @@
 	let error = $state('');
 	let muted = $state(false);
 	let camOff = $state(false);
+	// Front/back camera. `canFlip` stays false until we've actually seen two
+	// cameras, so the button never appears where it could not work.
+	let facing = $state('user');
+	let canFlip = $state(false);
+	let flipping = $state(false);
 	let localStream = $state(null);
 	let peers = $state([]); // [{ uid, state }] from the mesh
 	let streams = $state(new Map()); // uid -> MediaStream
@@ -95,6 +100,10 @@
 			await store.post('voice', { action: 'join' });
 			joined = true;
 			mesh.sync(callUids);
+			// AFTER join, never before: until permission is granted some browsers
+			// report a single placeholder camera, which would hide the button on a
+			// phone that has two.
+			canFlip = await hasMultipleCameras();
 		} catch (e) {
 			error = e?.message || 'Could not start your camera';
 		}
@@ -123,6 +132,21 @@
 	function toggleCam() {
 		camOff = !camOff;
 		mesh?.setCameraOff(camOff);
+	}
+	// Front <-> back. The mesh swaps the track into every peer connection without
+	// renegotiating, so the call does not drop; all this has to track is which way
+	// round we ended up, because that decides whether the self-preview is mirrored.
+	async function flipCam() {
+		if (flipping || !mesh) return;
+		flipping = true;
+		error = '';
+		try {
+			facing = (await mesh.flipCamera()) || facing;
+		} catch (e) {
+			error = e?.message || 'Could not switch camera';
+		} finally {
+			flipping = false;
+		}
 	}
 	async function leaveCall() {
 		mesh?.leave();
@@ -163,7 +187,14 @@
 
 	{#snippet selfInner()}
 		<!-- svelte-ignore a11y_media_has_caption -->
-		<video use:srcObject={localStream} autoplay playsinline muted class:off={camOff}></video>
+		<video
+			use:srcObject={localStream}
+			autoplay
+			playsinline
+			muted
+			class:off={camOff}
+			class:rear={facing === 'environment'}
+		></video>
 		{#if camOff}
 			<div class="tile-avatar"><Avatar uid={myUid} name={nameOf(myUid)} size={floating ? 40 : 64} /></div>
 		{/if}
@@ -232,6 +263,11 @@
 			<button class="btn" class:btn--danger={camOff} onclick={toggleCam}>
 				{camOff ? '📷 Camera on' : '🎥 Camera off'}
 			</button>
+			{#if canFlip}
+				<button class="btn" onclick={flipCam} disabled={flipping} title="Switch camera">
+					{flipping ? '🔄 Switching…' : '🔄 Flip'}
+				</button>
+			{/if}
 			<button class="btn" onclick={fs.toggle}>
 				{fs.isFs ? '✕ Exit' : '⛶ Fullscreen'}
 			</button>
@@ -338,6 +374,11 @@
 	}
 	.tile--me video {
 		transform: scaleX(-1); /* mirror own preview, like every call app */
+	}
+	/* ...but only for the front camera. Mirroring the REAR camera is just wrong —
+	   you'd be shown a flipped version of the scene in front of you. */
+	.tile--me video.rear {
+		transform: none;
 	}
 	.tile video.off {
 		visibility: hidden;
