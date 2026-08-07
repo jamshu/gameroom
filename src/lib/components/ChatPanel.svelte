@@ -1,4 +1,6 @@
 <script>
+	// aliased: `tick` is already taken below by the recording interval handle
+	import { tick as nextTick, untrack } from 'svelte';
 	import Avatar from './Avatar.svelte';
 	import {
 		resizeImage,
@@ -29,21 +31,71 @@
 
 	const nameOf = $derived((uid) => members.find((m) => m.uid === Number(uid))?.name || `#${uid}`);
 
+	/* Only the newest PAGE messages are rendered; older ones are revealed a page at
+	   a time. The store already holds up to 200 (it trims beyond that), so this is
+	   a RENDER window, not a fetch — there is no chat-history endpoint to page
+	   against. The win is DOM size: a long room's backlog is mostly images and
+	   <audio> elements, and mounting two hundred of them is what made opening the
+	   panel feel heavy. */
+	const PAGE = 20;
+	let shown = $state(PAGE);
+	const visible = $derived($store.chat.slice(-shown));
+	const olderCount = $derived(Math.max(0, $store.chat.length - shown));
+
+	/* Keep already-revealed history revealed when a new message lands. `shown`
+	   counts back from the END, so without this a new arrival would silently push
+	   the oldest visible message back out of view while someone is reading it. */
+	let prevLen = 0;
+	$effect(() => {
+		const len = $store.chat.length;
+		const grew = len - prevLen;
+		prevLen = len;
+		// untracked: this effect writes `shown`, and reading it reactively would
+		// make it retrigger itself
+		if (grew > 0 && untrack(() => shown) > PAGE) shown = untrack(() => shown) + grew;
+	});
+
 	// Consecutive messages from the same sender are grouped: only the first of a
 	// run carries the avatar + name, so the panel reads as a conversation.
 	const rows = $derived(
-		$store.chat.map((msg, i) => ({
+		visible.map((msg, i) => ({
 			msg,
 			mine: msg.senderUid === myUid,
-			head: i === 0 || $store.chat[i - 1].senderUid !== msg.senderUid
+			head: i === 0 || visible[i - 1].senderUid !== msg.senderUid
 		}))
 	);
 
-	// autoscroll on new messages
+	/* Autoscroll, but only when the reader is already at the bottom. Following the
+	   tail unconditionally yanks the view away from anyone scrolled up reading
+	   history the moment someone types. Tracked on scroll rather than measured in
+	   the effect below, because by the time that effect runs the new message is
+	   already in the DOM and "were we at the bottom?" can no longer be answered. */
+	const NEAR_BOTTOM_PX = 120;
+	let stickToBottom = true;
+	function onScroll() {
+		if (!listEl) return;
+		stickToBottom = listEl.scrollHeight - listEl.scrollTop - listEl.clientHeight < NEAR_BOTTOM_PX;
+	}
+
 	$effect(() => {
 		$store.chat.length;
-		if (listEl) requestAnimationFrame(() => (listEl.scrollTop = listEl.scrollHeight));
+		if (listEl && stickToBottom) {
+			requestAnimationFrame(() => listEl && (listEl.scrollTop = listEl.scrollHeight));
+		}
 	});
+
+	/** Reveal another page of history without the view jumping. */
+	async function loadOlder() {
+		const el = listEl;
+		const beforeHeight = el?.scrollHeight ?? 0;
+		const beforeTop = el?.scrollTop ?? 0;
+		shown += PAGE;
+		await nextTick();
+		// Hold the reader's place: everything new was inserted ABOVE them, so shift
+		// scrollTop by exactly how much the content grew. Without this the list
+		// jumps to the top and they lose their spot.
+		if (el) el.scrollTop = beforeTop + (el.scrollHeight - beforeHeight);
+	}
 
 	// a recording in flight must not outlive the panel
 	$effect(() => () => {
@@ -230,7 +282,12 @@
 		     here would be a privacy claim the app no longer keeps. -->
 		<span>Sent over a secure connection.</span>
 	</p>
-	<div class="chat-list" bind:this={listEl}>
+	<div class="chat-list" bind:this={listEl} onscroll={onScroll}>
+		{#if olderCount}
+			<button type="button" class="load-older" onclick={loadOlder}>
+				↑ {olderCount} older {olderCount === 1 ? 'message' : 'messages'}
+			</button>
+		{/if}
 		{#each rows as { msg, mine, head } (msg.id)}
 			<div
 				class="chat-msg {mine ? 'chat-msg--mine' : ''} {head ? 'chat-msg--head' : ''}"
@@ -371,6 +428,42 @@
 		flex-direction: column;
 		gap: 2px;
 		padding-bottom: 8px;
+		/* the tail is what you care about; keep it pinned when the panel resizes */
+		overflow-anchor: auto;
+		scrollbar-width: thin;
+		scrollbar-color: var(--border) transparent;
+	}
+	.chat-list::-webkit-scrollbar {
+		width: 6px;
+	}
+	.chat-list::-webkit-scrollbar-thumb {
+		background: var(--border);
+		border-radius: 999px;
+	}
+	/* Sticky so it stays reachable while you scroll up through what it revealed,
+	   rather than disappearing off the top the moment you use it. */
+	.load-older {
+		position: sticky;
+		top: 0;
+		z-index: 1;
+		align-self: center;
+		margin-bottom: 6px;
+		padding: 5px 14px;
+		border: 1px solid var(--border);
+		border-radius: 999px;
+		background: var(--surface-2, var(--surface));
+		color: var(--text-dim);
+		font: inherit;
+		font-size: 0.76rem;
+		font-weight: 600;
+		cursor: pointer;
+		backdrop-filter: blur(6px);
+		transition: color 0.15s, border-color 0.15s;
+	}
+	.load-older:hover,
+	.load-older:focus-visible {
+		color: var(--text);
+		border-color: var(--accent);
 	}
 	.chat-msg {
 		display: flex;
@@ -394,12 +487,38 @@
 	.chat-bubble {
 		background: var(--surface);
 		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		padding: 6px 10px;
+		/* generous and asymmetric — the squared corner sits beside the avatar, which
+		   is the shape every messaging app uses to point a bubble at its sender */
+		border-radius: 16px 16px 16px 5px;
+		padding: 7px 12px;
 		max-width: 85%;
 		font-size: 0.9rem;
+		line-height: 1.4;
 		display: flex;
 		flex-direction: column;
+		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+		/* long links and pasted ids must wrap rather than stretch the panel */
+		overflow-wrap: anywhere;
+		animation: bubble-in 0.16s ease-out;
+	}
+	.chat-msg--mine .chat-bubble {
+		border-radius: 16px 16px 5px 16px;
+	}
+	/* only the bubble nearest the avatar gets the point; the rest of a run stays
+	   fully rounded so a burst reads as one block */
+	.chat-msg:not(.chat-msg--head) .chat-bubble {
+		border-radius: 16px;
+	}
+	@keyframes bubble-in {
+		from {
+			opacity: 0;
+			transform: translateY(4px);
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.chat-bubble {
+			animation: none;
+		}
 	}
 	/* media fills the bubble; the caption below keeps the normal inset */
 	.chat-bubble--media {
@@ -410,10 +529,15 @@
 	.chat-bubble--media > span:last-child {
 		padding: 0 6px;
 	}
+	/* A TINT of the accent, not the accent itself. Solid #ff4d6d is the app's
+	   loudest colour — right for a primary button you press once, wrong for a
+	   column of it running down a chat log, where it fought the text for attention
+	   and made every one of your own lines read as an alert. This keeps the bubble
+	   unmistakably yours (and on-brand) while letting the words sit on top of it. */
 	.chat-msg--mine .chat-bubble {
-		background: var(--accent);
-		color: var(--on-accent);
-		border-color: transparent;
+		background: color-mix(in srgb, var(--accent) 18%, var(--surface-2));
+		color: var(--text);
+		border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
 		align-items: flex-end;
 	}
 	.chat-who {
@@ -423,9 +547,10 @@
 		letter-spacing: 0.01em;
 		margin-bottom: 1px;
 	}
+	/* --on-accent is a near-black maroon, chosen to sit on the solid accent fill
+	   this bubble no longer has. On the tinted background it would be unreadable. */
 	.chat-msg--mine .chat-who {
-		color: var(--on-accent);
-		opacity: 0.75;
+		color: color-mix(in srgb, var(--accent) 55%, var(--text));
 	}
 	/* Reads as the muted placeholder it replaced until you hover it, so an empty
 	   chat still looks calm rather than like it's asking for something. */
@@ -510,12 +635,22 @@
 	}
 	.chat-input {
 		display: flex;
-		gap: 8px;
-		margin-top: 8px;
+		align-items: center;
+		gap: 6px;
+		margin-top: 10px;
+		padding-top: 10px;
+		/* a hairline instead of bare space: separates the composer from the feed so
+		   the last bubble doesn't read as part of the input row */
+		border-top: 1px solid var(--border);
 	}
 	.chat-input .input {
 		flex: 1;
 		min-width: 0;
+		border-radius: 999px;
+	}
+	/* round the icon buttons to match the pill composer */
+	.chat-input :global(.btn) {
+		border-radius: 999px;
 	}
 	.lightbox {
 		position: fixed;
