@@ -268,6 +268,26 @@
 		}
 	}
 
+	/**
+	 * Back to the dashboard, still a member.
+	 *
+	 * This is what almost everyone pressing the old "Leave" actually wanted — they
+	 * meant "close this screen", not "give up my seat", and for a private room the
+	 * latter costs them a fresh invite to undo. So Quit takes that slot and Leave
+	 * moves into the ⋮ menu.
+	 *
+	 * No confirm: nothing is lost, and walking back in undoes it.
+	 *
+	 * leaveVoice() is NOT cosmetic. The beforeunload beacon does not fire on an SPA
+	 * navigation, and onDestroy's mesh.leave() only tears the peers down locally —
+	 * it never tells the server. Without this you stay listed in the voice roster
+	 * for everyone else until the stale-ghost effect happens to catch it later.
+	 */
+	async function quitRoom() {
+		if (inVoice) await leaveVoice();
+		goto('/');
+	}
+
 	async function leaveRoom() {
 		if (!confirm('Leave this room?')) return;
 		if (inVoice) await leaveVoice();
@@ -301,6 +321,22 @@
 			savingName = false;
 		}
 	}
+
+	/* ⋮ menu plumbing, copied from RoomLobby rather than shared. The listener has to
+	   live HERE too: RoomLobby's identical effect is unmounted for the whole time a
+	   game is running, so without this copy the header kebab would stop closing on
+	   outside-click exactly when the room is in play. Both sweep every open kebab,
+	   so having the two mounted together is harmless. */
+	$effect(() => {
+		function onDown(e) {
+			for (const d of document.querySelectorAll('details.kebab[open]')) {
+				if (!d.contains(e.target)) d.open = false;
+			}
+		}
+		document.addEventListener('pointerdown', onDown);
+		return () => document.removeEventListener('pointerdown', onDown);
+	});
+	const closeMenu = (e) => e.currentTarget.closest('details')?.removeAttribute('open');
 
 	let deleting = $state(false);
 	async function deleteRoom() {
@@ -562,12 +598,32 @@
 						{ending ? 'Ending…' : 'End game'}
 					</button>
 				{/if}
-				{#if isHost}
-					<button class="btn btn--ghost btn--sm btn--danger" onclick={deleteRoom} disabled={deleting}>
-						{deleting ? 'Deleting…' : '🗑 Delete'}
-					</button>
-				{/if}
-				<button class="btn btn--ghost btn--sm" onclick={leaveRoom}>Leave</button>
+				<!-- The two irreversible actions live behind the ⋮ so neither can be hit
+				     by someone reaching for the way out. Labels say "room" because next
+				     to Quit the bare verbs no longer tell you what they act on. -->
+				<details class="kebab">
+					<summary class="btn btn--ghost btn--sm" title="Room actions" aria-label="Room actions">⋮</summary>
+					<div class="kebab-panel">
+						<button
+							class="btn btn--ghost btn--sm"
+							onclick={(e) => {
+								closeMenu(e);
+								leaveRoom();
+							}}>Leave room</button
+						>
+						{#if isHost}
+							<button
+								class="btn btn--ghost btn--sm btn--danger"
+								disabled={deleting}
+								onclick={(e) => {
+									closeMenu(e);
+									deleteRoom();
+								}}>{deleting ? 'Deleting…' : '🗑 Delete room'}</button
+							>
+						{/if}
+					</div>
+				</details>
+				<button class="btn btn--ghost btn--sm" onclick={quitRoom}>Quit</button>
 			</div>
 		</header>
 
@@ -667,6 +723,40 @@
 		align-items: center;
 		gap: 8px;
 		flex-shrink: 0;
+	}
+	/* Duplicated from RoomLobby, not imported: Svelte scopes styles per component,
+	   so there is no way to share these without lifting the whole menu into one. */
+	.kebab {
+		position: relative;
+	}
+	.kebab > summary {
+		list-style: none;
+		cursor: pointer;
+		line-height: 1;
+	}
+	.kebab > summary::-webkit-details-marker {
+		display: none;
+	}
+	.kebab-panel {
+		position: absolute;
+		right: 0;
+		top: 100%;
+		z-index: 10;
+		margin-top: 4px;
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		padding: 6px;
+		min-width: 150px;
+		max-width: min(220px, calc(100vw - 24px));
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: 10px;
+		box-shadow: var(--shadow-sm);
+	}
+	.kebab-panel .btn {
+		justify-content: flex-start;
+		width: 100%;
 	}
 	.room-notice {
 		display: inline-block;

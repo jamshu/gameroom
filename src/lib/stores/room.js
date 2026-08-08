@@ -95,6 +95,9 @@ export function createRoomStore(roomId) {
 	// room/members. Acts as the version gate those two rows don't otherwise have —
 	// see poll().
 	let roomEpoch = 0;
+	// Has the hydrating first poll landed? Until it has, an events batch is the
+	// room's existing history rather than news — see the `replay` arg on ingest.
+	let firstPollDone = false;
 	// Rosters carry a server timestamp for the same reason: two pushes can arrive
 	// out of order and there is no version field to compare.
 	let lastRosterTs = 0;
@@ -192,7 +195,7 @@ export function createRoomStore(roomId) {
 	 * id; `state` merges version-gated; `room`/`members` update only when present
 	 * (the push carries neither — presence still rides the poll).
 	 */
-	function ingest({ events = [], state, room, members, upto }, via = 'poll') {
+	function ingest({ events = [], state, room, members, upto, replay = false }, via = 'poll') {
 		// ONE rule for advancing the cursor, and it is always a watermark the SERVER
 		// computed: "I have filtered and delivered everything at or below this that
 		// you are entitled to". The poll passes its `d.cursor`; the socket passes
@@ -222,8 +225,22 @@ export function createRoomStore(roomId) {
 					chat.push({ id: ev.id, senderUid: ev.senderUid, ...ev.payload });
 				} else if (ev.type === 'signal') signalHandler?.(ev.senderUid, ev.payload);
 				else if (ev.type === 'system') {
+					/* STORED ALWAYS, ANNOUNCED ONLY WHEN IT IS NEWS.
+
+					   A bulk handout replays the newest 200 retained events, and
+					   announcing those is what put "X ended the game" and "X waved" back
+					   on screen every time a room was opened — at the notice queue's
+					   dwell that is about twelve minutes of banner. It also re-fired the
+					   handler's side effects: host-changed triggers a poll, and
+					   game-abandoned re-arms the window that suppresses a genuine
+					   member-left.
+
+					   `replay` is passed IN by the caller rather than inferred here. The
+					   inference this replaced — "cursor is still 0" — was wrong in a way
+					   the leave-announce specs caught: a quiet room legitimately sits at
+					   cursor 0, so the FIRST real event in it would have been swallowed. */
 					evs.push(ev);
-					systemHandler?.(ev);
+					if (!replay) systemHandler?.(ev);
 				}
 			}
 			const next = { ...s, chat: trimChat(chat), events: evs.slice(-50), error: null };
@@ -300,8 +317,15 @@ export function createRoomStore(roomId) {
 				state: d.state,
 				room: overtaken ? undefined : d.room,
 				members: overtaken ? undefined : d.members,
-				upto: d.cursor
+				upto: d.cursor,
+				/* The FIRST poll of this store's life is hydration — `since=0` returns
+				   whatever history the room already has, which is not news to announce.
+				   Every later poll is a genuine delta, including the one that finally
+				   carries the first event in a previously silent room. `gap` is a
+				   rebuild at any point in the store's life. */
+				replay: !firstPollDone || !!d.gap
 			}, 'poll');
+			firstPollDone = true;
 			errorStreak = 0;
 		} catch (e) {
 			if (TERMINAL_CODES.has(e?.code)) {
@@ -523,6 +547,9 @@ export function createRoomStore(roomId) {
 				console.warn('[socket] evacuated — rebuilding from the HTTP envelope');
 				cursor = 0;
 				appliedEventIds.clear();
+				// the rebuild poll that follows is hydration, not news — same reasoning
+				// as the first poll after open()
+				firstPollDone = false;
 				roomEpoch++;
 				store.update((s) => ({ ...s, chat: [], events: [] }));
 				schedule(0);
@@ -551,7 +578,16 @@ export function createRoomStore(roomId) {
 					roomEpoch++;
 				}
 				lastRosterTs = f.ts ?? lastRosterTs;
-				ingest({ events: f.events ?? [], state: f.state, room: f.room, members: f.members, upto: f.upto }, 'push');
+				/* replay: true UNCONDITIONALLY. A welcome/resync is by definition "here
+				   is everything you may not have" — on a cursor the object could not
+				   trust it is the newest 200 retained events, which is the replay this
+				   whole change exists to silence.
+				   The cost, accepted deliberately: after a socket blip you are not told
+				   about what happened while you were away. The state itself still
+				   arrives, so nothing is lost but the banner — and a rule that tried to
+				   tell a short blip from a rebuild is precisely the cleverness that
+				   swallowed a quiet room's first real event. */
+				ingest({ events: f.events ?? [], state: f.state, room: f.room, members: f.members, upto: f.upto, replay: true }, 'push');
 				// Re-arm the poll on the new (much longer) push cadence.
 				schedule();
 				break;

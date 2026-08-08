@@ -59,7 +59,7 @@ export function uptoOf(events, floor = 0) {
  * `gap` tells the client its cursor fell below the retained log and it must
  * resync rather than assume continuity — the HTTP fallback carries the same flag.
  */
-export function welcome({ room, members, state, events, epoch, gap = false }) {
+export function welcome({ room, members, state, events, epoch, gap = false, uptoFloor = 0 }) {
 	const f = {
 		t: gap ? 'resync' : 'welcome',
 		v: PROTOCOL_VERSION,
@@ -67,7 +67,14 @@ export function welcome({ room, members, state, events, epoch, gap = false }) {
 		members,
 		state,
 		events,
-		upto: uptoOf(events),
+		/* EMPTY-ONLY, and the branch is deliberate rather than passing uptoFloor as
+		   uptoOf's `floor`: that arg SEEDS the running max, so a floor above the
+		   delivered ids would win and a partial replay would claim it — the precise
+		   thing doseq-check forbids and how the voice dropouts happened.
+		   With nothing delivered there is no id to step over, so the caller's floor
+		   is what lets a quiet room's client advance off cursor 0 instead of
+		   re-requesting the whole retained log on every reconnect. */
+		upto: events.length ? uptoOf(events) : Number(uptoFloor) || 0,
 		epoch
 	};
 	if (gap) f.gap = true;

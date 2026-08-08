@@ -407,7 +407,10 @@ export class RoomDO {
 					state: state ? stateView(state, uid) : null,
 					events,
 					epoch: kvGet(this.sql, 'epoch', 0),
-					gap
+					gap,
+					// Empty replay only: without it a quiet room's client never leaves
+					// cursor 0 and re-takes the newestFor branch above on every reconnect.
+					uptoFloor: gap ? 0 : Math.max(cursor, headSeq(this.sql))
 				})
 			)
 		);
@@ -537,10 +540,29 @@ export class RoomDO {
 					// Free: this call was already being made for the events.
 					liveUids: [...this.liveUids()],
 					events,
-					// uptoOf, not headSeq: targeted signals are filtered out of `events`
-					// for everyone but their recipient, so the head can cover an event
-					// this caller was never entitled to and will never refetch.
-					cursor: uptoOf(events, gap ? 0 : since),
+					/* uptoOf, not headSeq: targeted signals are filtered out of `events`
+					   for everyone but their recipient, so a PARTIAL replay must never
+					   claim the head — that is the invariant doseq-check asserts, and
+					   stamping the head is how the voice dropouts happened.
+
+					   The empty case is different and is the one fixed here. Falling back
+					   to `since` left a client that asked from 0 and matched nothing
+					   pinned at 0 forever, so every reconnect re-took the DO's
+					   `cursor === 0` branch and re-sent the newest 200 rows. When the
+					   filter returned NOTHING there is nothing to step over: the head is
+					   a server-computed watermark from the same synchronous op that did
+					   the filtering, so "you have everything you are entitled to up to
+					   here" is exactly true. apply() is serialized, so no append can
+					   interleave between the query and this read.
+
+					   Branch, NOT uptoOf's floor arg: that seeds the running max, so a
+					   floor above the delivered ids would win and a partial replay would
+					   claim the head. */
+					cursor: events.length
+						? uptoOf(events)
+						: gap
+							? 0
+							: Math.max(since, headSeq(this.sql)),
 					gap
 				};
 			}

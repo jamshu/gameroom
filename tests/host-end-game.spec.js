@@ -80,7 +80,10 @@ test('host ends a game in progress and the room lands back in the lobby', async 
 test('only the host sees End game, and only while a game is running', async ({ page }) => {
 	await mockBackend(page, { r: room({ hostUid: 999, hostName: 'Someone' }) });
 	await page.goto('/room/1');
-	await expect(page.getByRole('button', { name: 'Leave' })).toBeVisible();
+	// Quit, not Leave: the header's way out no longer drops your membership — that
+	// moved into the ⋮ menu. This assertion is only here to prove the header
+	// rendered at all before checking End game is absent from it.
+	await expect(page.getByRole('button', { name: 'Quit' })).toBeVisible();
 	await expect(page.getByRole('button', { name: 'End game' })).toHaveCount(0);
 });
 
