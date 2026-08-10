@@ -61,6 +61,19 @@ self.addEventListener('push', (event) => {
 	);
 });
 
+// Stash the destination so the app can self-route on launch. iOS home-screen
+// PWAs IGNORE the URL passed to openWindow()/navigate() and always start at the
+// manifest start_url (the dashboard); the app reads this on mount / on resume
+// (see +layout.svelte consumePendingNav) to land in the room across platforms.
+async function stashNav(url) {
+	try {
+		const c = await caches.open('gr-nav');
+		await c.put('/__pending_nav', new Response(JSON.stringify({ url, at: Date.now() })));
+	} catch {
+		/* cache unavailable — navigate/openWindow below is the fallback */
+	}
+}
+
 self.addEventListener('notificationclick', (event) => {
 	event.notification.close();
 	// Decline just dismisses — no navigation, no server call.
@@ -68,30 +81,27 @@ self.addEventListener('notificationclick', (event) => {
 	const target = event.notification.data?.url || '/';
 	event.waitUntil(
 		(async () => {
-			// Stash the destination so the app can self-route on launch. iOS home-
-			// screen PWAs IGNORE the URL passed to openWindow()/navigate() and always
-			// start at the manifest start_url (the dashboard) — reading this on mount
-			// is the only reliable way to land them in the room across platforms.
-			try {
-				const c = await caches.open('gr-nav');
-				await c.put('/__pending_nav', new Response(JSON.stringify({ url: target, at: Date.now() })));
-			} catch {
-				/* cache unavailable — fall back to navigate/openWindow below */
-			}
 			const wins = await clients.matchAll({ type: 'window', includeUncontrolled: true });
 			const client = wins.find((w) => w.url.includes(self.location.origin));
 			if (client) {
+				// WARM path: an app window exists. Stash FIRST — iOS ignores the
+				// navigate() URL, so focus() (which flips the tab visible) must find the
+				// destination already in the cache for consumePendingNav to route there.
+				await stashNav(target);
 				try {
 					await client.focus();
-					if (client.navigate) {
-						await client.navigate(target);
-						return;
-					}
+					if (client.navigate) await client.navigate(target);
 				} catch {
-					/* navigate blocked — open a fresh window instead */
+					/* focus/navigate blocked — leave it to the stashed nav on resume */
 				}
+				return;
 			}
+			// COLD path: no window. openWindow() needs the click's user activation, and
+			// awaiting caches BEFORE it consumes that activation — on Android the window
+			// then never opens. Open first (one await since matchAll), stash after: the
+			// app boots seconds later and reads the cache on mount.
 			await clients.openWindow(target);
+			await stashNav(target);
 		})()
 	);
 });
