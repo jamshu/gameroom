@@ -18,6 +18,8 @@
 	import Leaderboard from '$lib/components/Leaderboard.svelte';
 	import Scoreboard from '$lib/components/Scoreboard.svelte';
 	import { createHold } from '$lib/holdclock.svelte.js';
+	import { arm, playWave } from '$lib/sound.js';
+	import { chessOutcomeText } from '$lib/shared/gamelogic.js';
 
 	const roomId = $page.params.id;
 	const store = createRoomStore(roomId);
@@ -353,6 +355,11 @@
 	}
 
 	onMount(() => {
+		// Arm the audio unlock from the ROOM, not just the boards. A wave lands in
+		// the lobby, where none of the board components are mounted — without this
+		// the first gesture to unlock the AudioContext might never be listened for
+		// and the wave chime would be silent for anyone who hadn't started a game.
+		arm();
 		loadDetail();
 		detailTimer = setInterval(() => {
 			if (!accepted) loadDetail();
@@ -416,10 +423,15 @@
 			const showing = g.phase === 'finished';
 			return { key: showing ? `final-${g.draw}` : null, ms: FINAL_REVEAL_MS };
 		}
-		// Skip resign / agreed-draw — no move to replay, so don't delay the board.
+		// Skip the endings that applied NO MOVE — resign, agreed draw, and a flag on
+		// time. There is nothing for the board to animate, so the hold would be a
+		// blank 1.4s delay in front of the leaderboard. Checkmate and stalemate are
+		// deliberately NOT in this list: those do land a final move worth seeing.
+		//
 		// A constant key is fine: `result` is null between games, so the hold resets
 		// through null on a rematch and re-fires on the next win.
-		const replay = g.result && !(g.endReason === 'resign' || g.endReason === 'draw-agreed');
+		const NO_REPLAY = new Set(['resign', 'draw-agreed', 'timeout']);
+		const replay = g.result && !NO_REPLAY.has(g.endReason);
 		return { key: replay ? 'win' : null, ms: REPLAY_MS[g.type] || 1600 };
 	});
 
@@ -534,7 +546,30 @@
 			say(`✏️ ${who(ev.senderUid)} renamed the room to “${ev.payload.name}”.`);
 		} else if (kind === 'wave') {
 			// only worth saying when someone else waved — the sender knows they did
-			if (Number(ev.payload.uid) !== myUid) say(`👋 ${who(ev.payload.uid)} waved!`);
+			if (Number(ev.payload.uid) !== myUid) {
+				say(`👋 ${who(ev.payload.uid)} waved!`);
+				// Silent if nothing has been tapped since load — the AudioContext is
+				// still suspended and no amount of arming fixes that, it's the autoplay
+				// policy. The push notification is the fallback for that case.
+				playWave();
+			}
+		} else if (kind === 'lobby-reset') {
+			// Nobody pressed anything — the idle-reset cron cleared the finished round.
+			// Without this the leaderboard just vanishes and the lobby appears, which
+			// reads as the app losing the result rather than moving on from it.
+			say('🔄 The last round was cleared — back to the lobby.');
+		} else if (kind === 'game-over') {
+			// Gated on endReason, which ONLY chess sets. The other games publish this
+			// same kind with an incompatible payload — carroms sends a team id in
+			// `result`, ludo a uid in `winner`, thief nothing at all — and reading a
+			// carrom team as a chess colour would announce the wrong winner. They
+			// also each end on a board everyone is already watching, so they lose
+			// nothing by staying silent here.
+			const { result, endReason, winnerUid } = ev.payload || {};
+			if (endReason) {
+				const isYou = Number(winnerUid) === myUid;
+				say(`♟️ ${chessOutcomeText(result, endReason, who(winnerUid), isYou)}.`);
+			}
 		} else if (kind === 'role-changed') {
 			// the player who lost their seat is the one who has to be told: the role
 			// chip flips in a list they may not be looking at, and they'd otherwise

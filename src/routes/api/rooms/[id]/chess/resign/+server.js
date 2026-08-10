@@ -40,7 +40,13 @@ export async function POST({ params, cookies }) {
 		await appendEvent(
 			params.id,
 			'system',
-			{ kind: 'game-over', result: game.result, by: 'resign', uid },
+			{
+				kind: 'game-over',
+				result: game.result,
+				by: 'resign',
+				endReason: 'resign',
+				winnerUid: game.players[game.result] ?? null
+			},
 			uid
 		);
 		return json({ ok: true, result: game.result, state: stateView(state, uid) });

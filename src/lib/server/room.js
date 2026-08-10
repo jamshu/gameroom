@@ -388,6 +388,20 @@ export async function readRoomMedia(roomId, attId) {
 }
 
 export async function appendEvent(roomId, type, payload, senderUid, targetUid = null) {
+	// Chat carries its own send time IN THE PAYLOAD, and only chat does.
+	//
+	// The DO's events table already has a `ts` column, but rowToEvent drops it and
+	// the Odoo archive has only `create_date` — which is the time the write-behind
+	// alarm FLUSHED the row, not the time anyone typed. Minutes out, and only for
+	// DO rooms, so the two transports would disagree about when the same message
+	// was sent. A payload field is identical on both paths and needs no change to
+	// the schema, the frame codec or the chat endpoint.
+	//
+	// Chat-only because every other event type is either transient (signals, aim
+	// cursors) or already ordered by its own state — paying the bytes across a
+	// WebRTC signal flood buys nothing.
+	if (type === 'chat') payload = { ...(payload ?? {}), ts: Date.now() };
+
 	// DO rooms mint the id inside the object, so a chat message or a WebRTC signal
 	// costs no Odoo create at all — the write-behind alarm archives it later. Safe
 	// only because the sequence was seeded above Odoo's highest id at the
@@ -728,6 +742,38 @@ export async function resetRound(state, members) {
 	state.game = null;
 }
 
+/** Odoo datetimes are naive UTC strings, 'YYYY-MM-DD HH:MM:SS'. */
+export function odooDatetime(ms = Date.now()) {
+	return new Date(ms).toISOString().slice(0, 19).replace('T', ' ');
+}
+
+/**
+ * Put a finished room back in its lobby: scores cleared, game dropped, status
+ * flipped, everyone told.
+ *
+ * Extracted from `rematch` so the idle-reset cron performs the IDENTICAL four
+ * steps. Doing three of them is the trap here — a status flip on its own leaves
+ * the DO's cached room copy (and so every connected client) still saying
+ * `finished`, which is why an Odoo-side scheduled action was rejected for this
+ * job: the leaderboard would never come down. The `pushRoster` at the end is
+ * what actually moves the UI; without it clients wait out their 5-minute safety
+ * poll. Callers with no uid of their own (the cron) pass senderUid 0.
+ */
+export async function returnToLobby(roomId, room, members, { senderUid = 0, kind = 'lobby-reset' } = {}) {
+	const state = parseState(room) || { v: 0, voice: [], game: null };
+	// keep state.voice intact — this resets the game, not a live call
+	await resetRound(state, members);
+	// x_studio_finished_at back to false or the room stays permanently eligible
+	// and the cron re-resets it on every single tick.
+	await writeState(roomId, state, { x_studio_status: 'lobby', x_studio_finished_at: false });
+	await appendEvent(roomId, 'system', { kind }, senderUid);
+	// `finished → lobby` plus the scores resetRound just cleared: both live on
+	// rows the state push doesn't carry. resetRound updated them in hand.
+	room.x_studio_status = 'lobby';
+	await pushRoster(roomId, room, members);
+	return state;
+}
+
 /**
  * Who takes the room when the current host goes. Longest-standing accepted
  * member wins — member ids ascend with join order, the same convention
@@ -920,6 +966,7 @@ export async function finishRoom(roomId, members, scoresByUid = {}, room = null,
 		if (state.game) state.game.awarded = true;
 	}
 
+	const finishedAt = odooDatetime();
 	await Promise.all([
 		...scored.map((m) =>
 			adminExecute(MEMBER, 'write', [[m.id], { x_studio_score: scoresByUid[m.x_studio_user_id[0]] }])
@@ -931,9 +978,16 @@ export async function finishRoom(roomId, members, scoresByUid = {}, room = null,
 		   passed, so the object's `Math.max(current, incoming) + 1` cannot conflict,
 		   and it hands `state.v` back so the caller's own stateView echo stays
 		   current. Once per finished game is not worth reordering eight routes for. */
+		/* x_studio_finished_at rides along in the SAME write, costing no extra Odoo
+		   call. It is what the idle-reset cron filters on: `write_date` would have
+		   needed no schema change but any later write to the room row (a rename, a
+		   visibility change) would reset the clock and postpone the reset. */
 		state
-			? writeState(roomId, state, { x_studio_status: 'finished' })
-			: adminExecute(ROOM, 'write', [[Number(roomId)], { x_studio_status: 'finished' }])
+			? writeState(roomId, state, { x_studio_status: 'finished', x_studio_finished_at: finishedAt })
+			: adminExecute(ROOM, 'write', [
+					[Number(roomId)],
+					{ x_studio_status: 'finished', x_studio_finished_at: finishedAt }
+				])
 	]);
 
 	// Every game ends through here, so this is the one place that has to announce
@@ -945,6 +999,65 @@ export async function finishRoom(roomId, members, scoresByUid = {}, room = null,
 		room.x_studio_status = 'finished';
 		await pushRoster(roomId, room, members);
 	}
+}
+
+/**
+ * How long a finished room keeps its leaderboard up before returning to lobby.
+ *
+ * Long enough that everyone gets to read the result and the host still has a
+ * clear run at the Rematch button; short enough that a room abandoned on the
+ * wash-up screen doesn't sit there as a dead end. The cron ticks every 10
+ * minutes, so the real wait is 15–25.
+ */
+const FINISHED_IDLE_MIN = 15;
+/* Each room costs a getRoom + getMembers + the four writes returnToLobby makes,
+   so ~8 subrequests. Deliberately well under SWEEP_BATCH's 60: this runs every
+   ten minutes rather than daily, so a backlog drains over the next few ticks
+   instead of needing to clear in one. */
+const RESET_BATCH = 20;
+
+/**
+ * Return finished rooms to the lobby once their leaderboard has been up a while.
+ *
+ * Driven by a Cron Trigger, NOT by Odoo. An `ir.cron` writing `lobby` straight
+ * into the column would be one Odoo call and would not work: for a DO room the
+ * status the clients actually see comes from the object's cached room copy, so
+ * the leaderboard would stay on screen until something else happened to push a
+ * roster. It would also leave last round's scores and `state.game` in place. The
+ * flip has to go through the app, and this is the cheapest way in.
+ */
+export async function resetFinishedRooms() {
+	const cutoff = odooDatetime(Date.now() - FINISHED_IDLE_MIN * 60000);
+	const rows = await adminExecute(ROOM, 'search_read', [
+		[
+			['x_studio_status', '=', 'finished'],
+			// `= false` catches rooms that finished before this field existed. They
+			// reset on the first tick after deploy — a one-time flush, not a bug.
+			'|',
+			['x_studio_finished_at', '=', false],
+			['x_studio_finished_at', '<', cutoff]
+		],
+		['id']
+	], { order: 'id asc', limit: RESET_BATCH });
+
+	let reset = 0;
+	for (const row of rows) {
+		try {
+			// Re-read rather than trusting the search: the host may have hit Rematch
+			// in the seconds since, and resetting an already-lobby room would clear
+			// the scores of a round that had started.
+			const room = await getRoom(row.id);
+			if (room.x_studio_status !== 'finished') continue;
+			const members = await getMembers(row.id);
+			await returnToLobby(row.id, room, members);
+			reset++;
+		} catch (e) {
+			// One unreachable object (writeState throws 503 while it is busy) must not
+			// abort the batch — the next tick picks the room up again.
+			console.error(`cron/lobby-reset: room ${row.id} failed: ${e?.message}`);
+		}
+	}
+	return reset;
 }
 
 export function jsonError(e) {

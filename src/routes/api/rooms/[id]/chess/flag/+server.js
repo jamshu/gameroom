@@ -36,6 +36,7 @@ export async function POST({ params, cookies }) {
 
 		chessClockCommit(game);
 		game.result = live.ticking === 'w' ? 'b' : 'w';
+		game.endReason = 'timeout';
 		game.clock.turnStartedAt = null;
 
 		await writeState(params.id, state);
@@ -43,7 +44,13 @@ export async function POST({ params, cookies }) {
 		await appendEvent(
 			params.id,
 			'system',
-			{ kind: 'game-over', result: game.result, by: 'timeout' },
+			{
+				kind: 'game-over',
+				result: game.result,
+				by: 'timeout',
+				endReason: 'timeout',
+				winnerUid: game.players[game.result] ?? null
+			},
 			uid
 		);
 		return json({ ok: true, flagged: true, result: game.result, state: stateView(state, uid) });

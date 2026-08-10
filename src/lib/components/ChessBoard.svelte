@@ -7,6 +7,7 @@
 	import { createFullscreen, portal } from '$lib/fullscreen.svelte.js';
 	import { createChessTheme, BOARD_THEMES, PIECE_SETS } from '$lib/chessthemes.svelte.js';
 	import { createChessEngine } from '$lib/chessengine.svelte.js';
+	import { chessOutcomeText } from '$lib/shared/gamelogic.js';
 	import ThemePicker from './ThemePicker.svelte';
 
 	let { store, game, members, myUid, isPremium = false } = $props();
@@ -410,14 +411,15 @@
 	const drawOfferedByMe = $derived(!!game.drawOffer && game.drawOffer === myUid);
 	const drawOfferedToMe = $derived(!!game.drawOffer && game.drawOffer !== myUid && !!myColor);
 
-	// why the game ended, for the result chip
+	/* Why the game ended, for the result chip. The wording comes from the shared
+	   helper so this chip and the room's announcement banner cannot drift — they
+	   already had: the chip said "by resignation" while the banner said nothing,
+	   and neither of them named a checkmate or a loss on time. */
 	const resultText = $derived.by(() => {
 		if (!game.result) return '';
-		if (game.result === 'draw')
-			return game.endReason === 'draw-agreed' ? 'Draw agreed 🤝' : 'Draw!';
-		const winner = nameOf(game.players[game.result]);
-		const reason = game.endReason === 'resign' ? ' by resignation' : '';
-		return `${winner} wins${reason}! 🏆`;
+		const winnerUid = game.players[game.result];
+		const text = chessOutcomeText(game.result, game.endReason, nameOf(winnerUid), winnerUid === myUid);
+		return game.result === 'draw' ? `${text} 🤝` : `${text}! 🏆`;
 	});
 
 	async function resign() {

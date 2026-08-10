@@ -9,6 +9,7 @@
 		createVoiceRecorder,
 		MAX_VOICE_MS
 	} from '$lib/media.js';
+	import { timeOfDay, dayLabel, sameDay } from '$lib/time.js';
 
 	let { store, members, myUid, roomId, borrowMic } = $props();
 	let text = $state('');
@@ -60,14 +61,28 @@
 		if (grew > 0 && untrack(() => shown) > PAGE) shown = untrack(() => shown) + grew;
 	});
 
-	// Consecutive messages from the same sender are grouped: only the first of a
-	// run carries the avatar + name, so the panel reads as a conversation.
+	/* Consecutive messages from the same sender are grouped: only the first of a
+	   run carries the avatar + name, so the panel reads as a conversation. The
+	   clock time goes on the LAST of a run (`tail`) rather than every bubble —
+	   one time per burst is what the eye actually wants, and stamping each line
+	   of a five-message flurry with the same 14:32 is just noise.
+
+	   `daySep` is suppressed for `pending` rows on purpose. Their `ts` is this
+	   client's clock, not the server's; a message typed either side of midnight
+	   against a slightly-off clock would draw a "Today" divider and then jump
+	   back over it the moment the server's timestamp echoed. */
 	const rows = $derived(
-		visible.map((msg, i) => ({
-			msg,
-			mine: msg.senderUid === myUid,
-			head: i === 0 || visible[i - 1].senderUid !== msg.senderUid
-		}))
+		visible.map((msg, i) => {
+			const prev = visible[i - 1];
+			const next = visible[i + 1];
+			return {
+				msg,
+				mine: msg.senderUid === myUid,
+				head: i === 0 || prev.senderUid !== msg.senderUid,
+				tail: !next || next.senderUid !== msg.senderUid,
+				daySep: !!msg.ts && !msg.pending && (!prev?.ts || !sameDay(prev.ts, msg.ts))
+			};
+		})
 	);
 
 	/* Autoscroll, but only when the reader is already at the bottom. Following the
@@ -318,7 +333,10 @@
 				{/if}
 			</button>
 		{/if}
-		{#each rows as { msg, mine, head } (msg.id)}
+		{#each rows as { msg, mine, head, tail, daySep } (msg.id)}
+			{#if daySep}
+				<p class="chat-day"><span>{dayLabel(msg.ts)}</span></p>
+			{/if}
 			<div
 				class="chat-msg {mine ? 'chat-msg--mine' : ''} {head ? 'chat-msg--head' : ''}"
 				class:pending={msg.pending}
@@ -364,7 +382,10 @@
 							</span>
 						{/if}
 					{/if}
-					{#if msg.text}<span>{msg.text}</span>{/if}
+					{#if msg.text}<span class="chat-text">{msg.text}</span>{/if}
+					<!-- Older history predates the timestamp and genuinely has none;
+					     rendering nothing beats inventing one that says "just now". -->
+					{#if tail && msg.ts}<span class="chat-time">{timeOfDay(msg.ts)}</span>{/if}
 				</div>
 			</div>
 		{:else}
@@ -555,8 +576,12 @@
 		padding: 4px;
 		gap: 4px;
 	}
+	/* Named rather than :last-child. The clock time is now the real last child, and
+	   a positional selector would hand it the caption's inset and leave the caption
+	   flush against the photo edge. */
 	.chat-bubble--media .chat-who,
-	.chat-bubble--media > span:last-child {
+	.chat-bubble--media .chat-text,
+	.chat-bubble--media .chat-time {
 		padding: 0 6px;
 	}
 	/* A TINT of the accent, not the accent itself. Solid #ff4d6d is the app's
@@ -581,6 +606,40 @@
 	   this bubble no longer has. On the tinted background it would be unreadable. */
 	.chat-msg--mine .chat-who {
 		color: color-mix(in srgb, var(--accent) 55%, var(--text));
+	}
+	/* Clock time, on the last bubble of a sender's run. Quieter than .chat-who and
+	   pushed to the trailing edge of the bubble in both directions, so it never
+	   competes with the message it belongs to. */
+	.chat-time {
+		align-self: flex-end;
+		font-size: 0.68rem;
+		line-height: 1.2;
+		color: var(--text-dim);
+		font-variant-numeric: tabular-nums;
+		margin-top: 2px;
+	}
+	.chat-msg--mine .chat-time {
+		color: color-mix(in srgb, var(--accent) 40%, var(--text-dim));
+	}
+	/* Day divider: a centred label with a rule running out to both margins, drawn
+	   with borders on ::before/::after rather than a background gradient so it
+	   follows --border in either theme. */
+	.chat-day {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		margin: 10px 2px 4px;
+		font-size: 0.7rem;
+		font-weight: 600;
+		color: var(--text-dim);
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+	}
+	.chat-day::before,
+	.chat-day::after {
+		content: '';
+		flex: 1;
+		border-top: 1px solid var(--border);
 	}
 	/* Reads as the muted placeholder it replaced until you hover it, so an empty
 	   chat still looks calm rather than like it's asking for something. */

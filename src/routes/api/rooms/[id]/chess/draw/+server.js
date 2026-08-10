@@ -65,7 +65,7 @@ export async function POST({ params, request, cookies }) {
 			await appendEvent(
 				params.id,
 				'system',
-				{ kind: 'game-over', result: 'draw', by: 'agreement' },
+				{ kind: 'game-over', result: 'draw', by: 'agreement', endReason: 'draw-agreed', winnerUid: null },
 				uid
 			);
 			return json({ ok: true, result: 'draw', state: stateView(state, uid) });

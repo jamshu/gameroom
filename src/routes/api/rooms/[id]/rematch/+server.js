@@ -1,5 +1,5 @@
 import { json } from '@sveltejs/kit';
-import { requireHost, appendEvent, parseState, writeState, resetRound, pushRoster, jsonError, httpError } from '$lib/server/room.js';
+import { requireHost, returnToLobby, jsonError, httpError } from '$lib/server/room.js';
 import { stateView } from '$lib/server/gamelogic.js';
 
 export const prerender = false;
@@ -10,15 +10,10 @@ export async function POST({ params, cookies }) {
 		const { uid, room, members } = await requireHost(cookies, params.id);
 		if (room.x_studio_status !== 'finished') throw httpError(409, 'Game is not finished');
 
-		const state = parseState(room) || { v: 0, voice: [], game: null };
-		// keep state.voice intact — a rematch resets the game, not the live call
-		await resetRound(state, members);
-		await writeState(params.id, state, { x_studio_status: 'lobby' });
-		await appendEvent(params.id, 'system', { kind: 'rematch' }, uid);
-		// `finished → lobby` plus the scores resetRound just cleared: both live on
-		// rows the state push doesn't carry. resetRound updated them in hand.
-		room.x_studio_status = 'lobby';
-		await pushRoster(params.id, room, members);
+		// Shared with the idle-reset cron so a host's rematch and an automatic one
+		// leave the room in exactly the same shape. `kind` is what differs: only
+		// this one was asked for by a person.
+		const state = await returnToLobby(params.id, room, members, { senderUid: uid, kind: 'rematch' });
 		return json({ ok: true, state: stateView(state, uid) });
 	} catch (e) {
 		const { body, status } = jsonError(e);

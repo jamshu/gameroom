@@ -1,5 +1,5 @@
 import { json } from '@sveltejs/kit';
-import { requireMemberCached, onlineUids, appendEvent, jsonError } from '$lib/server/room.js';
+import { requireMemberCached, appendEvent, jsonError } from '$lib/server/room.js';
 import { sendToUsers } from '$lib/server/push.js';
 
 export const prerender = false;
@@ -11,11 +11,19 @@ export const prerender = false;
  * is deliberately not host-only because it's the friendly gesture, not a
  * moderation tool.
  *
- * Recipients are SPLIT by presence rather than all being pushed. Someone with
- * the room already open does not want a system notification for it, and a push
- * they can already see is the kind of noise that gets notifications turned off
- * for good — they get the in-app notice the system event already produces. Only
- * people who are actually away get a push.
+ * EVERY other accepted member gets a push, presence notwithstanding. This used
+ * to split recipients by `onlineUids()` and push only to the absent, on the
+ * reasoning that someone with the room open doesn't want a notification for
+ * something already on their screen. That reasoning was wrong about what
+ * "online" means here: presence is a 90-second `last_seen` heartbeat, so a phone
+ * that opened the room and then went into a pocket still reads as online for a
+ * minute and a half — and that person is EXACTLY who a wave is for. They got the
+ * in-app notice only, on a screen nobody was looking at.
+ *
+ * The cost of getting it wrong is asymmetric: a duplicate banner for someone
+ * staring at the room is a shrug, a wave that silently reaches nobody is the
+ * feature not working. `sendToUsers` is two Odoo calls however many recipients
+ * there are, so widening the audience is close to free.
  */
 export async function POST({ params, cookies }) {
 	try {
@@ -28,14 +36,13 @@ export async function POST({ params, cookies }) {
 		// has drifted stale still deserves to see it.
 		await appendEvent(params.id, 'system', { kind: 'wave', uid }, uid);
 
-		const online = onlineUids(members);
-		const absent = members
+		const recipients = members
 			.filter((m) => m.x_studio_status === 'accepted')
 			.map((m) => m.x_studio_user_id?.[0])
-			.filter((u) => u && u !== uid && !online.has(u));
+			.filter((u) => u && u !== uid);
 
-		if (absent.length) {
-			await sendToUsers(absent, {
+		if (recipients.length) {
+			await sendToUsers(recipients, {
 				title: '👋 Someone waved',
 				body: `${name} waved at you from the room`,
 				// Plain room URL, NOT ?call=1 — that param auto-joins the video mesh on
@@ -47,7 +54,7 @@ export async function POST({ params, cookies }) {
 				tag: `wave-${params.id}`
 			});
 		}
-		return json({ ok: true, pushed: absent.length });
+		return json({ ok: true, pushed: recipients.length });
 	} catch (e) {
 		const { body, status } = jsonError(e);
 		return json(body, { status });

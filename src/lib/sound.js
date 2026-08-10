@@ -218,6 +218,21 @@ export function playCarromFoul() {
 	tone(ac, { at: 0.08, freq: 123.5, endFreq: 82, dur: 0.34, type: 'sawtooth', gain: 0.28 });
 }
 
+/**
+ * Someone waved — a friendly two-note "yoo-hoo" (A5 → D6).
+ *
+ * Rising rather than falling, and sine rather than triangle: this fires in the
+ * lobby while people are chatting, so it wants to read as a nudge, not an alert.
+ * Quieter than the game cues for the same reason.
+ */
+export function playWave() {
+	if (isMuted()) return;
+	const ac = audio();
+	if (!ac) return;
+	tone(ac, { at: 0.0, freq: 880.0, dur: 0.12, type: 'sine', gain: 0.55 });
+	tone(ac, { at: 0.11, freq: 1174.7, dur: 0.22, type: 'sine', gain: 0.5 });
+}
+
 /** Brought a token home — bright two-note chime (C6 → G6). */
 export function playHome() {
 	if (isMuted()) return;

@@ -765,10 +765,16 @@ export function createRoomStore(roomId) {
 			loadingChat = false;
 		}
 	}
-	/** Insert a local message immediately; returns its temp id. */
+	/** Insert a local message immediately; returns its temp id.
+	 *  The `ts` is this client's clock and is provisional — the server stamps its
+	 *  own into the payload and that one replaces this on echo. It exists so the
+	 *  bubble doesn't render blank for the second before the round trip lands. */
 	function pushLocalChat(senderUid, text) {
 		const id = `tmp-${++tempSeq}`;
-		store.update((s) => ({ ...s, chat: [...s.chat, { id, senderUid, text, pending: true }] }));
+		store.update((s) => ({
+			...s,
+			chat: [...s.chat, { id, senderUid, text, ts: Date.now(), pending: true }]
+		}));
 		return id;
 	}
 
@@ -784,7 +790,7 @@ export function createRoomStore(roomId) {
 		const localUrl = blob ? URL.createObjectURL(blob) : null;
 		store.update((s) => ({
 			...s,
-			chat: [...s.chat, { id, senderUid, ...fields, localUrl, pending: true }]
+			chat: [...s.chat, { id, senderUid, ...fields, ts: Date.now(), localUrl, pending: true }]
 		}));
 		return id;
 	}

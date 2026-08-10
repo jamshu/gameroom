@@ -25,10 +25,22 @@ export async function POST({ params, request, cookies }) {
 		// that runs them out, the move doesn't count and they lost on time.
 		if (chessClockCommit(game)) {
 			game.result = myColor === 'w' ? 'b' : 'w';
+			game.endReason = 'timeout';
 			game.clock.turnStartedAt = null;
 			await writeState(params.id, state);
 			await finishRoom(params.id, members, chessScores(game), room, { state, winners: winnerUids(game) });
-			await appendEvent(params.id, 'system', { kind: 'game-over', result: game.result, by: 'timeout' }, uid);
+			await appendEvent(
+				params.id,
+				'system',
+				{
+					kind: 'game-over',
+					result: game.result,
+					by: 'timeout',
+					endReason: 'timeout',
+					winnerUid: game.players[game.result] ?? null
+				},
+				uid
+			);
 			return json({ ok: true, result: game.result, flagged: true, state: stateView(state, uid) });
 		}
 
@@ -42,8 +54,26 @@ export async function POST({ params, request, cookies }) {
 		game.fen = chess.fen();
 		game.moves.push(move.san);
 		delete game.drawOffer; // making a move declines any outstanding draw offer
-		if (chess.isCheckmate()) game.result = myColor;
-		else if (chess.isDraw() || chess.isStalemate()) game.result = 'draw';
+		// Specific-first: chess.js `isDraw()` already returns true for a stalemate,
+		// a threefold repetition and insufficient material, so testing it before
+		// them would collapse every draw into the fifty-move label. It stays last as
+		// the catch-all.
+		if (chess.isCheckmate()) {
+			game.result = myColor;
+			game.endReason = 'checkmate';
+		} else if (chess.isStalemate()) {
+			game.result = 'draw';
+			game.endReason = 'stalemate';
+		} else if (chess.isThreefoldRepetition()) {
+			game.result = 'draw';
+			game.endReason = 'repetition';
+		} else if (chess.isInsufficientMaterial()) {
+			game.result = 'draw';
+			game.endReason = 'insufficient';
+		} else if (chess.isDraw()) {
+			game.result = 'draw';
+			game.endReason = 'fifty-move';
+		}
 		// freeze the clock on a finished game, or every client keeps ticking it
 		// down and eventually fires a bogus flag claim
 		if (game.result && game.clock) game.clock.turnStartedAt = null;
@@ -53,7 +83,21 @@ export async function POST({ params, request, cookies }) {
 
 		if (game.result) {
 			await finishRoom(params.id, members, chessScores(game), room, { state, winners: winnerUids(game) });
-			await appendEvent(params.id, 'system', { kind: 'game-over', result: game.result }, uid);
+			await appendEvent(
+				params.id,
+				'system',
+				{
+					kind: 'game-over',
+					result: game.result,
+					endReason: game.endReason,
+					// Carried on the event rather than looked up client-side. The banner
+					// fires the instant the event lands, which can be before the state
+					// holding `game.players` has arrived — resolving the winner from the
+					// store would then name nobody.
+					winnerUid: game.players[game.result] ?? null
+				},
+				uid
+			);
 		}
 		return json({ ok: true, san: move.san, fen: game.fen, result: game.result, state: stateView(state, uid) });
 	} catch (e) {

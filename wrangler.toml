@@ -61,21 +61,29 @@ not_found_handling = "single-page-application"
 # Everything else under /_app (immutable/, version.json) is a real static file.
 run_worker_first = ["/api/*", "/_app/env.js"]
 
-# NO CRON. There used to be an abandoned-room sweep here, deleting any room whose
-# every member had been offline for ten minutes. Rooms are now permanent until
-# their host deletes them, so there is nothing left for a schedule to do and the
-# trigger is gone rather than pointed at a no-op.
+# NO ROOM SWEEP. There used to be an abandoned-room sweep on a daily trigger,
+# deleting any room whose every member had been offline for ten minutes. Rooms
+# are now permanent until their host deletes them, so that schedule is gone and
+# sweepAbandonedRooms() additionally returns 0 before touching anything. Both
+# guards stand — adding /api/cron/sweep back to the list below would still do
+# nothing until that early return is removed too, which is the safe direction for
+# the pair to fail in.
 #
-# The plumbing it used is deliberately still in place: scripts/wrap-worker.mjs
-# generates a `scheduled` handler that posts to /api/cron/sweep, and
-# sweepAbandonedRooms() returns 0 before touching anything. Re-adding a schedule
-# here would therefore do nothing until that guard is removed too — which is the
-# safe direction for this pair to fail in.
+# What IS scheduled is the job that note anticipated: returning finished rooms to
+# their lobby ~15 minutes after the game ends, so a room doesn't dead-end on its
+# leaderboard (resetFinishedRooms → /api/cron/lobby-reset). It resets, it never
+# deletes.
 #
-# If a cron is ever added back for some OTHER job, note the constraint the old one
-# was shaped by: Odoo is roughly 1 req/s shared across every player in every room,
-# so a burst of sequential calls belongs at a quiet hour (the sweep used 01:00 UTC,
-# ≈04:00 for a Middle East player base, matching DO_LOCATION_HINT).
+# Every ten minutes rather than at a quiet hour, and that is affordable against
+# the constraint the old sweep was shaped by — Odoo is roughly 1 req/s shared
+# across every player in every room. An idle tick is ONE search_read, ~0.002
+# req/s; a busy one is capped at RESET_BATCH rooms. A daily tick was never an
+# option here: it would mean up to 24 hours of stale leaderboard.
+#
+# scripts/wrap-worker.mjs maps each expression below to its route path — adding a
+# cron here without adding it there dispatches to the wrong endpoint.
+[triggers]
+crons = ["*/10 * * * *"]
 
 [observability]
 enabled = true

@@ -106,10 +106,23 @@ export default {
 		return inner.fetch(req, env, ctx);
 	},
 	async scheduled(event, env, ctx) {
+		// Which cron expression fires which route. Keyed by the exact string from
+		// wrangler.toml's \`crons\` list — Workers hands the expression back verbatim
+		// on event.cron, so this is the only join between the two files. A schedule
+		// added to wrangler.toml but not here has no entry and is skipped, loudly,
+		// rather than silently running whatever route happened to be hardcoded.
+		const ROUTES = {
+			'*/10 * * * *': '/api/cron/lobby-reset'
+		};
+		const path = ROUTES[event.cron];
+		if (!path) {
+			console.error('cron: no route for expression', event.cron);
+			return;
+		}
 		// Host is arbitrary — this request never leaves the isolate — but the path
-		// must match the route. The secret is what stops the same endpoint being
-		// reachable from the internet; it deletes rooms.
-		const req = new Request('https://cron.invalid/api/cron/sweep', {
+		// must match the route. The secret is what stops the same endpoints being
+		// reachable from the internet; they mutate every room in the database.
+		const req = new Request('https://cron.invalid' + path, {
 			method: 'POST',
 			headers: { 'x-cron-secret': env.CRON_SECRET ?? '' }
 		});
@@ -119,7 +132,7 @@ export default {
 				.then(async (res) => {
 					const body = await res.text().catch(() => '');
 					console.log(JSON.stringify({
-						t: 'cron', cron: event.cron, status: res.status, body: body.slice(0, 200)
+						t: 'cron', cron: event.cron, path, status: res.status, body: body.slice(0, 200)
 					}));
 				})
 				.catch((e) => console.error('cron dispatch failed:', e?.message))

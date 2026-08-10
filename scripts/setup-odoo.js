@@ -168,6 +168,12 @@ async function main() {
 		{ name: 'x_studio_host_id', ttype: 'many2one', relation: 'res.users' },
 		{ name: 'x_studio_max_players', ttype: 'integer' },
 		{ name: 'x_studio_draws_total', ttype: 'integer' },
+		// When the current round finished — the clock the idle-reset cron filters on
+		// (see api/cron/lobby-reset). Set by finishRoom, cleared back to false by
+		// returnToLobby. NOT Odoo's automatic write_date: any later write to the room
+		// row (a rename, a visibility change) would push the reset back indefinitely.
+		// Existing finished rows get NULL, which the cron treats as "eligible now".
+		{ name: 'x_studio_finished_at', ttype: 'datetime' },
 		// SECRET-BEARING: thief-finder roles live in this JSON. Field-level group
 		// restriction means internal users can't read it even with direct RPC.
 		{ name: 'x_studio_state', ttype: 'text', groupIds: [adminGid] },

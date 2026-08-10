@@ -419,6 +419,51 @@ export function chessClockCommit(game, now = Date.now()) {
 	return live[live.ticking] <= 0;
 }
 
+/**
+ * How a chess game ended, in words.
+ *
+ * Lives here, next to winnerUids, because TWO places render it — the room's
+ * announcement banner and the board's own status chip — and they were already
+ * describing the same game differently: the board said "wins by resignation"
+ * while the banner said nothing at all. One map, one wording.
+ *
+ * `reason` is game.endReason. An unknown or missing reason is not an error: it
+ * is every non-chess game (ludo, carroms and thief all publish game-over with no
+ * endReason) and any chess game finished before this field existed. Those fall
+ * back to the plain result, which is still true, just less specific.
+ */
+const CHESS_WIN_REASON = {
+	checkmate: 'by checkmate',
+	timeout: 'on time',
+	resign: 'by resignation'
+};
+const CHESS_DRAW_REASON = {
+	stalemate: 'stalemate',
+	repetition: 'threefold repetition',
+	insufficient: 'insufficient material',
+	'fifty-move': 'the fifty-move rule',
+	'draw-agreed': 'agreement'
+};
+
+/**
+ * "Ayesha wins by checkmate" / "You win on time" / "Draw by stalemate".
+ *
+ * `name` is already resolved to a display name by the caller — this module is
+ * shared with the DO and has no roster to look one up in. `isYou` only picks the
+ * verb; the banner addresses the reader in second person ("You win"), and
+ * "You wins" is the tell that a template forgot who it was talking to.
+ */
+export function chessOutcomeText(result, reason, name, isYou = false) {
+	if (result === 'draw') {
+		const how = CHESS_DRAW_REASON[reason];
+		return how ? `Draw by ${how}` : 'Draw';
+	}
+	if (!result) return '';
+	const verb = isYou ? 'win' : 'wins';
+	const how = CHESS_WIN_REASON[reason];
+	return how ? `${name} ${verb} ${how}` : `${name} ${verb}`;
+}
+
 /** Win 1, draw 1 each. Shared by the move and flag routes so they can't drift. */
 export function chessScores(game) {
 	return {
