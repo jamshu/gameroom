@@ -40,7 +40,12 @@
 	const PAGE = 20;
 	let shown = $state(PAGE);
 	const visible = $derived($store.chat.slice(-shown));
-	const olderCount = $derived(Math.max(0, $store.chat.length - shown));
+	// Still in the store but not yet on screen.
+	const bufferedOlder = $derived(Math.max(0, $store.chat.length - shown));
+	// The button shows while there is either something buffered OR more on the
+	// server. Without the second half it would vanish at the buffer's edge and
+	// the rest of the history would be unreachable.
+	const canLoadOlder = $derived(bufferedOlder > 0 || $store.hasMoreChat);
 
 	/* Keep already-revealed history revealed when a new message lands. `shown`
 	   counts back from the END, so without this a new arrival would silently push
@@ -84,11 +89,30 @@
 		}
 	});
 
-	/** Reveal another page of history without the view jumping. */
+	/**
+	 * Another page of history, without the view jumping.
+	 *
+	 * FETCH-THEN-REVEAL, one pagination rather than two: the window widens through
+	 * what is already in the store, and only when it reaches the start of that does
+	 * it go to the server for more. `olderCount` below hides the button once both
+	 * the buffer and the server are exhausted.
+	 */
+	let fetching = $state(false);
 	async function loadOlder() {
 		const el = listEl;
 		const beforeHeight = el?.scrollHeight ?? 0;
 		const beforeTop = el?.scrollTop ?? 0;
+		// Nothing buffered left to reveal — top up from the server first.
+		if (bufferedOlder <= 0 && $store.hasMoreChat) {
+			fetching = true;
+			try {
+				await store.loadOlderChat();
+			} catch (e) {
+				error = e.message;
+			} finally {
+				fetching = false;
+			}
+		}
 		shown += PAGE;
 		await nextTick();
 		// Hold the reader's place: everything new was inserted ABOVE them, so shift
@@ -283,9 +307,15 @@
 		<span>Sent over a secure connection.</span>
 	</p>
 	<div class="chat-list" bind:this={listEl} onscroll={onScroll}>
-		{#if olderCount}
-			<button type="button" class="load-older" onclick={loadOlder}>
-				↑ {olderCount} older {olderCount === 1 ? 'message' : 'messages'}
+		{#if canLoadOlder}
+			<button type="button" class="load-older" onclick={loadOlder} disabled={fetching}>
+				{#if fetching}
+					Loading…
+				{:else if bufferedOlder}
+					↑ {bufferedOlder} older {bufferedOlder === 1 ? 'message' : 'messages'}
+				{:else}
+					↑ Older messages
+				{/if}
 			</button>
 		{/if}
 		{#each rows as { msg, mine, head } (msg.id)}

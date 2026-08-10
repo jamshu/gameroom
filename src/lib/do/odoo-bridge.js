@@ -30,7 +30,7 @@ export async function hydrate(env, roomId) {
 	const odoo = adminFor(env);
 	const id = Number(roomId);
 
-	const [rooms, members, maxEvent] = await Promise.all([
+	const [rooms, members, maxEvent, maxSeq] = await Promise.all([
 		odoo.adminExecute(ROOM_MODEL, 'read', [[id]], {
 			fields: ['x_name', 'x_studio_game_type', 'x_studio_status', 'x_studio_host_id',
 				'x_studio_max_players', 'x_studio_draws_total', 'x_studio_state',
@@ -40,11 +40,25 @@ export async function hydrate(env, roomId) {
 			[['x_studio_room_id', '=', id]],
 			['x_name', 'x_studio_user_id', 'x_studio_status', 'x_studio_role', 'x_studio_score', 'x_studio_last_seen']
 		], { order: 'id asc' }),
-		// Highest event id EVER used by this room, not the highest still present —
-		// deleted rows must not let the sequence fall back onto a reused id.
+		/* Highest event id EVER used by this room, not the highest still present —
+		   deleted rows must not let the sequence fall back onto a reused id.
+
+		   BOTH FIELDS, and taking the max of the two is load-bearing rather than
+		   belt-and-braces. An archived row now carries `x_studio_seq` BELOW its own
+		   Odoo id (Odoo's key is global and runs ahead of a per-room sequence),
+		   while rows written before the field existed carry no seq at all. Reading
+		   either column alone therefore seeds too low for some room, and a sequence
+		   seeded too low mints seqs that collide with events clients already hold.
+		   TWO reads, not one row read twice: the highest seq and the highest id can
+		   sit on DIFFERENT rows, because the object seeds its sequence above the
+		   room's max Odoo id at ownership transfer and mints from there. Hydrate
+		   runs once per room, so the extra call is cheap next to getting it wrong. */
 		odoo.adminExecute(EVENT_MODEL, 'search_read', [
 			[['x_studio_room_id', '=', id]], ['id']
-		], { order: 'id desc', limit: 1 })
+		], { order: 'id desc', limit: 1 }),
+		odoo.adminExecute(EVENT_MODEL, 'search_read', [
+			[['x_studio_room_id', '=', id]], ['x_studio_seq']
+		], { order: 'x_studio_seq desc', limit: 1 })
 	]);
 
 	const row = rooms?.[0];
@@ -59,7 +73,12 @@ export async function hydrate(env, roomId) {
 		console.error(`hydrate: room ${id} has an unparseable state blob`);
 	}
 
-	return { row, members, state, maxEventId: maxEvent?.[0]?.id ?? 0 };
+	return {
+		row,
+		members,
+		state,
+		maxEventId: Math.max(maxEvent?.[0]?.id ?? 0, maxSeq?.[0]?.x_studio_seq || 0)
+	};
 }
 
 /**
@@ -108,10 +127,13 @@ export async function recentEvents(env, roomId, limit = 200) {
 	const odoo = adminFor(env);
 	const rows = await odoo.adminExecute(EVENT_MODEL, 'search_read', [
 		[['x_studio_room_id', '=', Number(roomId)]],
-		['x_studio_type', 'x_studio_payload', 'x_studio_sender_uid', 'x_studio_target_uid']
+		['x_studio_type', 'x_studio_payload', 'x_studio_sender_uid', 'x_studio_target_uid', 'x_studio_seq']
 	], { order: 'id desc', limit });
 	return rows.reverse().map((r) => ({
-		seq: r.id,
+		// The archived seq when there is one, else the Odoo id — which is what a
+		// pre-field row's seq always was. Odoo reads an unset integer back as
+		// `false` (see below), so `||` is the right test here.
+		seq: r.x_studio_seq || r.id,
 		type: r.x_studio_type,
 		sender: r.x_studio_sender_uid || 0,
 		// Odoo reads an unset integer field back as `false`, never null.
@@ -123,16 +145,20 @@ export async function recentEvents(env, roomId, limit = 200) {
 /**
  * Archive events the DO has accepted but Odoo has not seen.
  *
- * THE ARCHIVED ROW'S ODOO ID IS NOT THE DO'S SEQ. Odoo's `create` assigns the
- * id and there is no studio field carrying the original, so a DO-minted event
- * lands in Odoo under a different id from the one clients saw. That is a
- * deliberate acceptance, not an oversight: once the DO owns the log, Odoo is a
- * durable archive that nothing reads back on the hot path, and the one place
- * that DOES read it back — hydrate/ownership transfer — only needs `max(id)` as
- * a floor for the sequence, which stays correct because Odoo's ids keep
- * ascending. The cost is that an archived row cannot be matched to the client's
- * chat key. Adding `x_studio_seq` to the Odoo model would close that; it is not
- * needed for anything M2 does.
+ * THE ARCHIVED ROW CARRIES ITS ORIGINAL SEQ in `x_studio_seq`, and that is what
+ * makes an event's id mean the same thing on both sides of the boundary.
+ *
+ * This used to be left alone deliberately — Odoo assigns its own primary key on
+ * create, and while nothing read the archive back on the hot path the mismatch
+ * cost nothing. It was not free after all. `appendEvent` dedupes on seq with
+ * INSERT OR REPLACE, so a re-own after an evacuation backfilled every DO-minted
+ * event under a NEW Odoo id: a second row for a message clients already held,
+ * which is duplicate chat and a duplicate key in a keyed {#each}. The poll's
+ * Odoo branch had the same problem from the other end, filtering DO seqs against
+ * Odoo primary keys that run ahead globally.
+ *
+ * Rows created before the field existed have no seq; readers fall back to `id`
+ * for those, which is exactly what they were using anyway.
  */
 export async function archiveEvents(env, roomId, rows) {
 	if (!rows.length) return 0;
@@ -147,6 +173,8 @@ export async function archiveEvents(env, roomId, rows) {
 				x_studio_type: r.type,
 				x_studio_payload: r.payload,
 				x_studio_sender_uid: r.sender || 0,
+				// the point of the field — see the note above
+				x_studio_seq: r.seq,
 				...(r.target ? { x_studio_target_uid: r.target } : {})
 			}]);
 			written++;

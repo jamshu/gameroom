@@ -170,6 +170,32 @@ export function newestFor(sql, uid, limit = REPLAY_MAX) {
 	return rows.reverse().map(toClientEvent);
 }
 
+/**
+ * A page of chat, older than `before`, oldest-first.
+ *
+ * Chat history used to have no source of its own — it arrived only as a side
+ * effect of the cursor-0 event replay, which is why opening a room had to
+ * re-download the whole log to show yesterday's messages. This is what lets the
+ * event cursor be about events again.
+ *
+ * `before = 0` means "the newest page". No target filter: chat is never
+ * targeted, and the callers of this rely on that (see the endpoint).
+ */
+export function chatBefore(sql, before = 0, limit = 30) {
+	const b = Number(before) || 0;
+	const rows = [
+		...sql.exec(
+			`SELECT seq, type, sender, target, payload FROM events
+			 WHERE type = 'chat' AND (? = 0 OR seq < ?)
+			 ORDER BY seq DESC LIMIT ?`,
+			b,
+			b,
+			limit
+		)
+	];
+	return rows.reverse().map(toClientEvent);
+}
+
 function toClientEvent(r) {
 	let payload = {};
 	try {

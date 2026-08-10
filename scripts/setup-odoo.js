@@ -203,8 +203,19 @@ async function main() {
 		{ name: 'x_studio_type', ttype: 'char' },
 		{ name: 'x_studio_payload', ttype: 'text' },
 		{ name: 'x_studio_sender_uid', ttype: 'integer' },
-		{ name: 'x_studio_target_uid', ttype: 'integer' }
+		{ name: 'x_studio_target_uid', ttype: 'integer' },
+		// The Durable Object's own sequence number, carried through the archive so
+		// an event means the same id on both sides. Without it a re-own backfills
+		// DO-minted events under fresh Odoo keys and clients get the same message
+		// twice — see the note in src/lib/do/odoo-bridge.js.
+		{ name: 'x_studio_seq', ttype: 'integer' }
 	]) await ensureField(eventModel, 'x_room_event', f);
+
+	/* No backfill for rows written before x_studio_seq existed. Readers fall back
+	   to the Odoo id for those (see recentEvents in src/lib/do/odoo-bridge.js),
+	   which is what their seq always effectively was — so a legacy row is still
+	   read correctly, it just cannot be matched by seq. Setup stays a schema step
+	   rather than a data migration. */
 
 	// Follow graph: a self many2many on the core res.users. "Users I follow".
 	// Followers of X = users who have X in their list, so the room-create push

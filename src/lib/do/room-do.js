@@ -7,7 +7,7 @@
 import { stateView, resolveClaims, filterPickRows, syncVoiceSince, VOICE_CAP } from '../shared/gamelogic.js';
 import {
 	migrate, kvGet, kvSet, seedSequence,
-	appendEvent, eventsFor, newestFor, headSeq, oldestSeq, trim, rowsOfType,
+	appendEvent, eventsFor, newestFor, chatBefore, headSeq, oldestSeq, trim, rowsOfType,
 	REPLAY_MAX
 } from './schema.js';
 import { welcome, stateFrame, eventFrame, rosterFrame, aimFrame, ackFrame, errFrame, uptoOf, hasGap, withSeq, CLOSE } from './frames.js';
@@ -564,6 +564,22 @@ export class RoomDO {
 							? 0
 							: Math.max(since, headSeq(this.sql)),
 					gap
+				};
+			}
+			case 'chat': {
+				// One page of chat history, independent of the event cursor. `owns` is
+				// reported for the same reason the events op reports it: before the
+				// transfer this log holds only what arrived since the object woke, and
+				// Odoo is the complete archive — the caller has to know which it got.
+				const limit = Math.min(Math.max(Number(op.limit) || 30, 1), 100);
+				const messages = chatBefore(this.sql, Number(op.before) || 0, limit + 1);
+				// Ask for one extra to answer "is there more?" without a second query.
+				const more = messages.length > limit;
+				return {
+					ok: true,
+					owns: !!kvGet(this.sql, 'owns_state'),
+					messages: more ? messages.slice(1) : messages,
+					more
 				};
 			}
 			case 'setState': {

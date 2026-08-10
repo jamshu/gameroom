@@ -67,6 +67,10 @@ export function createRoomStore(roomId) {
 		voice: [],
 		voiceMs: null, // elapsed call time at the last server snapshot; null = no call
 		voiceAt: null, // when that snapshot arrived, so the tick can extrapolate
+		// Is there older chat on the server? In the STORE, not a module-scope flag
+		// with a getter: the "load older" control derives from it, and a plain
+		// variable is invisible to reactivity, so the button never retires.
+		hasMoreChat: true,
 		wins: {}, // cumulative room scoreboard, { uid: games won }
 		game: null,
 		gv: 0,
@@ -95,9 +99,43 @@ export function createRoomStore(roomId) {
 	// room/members. Acts as the version gate those two rows don't otherwise have —
 	// see poll().
 	let roomEpoch = 0;
-	// Has the hydrating first poll landed? Until it has, an events batch is the
-	// room's existing history rather than news — see the `replay` arg on ingest.
-	let firstPollDone = false;
+	/* ---- persisted read position ------------------------------------------
+	   Where this device had read up to, so reopening a room does not ask for the
+	   whole retained log again. Only safe now that chat has its own endpoint: while
+	   chat arrived solely as a side effect of the cursor-0 replay, starting from a
+	   stored position would have left the panel empty.
+	   Same `gameroom:<thing>` convention as the board themes, and the same guards —
+	   storage throws in private mode and is absent during SSR. */
+	const CURSOR_KEY = `gameroom:cursor:${roomId}`;
+	function readStoredCursor() {
+		if (typeof localStorage === 'undefined') return 0;
+		try {
+			return Number(localStorage.getItem(CURSOR_KEY)) || 0;
+		} catch {
+			return 0;
+		}
+	}
+	function storeCursor(v) {
+		if (typeof localStorage === 'undefined') return;
+		try {
+			localStorage.setItem(CURSOR_KEY, String(v));
+		} catch {
+			/* private mode or quota — the cursor is an optimisation, not state */
+		}
+	}
+	function clearStoredCursor() {
+		if (typeof localStorage === 'undefined') return;
+		try {
+			localStorage.removeItem(CURSOR_KEY);
+		} catch {
+			/* as above */
+		}
+	}
+
+	// Did we start this session from a stored position? If so the first batch is
+	// genuinely "what you missed", not the room's history — see ingest.
+	let restoredCursor = false;
+	let firstBatchDone = false;
 	// Rosters carry a server timestamp for the same reason: two pushes can arrive
 	// out of order and there is no version field to compare.
 	let lastRosterTs = 0;
@@ -195,7 +233,32 @@ export function createRoomStore(roomId) {
 	 * id; `state` merges version-gated; `room`/`members` update only when present
 	 * (the push carries neither — presence still rides the poll).
 	 */
-	function ingest({ events = [], state, room, members, upto, replay = false }, via = 'poll') {
+	/* More system events than this in one batch is a backfill, not news. The gap
+	   flag catches a cursor that fell off the retained log, but a busy room can
+	   hand back fifty events without ever tripping it — and fifty banners at the
+	   notice queue's dwell is minutes of scrolling text. */
+	const NARRATE_MAX = 10;
+
+	function ingest({ events = [], state, room, members, upto, gap = false }, via = 'poll') {
+		/* Announce, or merely apply?
+		   - hydration: no stored position AND this is the first batch, so what came
+		     back is the room's existing history rather than anything that happened
+		     while we were gone;
+		   - gap: the server could not prove continuity and sent its newest page;
+		   - bulk: too much at once to be news, whatever the server thinks.
+		   Everything else IS news, including the batch that arrives on a reconnect
+		   or on reopening a room from a stored cursor — which is the whole point of
+		   persisting it, and what the flag this replaces had to give up. */
+		const hydration = !firstBatchDone && !restoredCursor;
+		const replay = hydration || gap || events.length > NARRATE_MAX;
+		/* Flipped by the first EVENT-BEARING DELIVERY — poll or welcome, both of
+		   which carry `upto` — and NOT by "the first batch that happened to contain
+		   something". A quiet room's opening poll returns zero events, and gating on
+		   that left the next poll still looking like hydration, so the first real
+		   thing to happen in the room was swallowed. That is the leave-announce
+		   regression, and it has now been introduced twice; the guard is the fix.
+		   State and roster frames carry no `upto` and must not flip it. */
+		if (upto !== undefined) firstBatchDone = true;
 		// ONE rule for advancing the cursor, and it is always a watermark the SERVER
 		// computed: "I have filtered and delivered everything at or below this that
 		// you are entitled to". The poll passes its `d.cursor`; the socket passes
@@ -208,7 +271,10 @@ export function createRoomStore(roomId) {
 		// chat message under the old two-channel Ably split — the cursor jumped to a
 		// private signal's id 200 and `?since=200` skipped the public chat at 199,
 		// permanently, with the reconnect catch-up unable to help.
-		if (upto > cursor) cursor = upto;
+		if (upto > cursor) {
+			cursor = upto;
+			storeCursor(cursor);
+		}
 		const fresh = events.filter((ev) => ev && !appliedEventIds.has(ev.id));
 		if (!fresh.length && !state && !room && !members) return;
 		store.update((s) => {
@@ -235,10 +301,12 @@ export function createRoomStore(roomId) {
 					   game-abandoned re-arms the window that suppresses a genuine
 					   member-left.
 
-					   `replay` is passed IN by the caller rather than inferred here. The
-					   inference this replaced — "cursor is still 0" — was wrong in a way
-					   the leave-announce specs caught: a quiet room legitimately sits at
-					   cursor 0, so the FIRST real event in it would have been swallowed. */
+					   `replay` is decided at the top of ingest. An earlier attempt inferred
+					   it from "cursor is still 0", which the leave-announce specs caught:
+					   a quiet room legitimately sits at cursor 0, so the FIRST real event
+					   in it was swallowed. The rule now keys off whether we RESUMED from a
+					   stored position, which is a fact about this client rather than a
+					   guess about the room. */
 					evs.push(ev);
 					if (!replay) systemHandler?.(ev);
 				}
@@ -318,14 +386,8 @@ export function createRoomStore(roomId) {
 				room: overtaken ? undefined : d.room,
 				members: overtaken ? undefined : d.members,
 				upto: d.cursor,
-				/* The FIRST poll of this store's life is hydration — `since=0` returns
-				   whatever history the room already has, which is not news to announce.
-				   Every later poll is a genuine delta, including the one that finally
-				   carries the first event in a previously silent room. `gap` is a
-				   rebuild at any point in the store's life. */
-				replay: !firstPollDone || !!d.gap
+				gap: !!d.gap
 			}, 'poll');
-			firstPollDone = true;
 			errorStreak = 0;
 		} catch (e) {
 			if (TERMINAL_CODES.has(e?.code)) {
@@ -546,10 +608,13 @@ export function createRoomStore(roomId) {
 				sockDead = true;
 				console.warn('[socket] evacuated — rebuilding from the HTTP envelope');
 				cursor = 0;
+				clearStoredCursor();
 				appliedEventIds.clear();
-				// the rebuild poll that follows is hydration, not news — same reasoning
-				// as the first poll after open()
-				firstPollDone = false;
+				// The rebuild that follows is hydration, not news: the object handed the
+				// room back to Odoo and ids are about to be re-derived, so nothing that
+				// comes next can be trusted as "what you missed".
+				restoredCursor = false;
+				firstBatchDone = false;
 				roomEpoch++;
 				store.update((s) => ({ ...s, chat: [], events: [] }));
 				schedule(0);
@@ -578,16 +643,12 @@ export function createRoomStore(roomId) {
 					roomEpoch++;
 				}
 				lastRosterTs = f.ts ?? lastRosterTs;
-				/* replay: true UNCONDITIONALLY. A welcome/resync is by definition "here
-				   is everything you may not have" — on a cursor the object could not
-				   trust it is the newest 200 retained events, which is the replay this
-				   whole change exists to silence.
-				   The cost, accepted deliberately: after a socket blip you are not told
-				   about what happened while you were away. The state itself still
-				   arrives, so nothing is lost but the banner — and a rule that tried to
-				   tell a short blip from a rebuild is precisely the cleverness that
-				   swallowed a quiet room's first real event. */
-				ingest({ events: f.events ?? [], state: f.state, room: f.room, members: f.members, upto: f.upto, replay: true }, 'push');
+				/* A welcome carries `gap` when the object could not prove continuity,
+				   and the bulk guard in ingest catches the cursor-0 case (the newest
+				   200 retained events is far past NARRATE_MAX). Between them, a welcome
+				   no longer needs to be silenced wholesale — so a reconnect that hands
+				   back the three things you missed now says so. */
+				ingest({ events: f.events ?? [], state: f.state, room: f.room, members: f.members, upto: f.upto, gap: !!f.gap }, 'push');
 				// Re-arm the poll on the new (much longer) push cadence.
 				schedule();
 				break;
@@ -616,6 +677,12 @@ export function createRoomStore(roomId) {
 
 	function open({ useSocket = false } = {}) {
 		stopped = false;
+		// Resume where this device left off, so the room does not re-request its
+		// whole retained log. `restoredCursor` is what tells ingest the first batch
+		// is news rather than history.
+		cursor = readStoredCursor();
+		restoredCursor = cursor > 0;
+		firstBatchDone = false;
 		sockDead = false;
 		sockBackoff = SOCK_BACKOFF_MIN;
 		usingSocket = !!useSocket;
@@ -631,6 +698,12 @@ export function createRoomStore(roomId) {
 		// room takes if DO_ROOMS ever turns off.
 		if (usingSocket) connectSocket();
 		poll();
+		/* Chat's own first page, in parallel with the poll rather than waiting on it.
+		   This is what decouples history from the event log: chat used to appear only
+		   because a cursor-0 client was handed the entire retained log, which is the
+		   coupling that made the cursor impossible to persist. Best-effort — a failure
+		   here costs history, not the room. */
+		loadOlderChat().catch(() => {});
 	}
 
 	function close() {
@@ -654,6 +727,44 @@ export function createRoomStore(roomId) {
 	   back out of Odoo — two round trips away. Insert it right away under a
 	   temp id, then swap in the real id so the poll echo dedupes against it. */
 
+	/**
+	 * Fetch a page of older chat and prepend it.
+	 *
+	 * PREPEND, NEVER RE-SORT. Optimistic sends carry string ids (`tmp-N`) and are
+	 * always appended at the tail; sorting a mixed array would interleave them into
+	 * fetched history and, worse, move a message the user is watching.
+	 *
+	 * Returns how many arrived, so the caller can tell "nothing more" from "failed".
+	 */
+	let loadingChat = false;
+	async function loadOlderChat(limit = 30) {
+		if (loadingChat) return 0;
+		loadingChat = true;
+		try {
+			const oldest = get(store).chat.find((c) => typeof c.id === 'number')?.id ?? 0;
+			/* redirectOn401: false — history is a BACKGROUND read, and api()'s default
+			   is to treat a 401 as "your session died, go to /login". Letting a
+			   scroll-back do that would throw someone out of a room they are sitting
+			   in over a fetch they did not ask for. Session liveness is the poll's job;
+			   it has the terminal-code handling for it. */
+			const d = await api(`/api/rooms/${roomId}/chat?before=${oldest}&limit=${limit}`, {
+				redirectOn401: false
+			});
+			const older = d?.messages ?? [];
+			// Room for the page we just fetched, so the trim cannot eat it.
+			if (older.length) chatCap = Math.min(CHAT_HARD_CAP, chatCap + older.length);
+			store.update((s) => {
+				// A page can overlap what the live log already delivered — drop dupes
+				// rather than letting a repeated key blow up the keyed {#each}.
+				const have = new Set(s.chat.map((c) => c.id));
+				const fresh = older.filter((m) => !have.has(m.id));
+				return { ...s, hasMoreChat: !!d?.more, chat: fresh.length ? [...fresh, ...s.chat] : s.chat };
+			});
+			return older.length;
+		} finally {
+			loadingChat = false;
+		}
+	}
 	/** Insert a local message immediately; returns its temp id. */
 	function pushLocalChat(senderUid, text) {
 		const id = `tmp-${++tempSeq}`;
@@ -682,11 +793,22 @@ export function createRoomStore(roomId) {
 		if (msg?.localUrl) URL.revokeObjectURL(msg.localUrl);
 	}
 
-	/** Keep the last 200 messages, releasing the blob URLs of the ones evicted. */
+	/**
+	 * Keep the newest `chatCap` messages, releasing the blob URLs of the evicted.
+	 *
+	 * THE CAP GROWS WITH FETCHED HISTORY, and that is not a nicety. The trim cuts
+	 * from the FRONT, which is exactly where loadOlderChat prepends — a fixed 200
+	 * meant "load older" appeared to work and then silently discarded the page it
+	 * had just fetched, the moment any new message arrived. The hard ceiling keeps
+	 * a long scroll-back from growing the array without bound.
+	 */
+	const CHAT_BASE_CAP = 200;
+	const CHAT_HARD_CAP = 1000;
+	let chatCap = CHAT_BASE_CAP;
 	function trimChat(chat) {
-		if (chat.length <= 200) return chat;
-		for (const c of chat.slice(0, chat.length - 200)) revokeLocal(c);
-		return chat.slice(-200);
+		if (chat.length <= chatCap) return chat;
+		for (const c of chat.slice(0, chat.length - chatCap)) revokeLocal(c);
+		return chat.slice(-chatCap);
 	}
 
 	/** Swap a temp id for the server id once the POST is acked. If a poll that was
@@ -798,6 +920,7 @@ export function createRoomStore(roomId) {
 		pushLocalMedia,
 		resolveLocalChat,
 		dropLocalChat,
+		loadOlderChat,
 		pollNow: () => wake()
 	};
 }
