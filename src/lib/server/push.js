@@ -226,22 +226,48 @@ export async function sendPush(sub, payload) {
  * pushes themselves go to Apple/Google/Mozilla and are free of that constraint,
  * so they stay parallel and unbatched.
  */
-export async function sendToUsers(userIds, payload) {
+/** Resolve the push subscriptions for a SET of users — two Odoo calls total. */
+async function subsForUsers(userIds) {
 	const ids = [...new Set(userIds.map(Number).filter(Boolean))];
-	if (!ids.length) return;
+	if (!ids.length) return [];
 	const users = await adminExecute('res.users', 'read', [ids], { fields: ['partner_id'] });
 	const partnerIds = users.map((u) => u?.partner_id?.[0]).filter(Boolean);
-	if (!partnerIds.length) return;
+	if (!partnerIds.length) return [];
 	const rows = await adminExecute(
 		DEVICE_MODEL,
 		'search_read',
 		[[['partner_id', 'in', partnerIds]]],
 		{ fields: ['endpoint', 'keys'] }
 	);
-	await Promise.allSettled(rows.map((r) => sendPush(deviceToSub(r), payload)));
+	return rows.map(deviceToSub);
+}
+
+export async function sendToUsers(userIds, payload) {
+	const subs = await subsForUsers(userIds);
+	await Promise.allSettled(subs.map((s) => sendPush(s, payload)));
 }
 
 /** Send to all devices registered for one user. */
 export function sendToUser(userId, payload) {
 	return sendToUsers([userId], payload);
+}
+
+/**
+ * Ring one user — a short burst of pushes on the same tag, spaced out in time.
+ *
+ * A backgrounded PWA cannot loop a ringtone (the SW can't play audio and the
+ * page's AudioContext is suspended); the most a web push gets is one OS beep per
+ * delivery. So a "ring" is several deliveries on the SAME tag — the SW's
+ * `renotify` re-alerts on each, approximating a ring for ~10s. The Odoo lookup
+ * runs ONCE up front (it is the scarce resource); only the free push sends
+ * repeat. Best-effort — run it in the platform's waitUntil so it never blocks the
+ * caller's response.
+ */
+export async function ringUser(userId, payload, { times = 4, gapMs = 2500 } = {}) {
+	const subs = await subsForUsers([userId]);
+	if (!subs.length) return;
+	for (let i = 0; i < times; i++) {
+		if (i) await new Promise((r) => setTimeout(r, gapMs));
+		await Promise.allSettled(subs.map((s) => sendPush(s, payload)));
+	}
 }

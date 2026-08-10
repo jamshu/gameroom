@@ -25,30 +25,39 @@ self.addEventListener('push', (event) => {
 	const url = payload.url ?? payload.options?.data?.url ?? '/';
 	const isCall = String(payload.tag || '').startsWith('call-');
 	event.waitUntil(
-		self.registration.showNotification(title, {
-			body,
-			icon: '/icon-192.png',
-			badge: '/icon-192.png',
-			// an incoming call sets these: stay on screen until tapped/dismissed
-			// (requireInteraction) and buzz a ring-like pattern; a `tag` collapses
-			// repeat rings into the same notification
-			requireInteraction: !!payload.requireInteraction,
-			tag: payload.tag,
-			renotify: payload.tag ? true : undefined,
-			vibrate: payload.vibrate,
-			// A call gets the platform's LOOPING ringtone + Answer/Decline call
-			// buttons + DND break-through, on browsers that support it (installed
-			// PWAs on Chromium/Edge). Everywhere else these keys are ignored and it
-			// falls back to a normal notification — no regression.
-			...(isCall && {
-				scenario: 'incoming-call',
-				actions: [
-					{ action: 'answer', title: '📹 Answer' },
-					{ action: 'decline', title: 'Decline' }
-				]
-			}),
-			data: { url }
-		})
+		(async () => {
+			await self.registration.showNotification(title, {
+				body,
+				icon: '/icon-192.png',
+				badge: '/icon-192.png',
+				// an incoming call sets these: stay on screen until tapped/dismissed
+				// (requireInteraction) and buzz a ring-like pattern; a `tag` collapses
+				// repeat rings into the same notification
+				requireInteraction: !!payload.requireInteraction,
+				tag: payload.tag,
+				renotify: payload.tag ? true : undefined,
+				vibrate: payload.vibrate,
+				// A call gets the platform's LOOPING ringtone + Answer/Decline call
+				// buttons + DND break-through, on browsers that support it (installed
+				// PWAs on Chromium/Edge). Everywhere else these keys are ignored and it
+				// falls back to a normal notification — no regression.
+				...(isCall && {
+					scenario: 'incoming-call',
+					actions: [
+						{ action: 'answer', title: '📹 Answer' },
+						{ action: 'decline', title: 'Decline' }
+					]
+				}),
+				data: { url }
+			});
+			// An on-screen page can't play a ring from the SW, so tell any live
+			// window to ring itself. The notification above stays the only audible
+			// path when the app is backgrounded/locked.
+			if (isCall) {
+				const wins = await clients.matchAll({ type: 'window', includeUncontrolled: true });
+				for (const c of wins) c.postMessage({ type: 'incoming-call', url, body });
+			}
+		})()
 	);
 });
 

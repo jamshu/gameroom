@@ -233,6 +233,44 @@ export function playWave() {
 	tone(ac, { at: 0.11, freq: 1174.7, dur: 0.22, type: 'sine', gain: 0.5 });
 }
 
+/* --------------------------------- ring ----------------------------------- */
+
+let ringTimer = null;
+let ringStop = null;
+const RING_EVERY_MS = 3000;
+const RING_MAX_MS = 30000; // safety: never ring forever if Answer/Decline is missed
+
+/** One ring burst — a classic two-tone warble, twice. Louder than the game SFX
+ *  (this is an alert, not ambience). */
+function ringBurst(ac) {
+	for (let i = 0; i < 2; i++) {
+		const at = i * 0.5;
+		tone(ac, { at, freq: 480, dur: 0.2, type: 'sine', gain: 2.4 });
+		tone(ac, { at: at + 0.2, freq: 620, dur: 0.2, type: 'sine', gain: 2.4 });
+	}
+}
+
+/** Start a looping incoming-call ring. No-op if muted or already ringing. */
+export function startRing() {
+	if (isMuted() || ringTimer) return;
+	const ac = audio();
+	if (!ac) return;
+	ringBurst(ac);
+	ringTimer = setInterval(() => {
+		const c = audio();
+		if (c) ringBurst(c);
+	}, RING_EVERY_MS);
+	ringStop = setTimeout(stopRing, RING_MAX_MS);
+}
+
+/** Stop the ring loop. Safe to call when not ringing. */
+export function stopRing() {
+	if (ringTimer) clearInterval(ringTimer);
+	if (ringStop) clearTimeout(ringStop);
+	ringTimer = null;
+	ringStop = null;
+}
+
 /** Brought a token home — bright two-note chime (C6 → G6). */
 export function playHome() {
 	if (isMuted()) return;

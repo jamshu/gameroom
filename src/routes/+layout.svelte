@@ -9,8 +9,30 @@
 	import { user, checkSession, logout } from '$lib/stores/auth.js';
 	import Avatar from '$lib/components/Avatar.svelte';
 	import { pushSupported, currentSubscription, subscribePush } from '$lib/push.js';
+	import { arm, startRing, stopRing } from '$lib/sound.js';
 
 	let { children } = $props();
+
+	// Incoming call, shown as an in-app banner while the app is ON-SCREEN. When
+	// backgrounded/locked the OS notification (see sw.js) is the only audible path;
+	// a suspended AudioContext can't ring anyway, so we only act while visible.
+	let incomingCall = $state(null); // { url, text } | null
+	function onSwMessage(e) {
+		if (e.data?.type !== 'incoming-call') return;
+		if (document.visibilityState !== 'visible') return;
+		incomingCall = { url: e.data.url || '/', text: e.data.body || 'Incoming call' };
+		startRing();
+	}
+	function answerCall() {
+		stopRing();
+		const url = incomingCall?.url || '/';
+		incomingCall = null;
+		goto(url);
+	}
+	function declineCall() {
+		stopRing();
+		incomingCall = null;
+	}
 
 	// 🔔 shows whenever the browser supports push but isn't confirmed subscribed.
 	// Default 'off' (not 'unknown'): currentSubscription() waits for the SW to go
@@ -98,7 +120,11 @@
 
 	onMount(() => {
 		checkSession();
-		if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+		arm(); // unlock the AudioContext on first gesture so the ring can play later
+		if ('serviceWorker' in navigator) {
+			navigator.serviceWorker.register('/sw.js').catch(() => {});
+			navigator.serviceWorker.addEventListener('message', onSwMessage);
+		}
 		consumePendingNav();
 		refreshPushState();
 		document.addEventListener('visibilitychange', onVisible);
@@ -106,6 +132,8 @@
 		return () => {
 			clearInterval(t);
 			document.removeEventListener('visibilitychange', onVisible);
+			if ('serviceWorker' in navigator) navigator.serviceWorker.removeEventListener('message', onSwMessage);
+			stopRing();
 		};
 	});
 
@@ -143,7 +171,63 @@
 	{@render children()}
 </div>
 
+{#if incomingCall}
+	<div class="call-banner" role="alertdialog" aria-label="Incoming call">
+		<span class="call-banner__icon">📹</span>
+		<span class="call-banner__text">{incomingCall.text}</span>
+		<div class="call-banner__actions">
+			<button class="btn btn--sm call-banner__answer" onclick={answerCall}>📹 Answer</button>
+			<button class="btn btn--ghost btn--sm" onclick={declineCall}>Decline</button>
+		</div>
+	</div>
+{/if}
+
 <style>
+	/* Incoming-call banner — fixed at the top, above everything, safe-area aware. */
+	.call-banner {
+		position: fixed;
+		top: calc(12px + env(safe-area-inset-top, 0px));
+		left: 50%;
+		transform: translateX(-50%);
+		z-index: 1000;
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		max-width: calc(100vw - 24px);
+		padding: 12px 16px;
+		border-radius: 16px;
+		background: color-mix(in srgb, var(--accent) 22%, var(--bg, #0b1120));
+		border: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+		box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+		animation: call-in 0.2s ease-out;
+	}
+	@keyframes call-in {
+		from { transform: translate(-50%, -12px); opacity: 0; }
+		to { transform: translate(-50%, 0); opacity: 1; }
+	}
+	.call-banner__icon {
+		font-size: 1.4rem;
+	}
+	.call-banner__text {
+		font-weight: 600;
+		color: var(--text);
+	}
+	.call-banner__actions {
+		display: flex;
+		gap: 8px;
+	}
+	.call-banner__answer {
+		background: #16a34a;
+		color: #fff;
+	}
+	@media (max-width: 480px) {
+		.call-banner {
+			flex-wrap: wrap;
+			justify-content: center;
+			text-align: center;
+		}
+	}
+
 	/* Home is the only short page — fill the viewport so its footer credit can be
 	   pushed to the bottom instead of floating in the middle of empty space. */
 	.app--fill {
