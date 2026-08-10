@@ -16,22 +16,31 @@
 	// Incoming call, shown as an in-app banner while the app is ON-SCREEN. When
 	// backgrounded/locked the OS notification (see sw.js) is the only audible path;
 	// a suspended AudioContext can't ring anyway, so we only act while visible.
-	let incomingCall = $state(null); // { url, text } | null
+	let incomingCall = $state(null); // { url, text, tag } | null
+	// A ring is a burst of pushes on one tag (see sw.js). Once answered/declined we
+	// remember the tag so the rest of the burst doesn't re-open the banner.
+	let handled = { tag: null, at: 0 };
+	const HANDLED_MS = 20000; // > the ~10s burst
 	function onSwMessage(e) {
 		if (e.data?.type !== 'incoming-call') return;
 		if (document.visibilityState !== 'visible') return;
-		incomingCall = { url: e.data.url || '/', text: e.data.body || 'Incoming call' };
+		const tag = e.data.tag || '';
+		if (tag && tag === handled.tag && Date.now() - handled.at < HANDLED_MS) return;
+		incomingCall = { url: e.data.url || '/', text: e.data.body || 'Incoming call', tag };
 		startRing();
 	}
-	function answerCall() {
+	function dismiss() {
 		stopRing();
-		const url = incomingCall?.url || '/';
+		if (incomingCall?.tag) handled = { tag: incomingCall.tag, at: Date.now() };
 		incomingCall = null;
+	}
+	function answerCall() {
+		const url = incomingCall?.url || '/';
+		dismiss();
 		goto(url);
 	}
 	function declineCall() {
-		stopRing();
-		incomingCall = null;
+		dismiss();
 	}
 
 	// 🔔 shows whenever the browser supports push but isn't confirmed subscribed.

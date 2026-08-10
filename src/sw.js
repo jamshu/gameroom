@@ -55,7 +55,9 @@ self.addEventListener('push', (event) => {
 			// path when the app is backgrounded/locked.
 			if (isCall) {
 				const wins = await clients.matchAll({ type: 'window', includeUncontrolled: true });
-				for (const c of wins) c.postMessage({ type: 'incoming-call', url, body });
+				// `tag` lets the page dedupe the ring burst — every push in one ring
+				// shares it, so a call already answered/declined is ignored.
+				for (const c of wins) c.postMessage({ type: 'incoming-call', url, body, tag: payload.tag });
 			}
 		})()
 	);
