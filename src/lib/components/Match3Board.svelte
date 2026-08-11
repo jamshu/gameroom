@@ -19,6 +19,13 @@
 		timeLeftMs = null,
 		disabled = false,
 		rivals = [],
+		// solo drives the cascade animation: `clearing` are the tile indices
+		// popping out right now, `praise` is the escalating "Great!" banner,
+		// `dropping` are freshly-spawned candies falling in (survival mode). The
+		// race passes none — it settles atomically and these stay inert.
+		clearing = [],
+		praise = null,
+		dropping = [],
 		onSwap
 	} = $props();
 
@@ -168,6 +175,9 @@
 				class="tile"
 				class:picked={picked === i}
 				class:rejected={rejected === i}
+				class:vanishing={clearing.includes(i)}
+				class:empty={board[i] == null}
+				class:dropping={dropping.includes(i)}
 				onpointerdown={(e) => onPointerDown(e, i)}
 				onclick={() => tapTile(i)}
 				aria-label={`tile ${i}`}
@@ -178,6 +188,9 @@
 				{/if}
 			</button>
 		{/each}
+		{#if praise}
+			<span class="praise" data-depth={praise.depth}>{praise.text}</span>
+		{/if}
 	</div>
 </div>
 
@@ -187,6 +200,9 @@
 		flex-direction: column;
 		gap: 10px;
 		align-items: center;
+		/* fill the host column so the board's width:100% has a definite basis —
+		   a centred flex host would otherwise shrink us to content */
+		width: 100%;
 	}
 
 	.hud {
@@ -255,6 +271,7 @@
 	}
 
 	.grid {
+		position: relative; /* anchors the praise banner */
 		display: grid;
 		grid-template-columns: repeat(8, 1fr);
 		aspect-ratio: 1;
@@ -313,8 +330,65 @@
 	@keyframes rise {
 		to { transform: translateY(-140%); opacity: 0; }
 	}
+
+	/* a matched tile clearing: it flares bright, spins a touch and scales away,
+	   so the run is SEEN to vanish instead of blinking to the refilled result */
+	.tile.vanishing {
+		animation: pop 0.26s ease-in forwards;
+		z-index: 2;
+	}
+	@keyframes pop {
+		30% { transform: scale(1.22); filter: brightness(1.7) saturate(1.3); }
+		100% { transform: scale(0) rotate(28deg); filter: brightness(2); opacity: 0; }
+	}
+
+	/* an empty slot (survival mode) — recessed, so the pile reads against gaps */
+	.tile.empty {
+		background: color-mix(in srgb, var(--surface) 55%, #000);
+		box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.35);
+		cursor: default;
+	}
+
+	/* a freshly-dropped candy falling into place */
+	.tile.dropping {
+		animation: drop-in 0.28s cubic-bezier(0.3, 0.9, 0.4, 1);
+	}
+	@keyframes drop-in {
+		0% { transform: translateY(-130%); opacity: 0.2; }
+		70% { transform: translateY(6%); }
+		100% { transform: translateY(0); opacity: 1; }
+	}
+
+	/* escalating cascade banner, centred over the board */
+	.praise {
+		position: absolute;
+		inset: 0;
+		display: grid;
+		place-items: center;
+		pointer-events: none;
+		font-family: var(--font-display, inherit);
+		font-weight: 900;
+		font-size: clamp(1.6rem, 14cqw, 3.4rem);
+		color: var(--accent);
+		text-shadow: 0 2px 0 rgba(0, 0, 0, 0.35), 0 0 18px color-mix(in srgb, var(--accent) 60%, transparent);
+		animation: praise 0.62s ease-out forwards;
+	}
+	/* deeper cascades read hotter and land bigger */
+	.praise[data-depth='2'] { color: #ffb020; }
+	.praise[data-depth='3'] { color: #ff6ac1; }
+	.praise[data-depth='4'] { color: #ff4d4d; }
+	@keyframes praise {
+		0% { transform: scale(0.4) rotate(-6deg); opacity: 0; }
+		35% { transform: scale(1.15) rotate(-2deg); opacity: 1; }
+		75% { transform: scale(1) rotate(0deg); opacity: 1; }
+		100% { transform: scale(1.05); opacity: 0; }
+	}
+
 	@media (prefers-reduced-motion: reduce) {
 		.tile { transition: none; }
 		.gain { animation: none; }
+		.tile.vanishing { animation: none; opacity: 0; }
+		.tile.dropping { animation: none; }
+		.praise { animation: none; opacity: 0.9; }
 	}
 </style>

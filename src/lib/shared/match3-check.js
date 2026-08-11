@@ -12,7 +12,7 @@ import { makeRng } from './rng.js';
 import {
 	SIZE, CELLS, KINDS, ROUND_MS,
 	makeBoard, openRound, findMatches, areAdjacent, isLegalSwap, hasLegalMove,
-	applySwap, reshuffle, replay, scoreFor, scoreCeiling
+	applySwap, resolveSwapSteps, reshuffle, replay, scoreFor, scoreCeiling
 } from './match3.js';
 
 /** Plays a deterministic pseudo-random round; the shared driver for the tests
@@ -181,6 +181,46 @@ function playRound(seed, maxSwaps = 60) {
 	assert.deepEqual([...after].sort((x, y) => x - y), before, 'the tile multiset is preserved');
 	assert.equal(findMatches(after).size, 0, 'and it is settled');
 	assert.ok(hasLegalMove(after), 'and playable');
+}
+
+// (j) resolveSwapSteps is a faithful, animatable decomposition of applySwap: the
+//     same rng draws, so the same final board, score and cascade count. If this
+//     drifts, the solo animation would settle on a different board than the
+//     engine says it should.
+{
+	for (let s = 0; s < 40; s++) {
+		const seed = 'steps-' + s;
+		const a = openRound(seed); // one rng for applySwap
+		const b = openRound(seed); // an identical, independent rng for the steps
+		let found = null;
+		for (let i = 0; i < CELLS && !found; i++) {
+			for (const j of [i + 1, i + SIZE]) if (isLegalSwap(a.board, i, j)) { found = [i, j]; break; }
+		}
+		assert.ok(found, 'a fresh board has a legal swap');
+
+		const flat = applySwap(a.board, found[0], found[1], a.rng);
+		const stepped = resolveSwapSteps(b.board, found[0], found[1], b.rng);
+
+		assert.equal(stepped.ok, flat.ok);
+		assert.equal(stepped.gained, flat.gained, 'stepped score matches flat');
+		assert.equal(stepped.cascades, flat.cascades, 'and the cascade count');
+		assert.deepEqual(stepped.board, flat.board, 'and lands on the same final board');
+		assert.ok(stepped.steps.length >= 1, 'a legal swap yields at least one cascade step');
+		assert.equal(
+			stepped.steps.reduce((n, st) => n + st.gained, 0),
+			flat.gained,
+			'per-step gains sum to the total'
+		);
+		// the rng is left in the same place, or a later draw would diverge
+		assert.equal(a.rng(), b.rng(), 'both consumed the rng identically');
+	}
+
+	// an illegal swap yields no steps and touches nothing
+	const { board, rng } = openRound('steps-illegal');
+	const bad = resolveSwapSteps(board, 0, CELLS - 1, rng);
+	assert.equal(bad.ok, false);
+	assert.equal(bad.steps.length, 0);
+	assert.deepEqual(bad.board, board);
 }
 
 console.log('match3-check: all assertions passed');

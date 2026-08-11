@@ -212,7 +212,11 @@
 			</a>
 			<a class="game-tile" href="/solo/match3">
 				<span class="game-tile-emoji emo">🍬</span>
-				<span class="game-tile-label">Candy Match</span>
+				<span class="game-tile-label">Candy Survival</span>
+			</a>
+			<a class="game-tile" href="/solo/chess">
+				<span class="game-tile-emoji emo">♟️</span>
+				<span class="game-tile-label">Chess</span>
 			</a>
 		</div>
 	</section>

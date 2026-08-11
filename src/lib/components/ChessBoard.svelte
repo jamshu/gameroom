@@ -10,7 +10,7 @@
 	import { chessOutcomeText } from '$lib/shared/gamelogic.js';
 	import ThemePicker from './ThemePicker.svelte';
 
-	let { store, game, members, myUid, isPremium = false } = $props();
+	let { store, game, members, myUid, isPremium = false, solo = false, reviewData = null } = $props();
 	let selected = $state(null); // square like 'e2'
 	let error = $state('');
 	// own move applied locally before the server confirms — kills the POST+poll lag
@@ -95,6 +95,12 @@
 	const reviewFen = $derived(reviewPly === null ? null : history.fens[reviewPly]);
 	// the move to tint on the board: the ply being viewed, or the latest one live
 	const lastMove = $derived(history.movesAt[Math.min(viewIdx, history.movesAt.length - 1)] || null);
+
+	// Solo post-game review (premium). reviewData is indexed by the position a move
+	// was made FROM: reviewData[viewIdx] classifies the move played from the
+	// position on screen and carries the engine's better move, which is legal here
+	// because the board IS that position. Null for live play and the final ply.
+	const reviewHint = $derived(reviewData && reviewPly !== null ? reviewData[viewIdx] || null : null);
 
 	function reviewFirst() {
 		reviewPly = 0;
@@ -554,6 +560,18 @@
 		{/if}
 	{/snippet}
 
+	{#snippet reviewInfo()}
+		{#if reviewHint}
+			<div class="review-info" data-tag={reviewHint.tag}>
+				<span class="tag">{reviewHint.tag}</span>
+				{#if reviewHint.playedSan}<span class="played">Played {reviewHint.playedSan}</span>{/if}
+				{#if reviewHint.best?.san && reviewHint.best.san !== reviewHint.playedSan}
+					<span class="better">Better: <b>{reviewHint.best.san}</b></span>
+				{/if}
+			</div>
+		{/if}
+	{/snippet}
+
 	{#snippet hintBar()}
 		<!-- Deliberately still offered after the game has a result: the review bar
 		     outlives the game too, and "what should I have played?" on a game you
@@ -589,7 +607,9 @@
 
 	{#snippet matchActions()}
 		{#if myColor && !game.result}
-			<button class="btn btn--ghost btn--sm" onclick={offerDraw} disabled={!!game.drawOffer}>½ Offer draw</button>
+			{#if !solo}
+				<button class="btn btn--ghost btn--sm" onclick={offerDraw} disabled={!!game.drawOffer}>½ Offer draw</button>
+			{/if}
 			<button class="btn btn--ghost btn--sm btn--danger" onclick={resign}>⚑ Resign</button>
 		{/if}
 	{/snippet}
@@ -602,7 +622,8 @@
 				<button
 					class="sq {s.dark ? 'sq--dark' : ''} {selected === s.sq ? 'sq--sel' : ''} {legalTargets.includes(s.sq) ? 'sq--hint' : ''}"
 					class:sq--last={lastMove && (lastMove.from === s.sq || lastMove.to === s.sq)}
-					class:sq--best={hint?.san && (hint.from === s.sq || hint.to === s.sq)}
+					class:sq--best={(hint?.san && (hint.from === s.sq || hint.to === s.sq)) ||
+						(reviewHint?.best && (reviewHint.best.from === s.sq || reviewHint.best.to === s.sq))}
 					class:sq--occupied={!!s.img}
 					data-sq={s.sq}
 					onclick={() => tap(s.sq)}
@@ -648,6 +669,7 @@
 			<div class="fs-status">{@render statusLine()}</div>
 			<div class="fs-draw">{@render drawOfferBlock()}</div>
 			<div class="fs-controls">
+				{@render reviewInfo()}
 				{@render reviewBar()}
 				{@render hintBar()}
 				{@render matchActions()}
@@ -658,6 +680,7 @@
 	{@render playerBar(bottomColor)}
 
 	{#if !fs.isFs}
+		{@render reviewInfo()}
 		{@render reviewBar()}
 		{@render hintBar()}
 		{@render drawOfferBlock()}
@@ -1110,6 +1133,39 @@
 		font-variant-numeric: tabular-nums;
 		min-width: 68px;
 		text-align: center;
+	}
+	/* post-game review verdict for the move played from the viewed position */
+	.review-info {
+		display: flex;
+		align-items: center;
+		flex-wrap: wrap;
+		gap: 8px;
+		margin-top: 10px;
+		font-size: 0.85rem;
+		color: var(--text-dim);
+	}
+	.review-info .tag {
+		font-weight: 800;
+		padding: 2px 10px;
+		border-radius: 999px;
+		color: #fff;
+		background: var(--text-dim);
+	}
+	.review-info[data-tag='Best'] .tag,
+	.review-info[data-tag='Good'] .tag {
+		background: #22c55e;
+	}
+	.review-info[data-tag='Inaccuracy'] .tag {
+		background: #eab308;
+	}
+	.review-info[data-tag='Mistake'] .tag {
+		background: #f97316;
+	}
+	.review-info[data-tag='Blunder'] .tag {
+		background: #ef4444;
+	}
+	.review-info .better b {
+		color: #22c55e;
 	}
 	.hint {
 		display: flex;

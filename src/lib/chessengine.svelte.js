@@ -47,6 +47,15 @@ export function createChessEngine() {
 	function handle(text) {
 		if (typeof text !== 'string') return;
 		if (!pending) return;
+
+		// Info lines stream the running evaluation; keep the latest for the review,
+		// which needs the score, not just the move. cp/mate are from the moving
+		// side's point of view — exactly what the classifier below expects.
+		if (text.startsWith('info')) {
+			const s = parseScore(text);
+			if (s) pending.score = s;
+			return;
+		}
 		if (!text.startsWith('bestmove')) return;
 
 		const req = pending;
@@ -56,7 +65,15 @@ export function createChessEngine() {
 
 		// "bestmove e2e4 ponder e7e5", or "bestmove (none)" in a finished position.
 		const uci = text.split(/\s+/)[1];
-		req.resolve(uci && uci !== '(none)' ? describe(req.fen, uci) : null);
+		const move = uci && uci !== '(none)' ? describe(req.fen, uci) : null;
+		req.resolve(move ? { ...move, ...(req.score || { cp: null, mate: null }) } : null);
+	}
+
+	/** "score cp 34" / "score mate -2" from a UCI info line, or null. */
+	function parseScore(text) {
+		const m = text.match(/\bscore (cp|mate) (-?\d+)\b/);
+		if (!m) return null;
+		return m[1] === 'cp' ? { cp: Number(m[2]), mate: null } : { cp: null, mate: Number(m[2]) };
 	}
 
 	/**
@@ -123,15 +140,19 @@ export function createChessEngine() {
 	}
 
 	/**
-	 * Best move in `fen`, or null if there isn't one (mate/stalemate).
+	 * Run one search of `fen` at a given strength. Returns `{ from, to, san, cp,
+	 * mate, fen }` or null if there's no move (mate/stalemate).
+	 *
+	 * `skill` is Stockfish's Skill Level (0..20) — set explicitly every search so a
+	 * weak opponent move never leaks its setting into a later full-strength review.
 	 *
 	 * Callers must check the returned `fen` before rendering. The hint button works
-	 * on the opponent's turn too, so an incoming server move WILL sometimes land
-	 * mid-search; the caller compares against the position on screen for the same
-	 * reason ChessBoard compares against `optimisticBaseFen`. Drawing a move from a
+	 * on the opponent's turn too, so an incoming move WILL sometimes land mid-search;
+	 * the caller compares against the position on screen for the same reason
+	 * ChessBoard compares against `optimisticBaseFen`. Drawing a move from a
 	 * superseded position would put a highlight on squares where it is illegal.
 	 */
-	async function analyse(fen) {
+	async function search(fen, skill, depth) {
 		// Checkmate and stalemate are answered here, not by the engine. Stockfish 10
 		// replies to a position with no legal moves with `info depth 0 score cp 0`
 		// and then simply says nothing — no `bestmove` line ever arrives — so asking
@@ -139,7 +160,7 @@ export function createChessEngine() {
 		// already loaded and answers instantly; this also skips booting the worker.
 		if (!hasLegalMove(fen)) return null;
 
-		// One search at a time. A second click supersedes the first rather than
+		// One search at a time. A second call supersedes the first rather than
 		// queueing: the answer to the older position is no longer wanted, and UCI
 		// gives no way to tell two overlapping `bestmove` lines apart.
 		if (pending) {
@@ -164,6 +185,7 @@ export function createChessEngine() {
 				fen,
 				resolve,
 				reject,
+				score: null,
 				timer: setTimeout(() => {
 					pending = null;
 					busy = false;
@@ -171,14 +193,24 @@ export function createChessEngine() {
 					reject(new Error('Engine timed out'));
 				}, TIMEOUT_MS)
 			};
-			// ucinewgame clears the hash: successive hints often jump between
+			// ucinewgame clears the hash: successive searches often jump between
 			// unrelated positions (live, then a review position ten plies back), and a
 			// carried-over hash is worth nothing there.
 			w.postMessage('ucinewgame');
+			w.postMessage(`setoption name Skill Level value ${skill}`);
 			w.postMessage(`position fen ${fen}`);
-			w.postMessage(`go depth ${DEPTH}`);
+			w.postMessage(`go depth ${depth}`);
 		});
 	}
+
+	/** Full-strength best move + evaluation — the hint and the review. */
+	const analyse = (fen, depth = DEPTH) => search(fen, 20, depth);
+
+	/**
+	 * The AI opponent's move at a chosen strength. Easy is genuinely beatable;
+	 * Hard is far past club level. Defaults sit at Medium.
+	 */
+	const bestMove = (fen, { skill = 8, depth = 10 } = {}) => search(fen, skill, depth);
 
 	/** Tear the worker down. Call from onDestroy — it will not restart on its own. */
 	function dispose() {
@@ -202,6 +234,7 @@ export function createChessEngine() {
 			return busy;
 		},
 		analyse,
+		bestMove,
 		dispose
 	};
 }

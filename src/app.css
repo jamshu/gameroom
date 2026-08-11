@@ -98,6 +98,11 @@ h3 {
 .app--wide {
 	--maxw: none;
 }
+/* Solo game pages hand the board the full width — their controls fold into a
+   compact menu, so the 760px reading cap only makes the canvas small. */
+.app:has(> .solo) {
+	--maxw: min(96vw, 1040px);
+}
 .app {
 	max-width: var(--maxw);
 	margin: 0 auto;

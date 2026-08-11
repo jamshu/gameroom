@@ -245,6 +245,43 @@ export function applySwap(board, a, b, rng) {
 }
 
 /**
+ * Same resolution as `applySwap`, but broken into the animatable phases the solo
+ * page draws: the post-swap board, then one entry per cascade with the cells that
+ * matched and the board after they fell. Draws the rng in the EXACT same order as
+ * `applySwap` (swap → per-depth findMatches→collapse → end reshuffle), so `board`,
+ * `gained` and `cascades` are identical — match3-check pins that.
+ *
+ * The race uses `applySwap` (no animation, and replay determinism rides on it);
+ * only solo, which owns its rng and never replays, wants the steps.
+ */
+export function resolveSwapSteps(board, a, b, rng) {
+	if (!isLegalSwap(board, a, b))
+		return { ok: false, board, gained: 0, cascades: 0, swapped: board, steps: [] };
+
+	const next = board.slice();
+	[next[a], next[b]] = [next[b], next[a]];
+	const swapped = next.slice(); // tiles still present, before any clear
+
+	let gained = 0;
+	let cascades = 0;
+	const steps = [];
+	for (let depth = 1; depth < 200; depth++) {
+		const hit = findMatches(next);
+		if (!hit.size) break;
+		const g = scoreFor(hit.size, depth);
+		gained += g;
+		cascades = depth;
+		const matched = [...hit];
+		for (const i of hit) next[i] = null;
+		collapse(next, rng);
+		steps.push({ matched, depth, gained: g, collapsed: next.slice() });
+	}
+	if (!hasLegalMove(next)) reshuffle(next, rng);
+
+	return { ok: true, board: next, gained, cascades, swapped, steps };
+}
+
+/**
  * Replay a whole round from its seed and swap log — the same code path the
  * client played, so it yields the same score.
  *

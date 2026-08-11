@@ -222,6 +222,10 @@
 		flex-direction: column;
 		gap: 10px;
 		align-items: center;
+		/* fill the host column so the board's width:100% has a definite basis —
+		   without this, a centred flex host shrinks us to content and the board
+		   never reaches --board-cap */
+		width: 100%;
 	}
 
 	.hud {

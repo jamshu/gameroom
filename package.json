@@ -22,6 +22,7 @@
 		"check:games": "node src/lib/games-check.js",
 		"check:sudoku": "node src/lib/shared/sudoku-check.js",
 		"check:match3": "node src/lib/shared/match3-check.js",
+		"check:survival": "node src/lib/survival-match3-check.js",
 		"check:race": "node src/lib/shared/race-check.js",
 		"check:room": "node --import ./src/lib/server/room-stub-loader.mjs src/lib/server/room-check.js",
 		"check:thief": "node src/lib/server/thief-claims-check.js",

@@ -78,33 +78,35 @@
 
 <div class="fade-in solo">
 	<header class="solo-head">
-		<a class="btn btn--ghost" href="/">← Back</a>
+		<a class="btn btn--ghost btn--sm" href="/" aria-label="Back">←</a>
 		<h1 class="title">🔢 Sudoku</h1>
 		<span class="clock">{formatDuration(elapsed)}</span>
+		<details class="game-menu">
+			<summary class="btn btn--ghost btn--sm" title="Difficulty & new puzzle">⚙️ {difficulty}</summary>
+			<div class="menu-pop card">
+				<span class="menu-label">Difficulty</span>
+				<div class="diffs" role="radiogroup" aria-label="Difficulty">
+					{#each DIFFICULTIES as d}
+						<button
+							type="button"
+							class="btn btn--sm"
+							class:btn--primary={difficulty === d}
+							class:btn--ghost={difficulty !== d}
+							role="radio"
+							aria-checked={difficulty === d}
+							onclick={() => newGame(d)}
+						>
+							{d}
+						</button>
+					{/each}
+				</div>
+				<button type="button" class="btn btn--ghost btn--sm" onclick={() => newGame()}>New puzzle</button>
+				{#if best}
+					<p class="muted best">Best {difficulty}: <strong>{formatDuration(best.value)}</strong></p>
+				{/if}
+			</div>
+		</details>
 	</header>
-
-	<div class="controls card">
-		<div class="diffs" role="radiogroup" aria-label="Difficulty">
-			{#each DIFFICULTIES as d}
-				<button
-					type="button"
-					class="btn"
-					class:btn--primary={difficulty === d}
-					class:btn--ghost={difficulty !== d}
-					role="radio"
-					aria-checked={difficulty === d}
-					onclick={() => newGame(d)}
-				>
-					{d}
-				</button>
-			{/each}
-		</div>
-		<button type="button" class="btn btn--ghost" onclick={() => newGame()}>New puzzle</button>
-	</div>
-
-	{#if best}
-		<p class="muted best">Best {difficulty}: <strong>{formatDuration(best.value)}</strong></p>
-	{/if}
 
 	{#if done}
 		<div class="card done-card">
@@ -131,9 +133,13 @@
 
 <style>
 	.solo {
+		/* full canvas: bounded only by width and by keeping the keypad in view
+		   (svh), with the controls folded into the header menu so they cost no
+		   vertical room */
+		--board-cap: min(94vw, calc(100svh - 190px), 860px);
 		display: flex;
 		flex-direction: column;
-		gap: 14px;
+		gap: 12px;
 		align-items: center;
 		padding-bottom: 24px;
 	}
@@ -157,25 +163,45 @@
 		min-width: 3.5em;
 		text-align: right;
 	}
-	.controls {
+	/* difficulty + new-puzzle folded into a kebab so the board gets the room */
+	.game-menu {
+		position: relative;
+	}
+	.game-menu > summary {
+		list-style: none;
+		cursor: pointer;
+		text-transform: capitalize;
+	}
+	.game-menu > summary::-webkit-details-marker {
+		display: none;
+	}
+	.menu-pop {
+		position: absolute;
+		right: 0;
+		top: calc(100% + 6px);
+		z-index: 20;
 		display: flex;
+		flex-direction: column;
 		gap: 8px;
-		align-items: center;
-		flex-wrap: wrap;
-		justify-content: center;
-		padding: 10px;
-		width: 100%;
-		max-width: var(--board-cap, 520px);
+		padding: 12px;
+		min-width: 210px;
+		box-shadow: var(--shadow-lg);
+	}
+	.menu-label {
+		font-size: 0.8rem;
+		color: var(--text-dim);
 	}
 	.diffs {
 		display: flex;
 		gap: 6px;
+		flex-wrap: wrap;
 	}
 	.diffs .btn {
 		text-transform: capitalize;
 	}
 	.best {
 		margin: 0;
+		font-size: 0.85rem;
 	}
 	.done-card {
 		padding: 16px;
