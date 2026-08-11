@@ -263,7 +263,7 @@
 				<p class="muted">Analysing your game… {reviewDone}/{reviewTotal}</p>
 			{:else if reviewData}
 				<p class="muted">
-					Playing back your game — <b style="color:#3b82f6">blue</b> is your move,
+					Playing back your moves — <b style="color:#3b82f6">blue</b> is what you played,
 					<b style="color:#22c55e">green</b> is the best. Use ◀ ▶ to pause and step.
 				</p>
 			{:else}

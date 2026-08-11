@@ -101,32 +101,74 @@
 	// position on screen and carries BOTH the move played (blue) and the engine's
 	// better move (green) — both legal here because the board IS that position.
 	// Null for live play and the final ply.
-	const reviewHint = $derived(reviewData && reviewPly !== null ? reviewData[viewIdx] || null : null);
+	//
+	// Only YOUR moves get a verdict — the engine's own play is not what you came to
+	// see. reviewData stays index-aligned with the ply (never compacted, or every
+	// lookup would point at the wrong move); `byYou` gates the lookup instead, so an
+	// opponent position simply has no hint and falls back to the plain `sq--last` tint.
+	const reviewAt = $derived(reviewData && reviewPly !== null ? reviewData[viewIdx] || null : null);
+	const reviewHint = $derived(reviewAt?.byYou ? reviewAt : null);
 
-	// Auto-play the review: once a fresh reviewData lands, walk the moves on a timer
+	// The plies you moved from, in order — the only stops the autoplay makes.
+	const myPlies = $derived(
+		reviewData ? reviewData.reduce((a, d, i) => (d?.byYou ? (a.push(i), a) : a), []) : []
+	);
+
+	// Auto-play the review: once a fresh reviewData lands, walk your moves on a timer
 	// so the player watches it back rather than clicking through. Any manual review
 	// control stops it (see stopAuto in the nav handlers).
-	const REVIEW_STEP_MS = 1400;
+	// Paced for reading, not for watching: each stop is a static position plus a
+	// verdict to take in, and the board now jumps two plies at a time.
+	const REVIEW_STEP_MS = 1900;
 	let reviewAuto = null;
+	// drives the ⏸/▶ label, so unlike the timer handle it has to be reactive
+	let reviewPlaying = $state(false);
+
 	function stopAuto() {
 		clearInterval(reviewAuto);
 		reviewAuto = null;
+		reviewPlaying = false;
 	}
+
+	/** The next move of yours after the one on screen, or undefined at the end. */
+	const nextMyPly = () => myPlies.find((p) => p > (reviewPly ?? -1));
+
+	// Starts the timer and nothing else. Deliberately reads no reactive state: it is
+	// called from the effect below, which writes reviewPly — reading it here would
+	// make that write re-trigger the effect.
+	function runAuto() {
+		reviewPlaying = true;
+		reviewAuto = setInterval(() => {
+			const next = nextMyPly();
+			if (next === undefined) {
+				stopAuto(); // no moves of yours left — hold on the last verdict
+				return;
+			}
+			reviewPly = next;
+		}, REVIEW_STEP_MS);
+	}
+
+	// ⏸ stops where you are so you can sit on a verdict; ▶ picks up from there, and
+	// rewinds to your first move if the playback already ran out (or you went live).
+	function toggleAuto() {
+		if (reviewPlaying) {
+			stopAuto();
+			return;
+		}
+		if (!myPlies.length) return;
+		if (reviewPly === null || nextMyPly() === undefined) reviewPly = myPlies[0];
+		runAuto();
+	}
+
 	$effect(() => {
-		if (!reviewData) {
+		if (!reviewData || !myPlies.length) {
 			stopAuto();
 			return;
 		}
 		stopAuto();
-		reviewPly = 0;
-		reviewAuto = setInterval(() => {
-			const n = (reviewPly ?? 0) + 1;
-			if (n >= liveIdx) {
-				stopAuto(); // reached the last move — hold on its verdict
-				return;
-			}
-			reviewPly = n;
-		}, REVIEW_STEP_MS);
+		// not 0: playing black, ply 0 is the engine's move and has nothing to show
+		reviewPly = myPlies[0];
+		runAuto();
 	});
 	onDestroy(stopAuto);
 
@@ -356,46 +398,11 @@
 			.finished.finally(() => ghost.remove());
 	}
 
-	/**
-	 * Simulate the engine's better move during review: glide the piece that should
-	 * move from its square to the target and settle it back, so the suggestion is
-	 * SEEN played out, not just highlighted. Purely advisory — the board never
-	 * actually changes. Runs on every review step (autoplay or manual) via the
-	 * effect below, after the position has rendered.
-	 */
-	function simulateBest(from, to) {
-		if (reduceMotion || !boardEl) return;
-		const fromEl = boardEl.querySelector(`[data-sq="${from}"]`);
-		const toEl = boardEl.querySelector(`[data-sq="${to}"]`);
-		const mover = fromEl?.querySelector('.lift');
-		if (!fromEl || !toEl || !mover) return;
-		const ra = fromEl.getBoundingClientRect();
-		const rb = toEl.getBoundingClientRect();
-		const dx = rb.left - ra.left;
-		const dy = rb.top - ra.top;
-		if (!dx && !dy) return;
-		fromEl.style.zIndex = '6'; // ride above neighbours during the glide
-		const done = () => (fromEl.style.zIndex = '');
-		mover
-			.animate(
-				[
-					{ transform: 'translate(0,0) scale(1)' },
-					{ transform: `translate(${(dx * 0.5).toFixed(1)}px, ${(dy * 0.5).toFixed(1)}px) scale(1.12)`, offset: 0.4 },
-					{ transform: `translate(${dx.toFixed(1)}px, ${dy.toFixed(1)}px) scale(1.06)`, offset: 0.72 },
-					{ transform: `translate(${dx.toFixed(1)}px, ${dy.toFixed(1)}px) scale(1.06)`, offset: 0.86 },
-					{ transform: 'translate(0,0) scale(1)' }
-				],
-				{ duration: 1150, easing: 'cubic-bezier(.22,.61,.36,1)' }
-			)
-			.finished.then(done, done);
-	}
-
-	// Replay the better move each time the reviewed position changes.
-	$effect(() => {
-		const rh = reviewHint;
-		if (!rh?.best?.from) return;
-		tick().then(() => simulateBest(rh.best.from, rh.best.to));
-	});
+	// The engine's better move is shown with colour only — the green `sq--best`
+	// squares plus the "Best was X" label. It is deliberately NOT played out on the
+	// board: the board never actually changes there, so any preview has to slide the
+	// piece back, and that back-and-forth reads as noise. Same presentation the live
+	// premium hint uses (see `hint` and `hintBar` below).
 
 	/** A piece landing, or a heavier thwack when it takes something. */
 	function playMoveSound(mv) {
@@ -629,6 +636,18 @@
 				<!-- not optional: myTurn is gated on reviewPly === null, so without a way
 				     back to live a reviewing player cannot move at all -->
 				<button class="btn btn--ghost btn--sm" onclick={reviewLive} disabled={reviewPly === null} title="Back to live">⏭</button>
+				<!-- review only: this bar is also the live-game history browser, where
+				     there is nothing to play back. Labelled rather than a bare ▶ glyph,
+				     which the next-move button already owns. -->
+				{#if reviewData}
+					<button
+						class="btn btn--ghost btn--sm review-play"
+						onclick={toggleAuto}
+						title={reviewPlaying ? 'Pause playback' : 'Play through your moves'}
+					>
+						{reviewPlaying ? '⏸ Pause' : '▶ Play'}
+					</button>
+				{/if}
 			</div>
 		{/if}
 	{/snippet}
@@ -638,7 +657,7 @@
 			<div class="review-info" data-tag={reviewHint.tag}>
 				<span class="tag">{reviewHint.tag}</span>
 				{#if reviewHint.playedSan}
-					<span class="played">{reviewHint.byYou ? 'You' : 'DashaMoolam'} played <b>{reviewHint.playedSan}</b></span>
+					<span class="played">You played <b>{reviewHint.playedSan}</b></span>
 				{/if}
 				{#if reviewHint.best?.san && reviewHint.best.san !== reviewHint.playedSan}
 					<span class="better">Best was <b>{reviewHint.best.san}</b></span>
@@ -1209,8 +1228,12 @@
 	.review {
 		display: flex;
 		align-items: center;
+		flex-wrap: wrap; /* the play toggle makes six controls — wrap on narrow phones */
 		gap: 6px;
 		margin-top: 10px;
+	}
+	.review-play {
+		white-space: nowrap;
 	}
 	.review-pos {
 		font-size: 0.8rem;
