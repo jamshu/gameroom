@@ -162,9 +162,11 @@
 		try {
 			const c = new Chess();
 			const fens = [c.fen()];
+			const played = []; // the actual move made from each position, with squares
 			for (const san of game.moves) {
-				c.move(san);
+				const mv = c.move(san);
 				fens.push(c.fen());
+				played.push({ from: mv.from, to: mv.to, san });
 			}
 			reviewTotal = fens.length;
 			reviewDone = 0;
@@ -185,7 +187,9 @@
 				let tag = 'Good';
 				if (best != null && after != null) tag = classify(best - -after);
 				else if (after == null) tag = 'Best'; // the move ended the game (mate/forced)
-				data[m] = { tag, best: bests[m], playedSan: game.moves[m] };
+				// white moves are the even plies; you are `myColor`
+				const byYou = (m % 2 === 0) === (myColor === 'w');
+				data[m] = { tag, best: bests[m], played: played[m], playedSan: game.moves[m], byYou };
 			}
 			reviewData = data;
 		} catch (e) {
@@ -243,7 +247,10 @@
 			{#if reviewing}
 				<p class="muted">Analysing your game… {reviewDone}/{reviewTotal}</p>
 			{:else if reviewData}
-				<p class="muted">Review ready — step through with the ◀ ▶ controls below the board.</p>
+				<p class="muted">
+					Playing back your game — <b style="color:#3b82f6">blue</b> is your move,
+					<b style="color:#22c55e">green</b> is the best. Use ◀ ▶ to pause and step.
+				</p>
 			{:else}
 				<button type="button" class="btn btn--primary" onclick={reviewGame}>🔍 Review game</button>
 			{/if}

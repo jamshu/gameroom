@@ -98,21 +98,53 @@
 
 	// Solo post-game review (premium). reviewData is indexed by the position a move
 	// was made FROM: reviewData[viewIdx] classifies the move played from the
-	// position on screen and carries the engine's better move, which is legal here
-	// because the board IS that position. Null for live play and the final ply.
+	// position on screen and carries BOTH the move played (blue) and the engine's
+	// better move (green) — both legal here because the board IS that position.
+	// Null for live play and the final ply.
 	const reviewHint = $derived(reviewData && reviewPly !== null ? reviewData[viewIdx] || null : null);
 
+	// Auto-play the review: once a fresh reviewData lands, walk the moves on a timer
+	// so the player watches it back rather than clicking through. Any manual review
+	// control stops it (see stopAuto in the nav handlers).
+	const REVIEW_STEP_MS = 1400;
+	let reviewAuto = null;
+	function stopAuto() {
+		clearInterval(reviewAuto);
+		reviewAuto = null;
+	}
+	$effect(() => {
+		if (!reviewData) {
+			stopAuto();
+			return;
+		}
+		stopAuto();
+		reviewPly = 0;
+		reviewAuto = setInterval(() => {
+			const n = (reviewPly ?? 0) + 1;
+			if (n >= liveIdx) {
+				stopAuto(); // reached the last move — hold on its verdict
+				return;
+			}
+			reviewPly = n;
+		}, REVIEW_STEP_MS);
+	});
+	onDestroy(stopAuto);
+
 	function reviewFirst() {
+		stopAuto();
 		reviewPly = 0;
 	}
 	function reviewPrev() {
+		stopAuto();
 		reviewPly = Math.max(0, viewIdx - 1);
 	}
 	function reviewNext() {
+		stopAuto();
 		const n = viewIdx + 1;
 		reviewPly = n >= liveIdx ? null : n;
 	}
 	function reviewLive() {
+		stopAuto();
 		reviewPly = null;
 	}
 
@@ -323,6 +355,47 @@
 			)
 			.finished.finally(() => ghost.remove());
 	}
+
+	/**
+	 * Simulate the engine's better move during review: glide the piece that should
+	 * move from its square to the target and settle it back, so the suggestion is
+	 * SEEN played out, not just highlighted. Purely advisory — the board never
+	 * actually changes. Runs on every review step (autoplay or manual) via the
+	 * effect below, after the position has rendered.
+	 */
+	function simulateBest(from, to) {
+		if (reduceMotion || !boardEl) return;
+		const fromEl = boardEl.querySelector(`[data-sq="${from}"]`);
+		const toEl = boardEl.querySelector(`[data-sq="${to}"]`);
+		const mover = fromEl?.querySelector('.lift');
+		if (!fromEl || !toEl || !mover) return;
+		const ra = fromEl.getBoundingClientRect();
+		const rb = toEl.getBoundingClientRect();
+		const dx = rb.left - ra.left;
+		const dy = rb.top - ra.top;
+		if (!dx && !dy) return;
+		fromEl.style.zIndex = '6'; // ride above neighbours during the glide
+		const done = () => (fromEl.style.zIndex = '');
+		mover
+			.animate(
+				[
+					{ transform: 'translate(0,0) scale(1)' },
+					{ transform: `translate(${(dx * 0.5).toFixed(1)}px, ${(dy * 0.5).toFixed(1)}px) scale(1.12)`, offset: 0.4 },
+					{ transform: `translate(${dx.toFixed(1)}px, ${dy.toFixed(1)}px) scale(1.06)`, offset: 0.72 },
+					{ transform: `translate(${dx.toFixed(1)}px, ${dy.toFixed(1)}px) scale(1.06)`, offset: 0.86 },
+					{ transform: 'translate(0,0) scale(1)' }
+				],
+				{ duration: 1150, easing: 'cubic-bezier(.22,.61,.36,1)' }
+			)
+			.finished.then(done, done);
+	}
+
+	// Replay the better move each time the reviewed position changes.
+	$effect(() => {
+		const rh = reviewHint;
+		if (!rh?.best?.from) return;
+		tick().then(() => simulateBest(rh.best.from, rh.best.to));
+	});
 
 	/** A piece landing, or a heavier thwack when it takes something. */
 	function playMoveSound(mv) {
@@ -564,9 +637,11 @@
 		{#if reviewHint}
 			<div class="review-info" data-tag={reviewHint.tag}>
 				<span class="tag">{reviewHint.tag}</span>
-				{#if reviewHint.playedSan}<span class="played">Played {reviewHint.playedSan}</span>{/if}
+				{#if reviewHint.playedSan}
+					<span class="played">{reviewHint.byYou ? 'You' : 'Stockfish'} played <b>{reviewHint.playedSan}</b></span>
+				{/if}
 				{#if reviewHint.best?.san && reviewHint.best.san !== reviewHint.playedSan}
-					<span class="better">Better: <b>{reviewHint.best.san}</b></span>
+					<span class="better">Best was <b>{reviewHint.best.san}</b></span>
 				{/if}
 			</div>
 		{/if}
@@ -621,7 +696,9 @@
 			{#each squares as s (s.sq)}
 				<button
 					class="sq {s.dark ? 'sq--dark' : ''} {selected === s.sq ? 'sq--sel' : ''} {legalTargets.includes(s.sq) ? 'sq--hint' : ''}"
-					class:sq--last={lastMove && (lastMove.from === s.sq || lastMove.to === s.sq)}
+					class:sq--last={!reviewHint && lastMove && (lastMove.from === s.sq || lastMove.to === s.sq)}
+					class:sq--played={reviewHint?.played &&
+						(reviewHint.played.from === s.sq || reviewHint.played.to === s.sq)}
 					class:sq--best={(hint?.san && (hint.from === s.sq || hint.to === s.sq)) ||
 						(reviewHint?.best && (reviewHint.best.from === s.sq || reviewHint.best.to === s.sq))}
 					class:sq--occupied={!!s.img}
@@ -1094,6 +1171,14 @@
 			inset 0 0 0 100px color-mix(in srgb, var(--accent-2, #ffcc33) 18%, transparent),
 			inset 0 0 0 4px color-mix(in srgb, var(--accent) 88%, #fff);
 	}
+	/* review: the move you actually played — blue, so it never reads as advice.
+	   Listed before .sq--best so that when the played move WAS the best (same
+	   squares), the green wins and it reads as the good move it was. */
+	.sq--played {
+		box-shadow:
+			inset 0 0 0 100px color-mix(in srgb, #3b82f6 22%, transparent),
+			inset 0 0 0 4px color-mix(in srgb, #3b82f6 80%, #fff);
+	}
 	/* engine suggestion — deliberately green, so it reads as "advice" and never
 	   collides with the accent (selection/legal moves) or accent-2 (last move) */
 	.sq--best {
@@ -1163,6 +1248,10 @@
 	}
 	.review-info[data-tag='Blunder'] .tag {
 		background: #ef4444;
+	}
+	/* match the on-board colours: played = blue, best = green */
+	.review-info .played b {
+		color: #3b82f6;
 	}
 	.review-info .better b {
 		color: #22c55e;
