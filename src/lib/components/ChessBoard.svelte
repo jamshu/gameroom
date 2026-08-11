@@ -102,23 +102,19 @@
 	// better move (green) — both legal here because the board IS that position.
 	// Null for live play and the final ply.
 	//
-	// Only YOUR moves get a verdict — the engine's own play is not what you came to
-	// see. reviewData stays index-aligned with the ply (never compacted, or every
-	// lookup would point at the wrong move); `byYou` gates the lookup instead, so an
-	// opponent position simply has no hint and falls back to the plain `sq--last` tint.
+	// The playback walks every ply, but only YOUR moves get a verdict — the engine's
+	// own play is not what you came to see. reviewData stays index-aligned with the
+	// ply (never compacted, or every lookup would point at the wrong move); `byYou`
+	// gates the lookup instead, so an opponent position simply has no hint.
 	const reviewAt = $derived(reviewData && reviewPly !== null ? reviewData[viewIdx] || null : null);
 	const reviewHint = $derived(reviewAt?.byYou ? reviewAt : null);
 
-	// The plies you moved from, in order — the only stops the autoplay makes.
-	const myPlies = $derived(
-		reviewData ? reviewData.reduce((a, d, i) => (d?.byYou ? (a.push(i), a) : a), []) : []
-	);
-
-	// Auto-play the review: once a fresh reviewData lands, walk your moves on a timer
-	// so the player watches it back rather than clicking through. Any manual review
-	// control stops it (see stopAuto in the nav handlers).
-	// Paced for reading, not for watching: each stop is a static position plus a
-	// verdict to take in, and the board now jumps two plies at a time.
+	// Auto-play the review: once a fresh reviewData lands, walk the whole game on a
+	// timer so the player watches it back rather than clicking through — the
+	// opponent's moves included, they just arrive without a verdict. Any manual
+	// review control stops it (see stopAuto in the nav handlers).
+	// Paced for reading, not for watching: a stop on one of your moves is a static
+	// position plus a verdict to take in.
 	const REVIEW_STEP_MS = 1900;
 	let reviewAuto = null;
 	// drives the ⏸/▶ label, so unlike the timer handle it has to be reactive
@@ -130,8 +126,11 @@
 		reviewPlaying = false;
 	}
 
-	/** The next move of yours after the one on screen, or undefined at the end. */
-	const nextMyPly = () => myPlies.find((p) => p > (reviewPly ?? -1));
+	/** The next position in the playback, or undefined once it reaches the end. */
+	const nextPly = () => {
+		const n = (reviewPly ?? -1) + 1;
+		return n >= liveIdx ? undefined : n;
+	};
 
 	// Starts the timer and nothing else. Deliberately reads no reactive state: it is
 	// called from the effect below, which writes reviewPly — reading it here would
@@ -139,9 +138,9 @@
 	function runAuto() {
 		reviewPlaying = true;
 		reviewAuto = setInterval(() => {
-			const next = nextMyPly();
+			const next = nextPly();
 			if (next === undefined) {
-				stopAuto(); // no moves of yours left — hold on the last verdict
+				stopAuto(); // reached the last move — hold on its verdict
 				return;
 			}
 			reviewPly = next;
@@ -149,25 +148,24 @@
 	}
 
 	// ⏸ stops where you are so you can sit on a verdict; ▶ picks up from there, and
-	// rewinds to your first move if the playback already ran out (or you went live).
+	// rewinds to the start if the playback already ran out (or you went back to live).
 	function toggleAuto() {
 		if (reviewPlaying) {
 			stopAuto();
 			return;
 		}
-		if (!myPlies.length) return;
-		if (reviewPly === null || nextMyPly() === undefined) reviewPly = myPlies[0];
+		if (!liveIdx) return;
+		if (reviewPly === null || nextPly() === undefined) reviewPly = 0;
 		runAuto();
 	}
 
 	$effect(() => {
-		if (!reviewData || !myPlies.length) {
+		if (!reviewData) {
 			stopAuto();
 			return;
 		}
 		stopAuto();
-		// not 0: playing black, ply 0 is the engine's move and has nothing to show
-		reviewPly = myPlies[0];
+		reviewPly = 0;
 		runAuto();
 	});
 	onDestroy(stopAuto);
@@ -643,7 +641,7 @@
 					<button
 						class="btn btn--ghost btn--sm review-play"
 						onclick={toggleAuto}
-						title={reviewPlaying ? 'Pause playback' : 'Play through your moves'}
+						title={reviewPlaying ? 'Pause playback' : 'Play through the game'}
 					>
 						{reviewPlaying ? '⏸ Pause' : '▶ Play'}
 					</button>
