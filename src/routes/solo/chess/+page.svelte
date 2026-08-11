@@ -42,7 +42,7 @@
 	const isPremium = $derived(!!$user?.premium);
 	const members = $derived([
 		{ uid: YOU, name: 'You' },
-		{ uid: AI, name: `Stockfish · ${opts.label}` }
+		{ uid: AI, name: `DashaMoolam · ${opts.label}` }
 	]);
 
 	const engine = createChessEngine();
@@ -148,11 +148,15 @@
 	/* ---- premium review ---------------------------------------------------- */
 
 	const cpOf = (r) => (r == null ? null : r.mate != null ? (r.mate > 0 ? 100000 : -100000) : (r.cp ?? 0));
+	// Thresholds are loose because eval comes from two separate depth-12 searches:
+	// the same move re-searched can wobble tens of cp, so a tight "Best" band would
+	// flag top moves as inaccuracies. The playedIsBest short-circuit below is the
+	// real guard; this only grades moves that genuinely differ from the engine's.
 	function classify(loss) {
-		if (loss < 20) return 'Best';
-		if (loss < 50) return 'Good';
-		if (loss < 100) return 'Inaccuracy';
-		if (loss < 250) return 'Mistake';
+		if (loss < 40) return 'Best';
+		if (loss < 90) return 'Good';
+		if (loss < 150) return 'Inaccuracy';
+		if (loss < 300) return 'Mistake';
 		return 'Blunder';
 	}
 
@@ -188,11 +192,16 @@
 
 			const data = [];
 			for (let m = 0; m < game.moves.length; m++) {
-				const best = evals[m];
-				const after = evals[m + 1];
+				const evBest = evals[m];
+				const evAfter = evals[m + 1];
+				// If you played the engine's own top move, it's Best — full stop. This is
+				// the fix for top moves showing as "Inaccuracy": the cp comparison below
+				// is noisy across two searches, but move equality is exact.
+				const playedIsBest =
+					bests[m] && played[m] && bests[m].from === played[m].from && bests[m].to === played[m].to;
 				let tag = 'Good';
-				if (best != null && after != null) tag = classify(best - -after);
-				else if (after == null) tag = 'Best'; // the move ended the game (mate/forced)
+				if (playedIsBest || evAfter == null) tag = 'Best';
+				else if (evBest != null && evAfter != null) tag = classify(Math.max(0, evBest + evAfter));
 				// white moves are the even plies; you are `myColor`
 				const byYou = (m % 2 === 0) === (myColor === 'w');
 				data[m] = { tag, best: bests[m], played: played[m], playedSan: game.moves[m], byYou };
@@ -246,7 +255,7 @@
 	</header>
 
 	{#if error}<p class="error-text">{error}</p>{/if}
-	{#if thinking && !game.result}<p class="muted">Stockfish is thinking…</p>{/if}
+	{#if thinking && !game.result}<p class="muted">DashaMoolam is thinking…</p>{/if}
 
 	{#if game?.result && isPremium}
 		<div class="card review-card">

@@ -638,7 +638,7 @@
 			<div class="review-info" data-tag={reviewHint.tag}>
 				<span class="tag">{reviewHint.tag}</span>
 				{#if reviewHint.playedSan}
-					<span class="played">{reviewHint.byYou ? 'You' : 'Stockfish'} played <b>{reviewHint.playedSan}</b></span>
+					<span class="played">{reviewHint.byYou ? 'You' : 'DashaMoolam'} played <b>{reviewHint.playedSan}</b></span>
 				{/if}
 				{#if reviewHint.best?.san && reviewHint.best.san !== reviewHint.playedSan}
 					<span class="better">Best was <b>{reviewHint.best.san}</b></span>
