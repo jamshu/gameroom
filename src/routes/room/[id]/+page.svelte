@@ -14,6 +14,8 @@
 	import ChessBoard from '$lib/components/ChessBoard.svelte';
 	import CarromBoard from '$lib/components/CarromBoard.svelte';
 	import LudoBoard from '$lib/components/LudoBoard.svelte';
+	import SudokuRace from '$lib/components/SudokuRace.svelte';
+	import Match3Race from '$lib/components/Match3Race.svelte';
 	import VideoCallRoom from '$lib/components/VideoCallRoom.svelte';
 	import Leaderboard from '$lib/components/Leaderboard.svelte';
 	import Scoreboard from '$lib/components/Scoreboard.svelte';
@@ -423,6 +425,10 @@
 			const showing = g.phase === 'finished';
 			return { key: showing ? `final-${g.draw}` : null, ms: FINAL_REVEAL_MS };
 		}
+		// The race games end on a completed grid or an expired clock, never on a
+		// move worth watching — the last thing that happened is already on screen.
+		// Holding here would just be dead time in front of the leaderboard.
+		if (g.type === 'sudoku' || g.type === 'match3') return { key: null };
 		// Skip the endings that applied NO MOVE — resign, agreed draw, and a flag on
 		// time. There is nothing for the board to animate, so the hold would be a
 		// blank 1.4s delay in front of the leaderboard. Checkmate and stalemate are
@@ -706,6 +712,10 @@
 						<LudoBoard {store} game={$store.game} {members} {myUid} />
 					{:else if $store.game?.type === 'videocall'}
 						<VideoCallRoom {store} game={$store.game} {members} {myUid} />
+					{:else if $store.game?.type === 'sudoku'}
+						<SudokuRace {store} game={$store.game} {members} {myUid} />
+					{:else if $store.game?.type === 'match3'}
+						<Match3Race {store} game={$store.game} {members} {myUid} />
 					{:else}
 						<p class="muted">Loading game…</p>
 					{/if}

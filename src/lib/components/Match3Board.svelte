@@ -1,0 +1,320 @@
+<script>
+	// The match-3 grid, used by BOTH the solo page and the multiplayer race.
+	//
+	// Like SudokuBoard it owns no game state: `board` and `score` come down as
+	// props and every attempted swap goes out through `onSwap`. The solo page
+	// resolves it locally against the shared engine; the race page resolves it
+	// locally too (the refill stream is client-side by design — see the plan) and
+	// reports the running score over the ephemeral tick channel.
+	//
+	// Two ways to play a swap, because this is a phone-first game: tap one tile
+	// then an adjacent one, or drag from a tile toward a neighbour. Both funnel
+	// into `trySwap`.
+	import { playWave, playCarromPocket, playWrong, arm } from '$lib/sound.js';
+	import { SIZE, CELLS, areAdjacent } from '$lib/shared/match3.js';
+
+	let {
+		board = [],
+		score = 0,
+		timeLeftMs = null,
+		disabled = false,
+		rivals = [],
+		onSwap
+	} = $props();
+
+	/** Tile faces. Index = the kind stored in the board, so the engine never
+	 *  knows about emoji and the art can change without touching the rules. */
+	const FACES = ['🍬', '🍇', '🍋', '🍎', '🫐', '🍊'];
+
+	const INDICES = Array.from({ length: CELLS }, (_, i) => i);
+
+	let picked = $state(null);
+	let rejected = $state(null); // tile index flashing "no"
+	let rejectTimer = null;
+	let busy = $state(false);
+
+	/* The floating "+180" over the tile that was swapped.
+	   Deliberately NOT a per-tile clear animation: `applySwap` reports which
+	   cells matched, but they have already fallen and been refilled by the time
+	   it returns, so animating those indices would light up whichever tiles
+	   happen to have landed there. The gain is the honest thing to show. */
+	let gain = $state(null); // { at, amount }
+	let gainTimer = null;
+
+	// drag state — plain lets, not $state: nothing renders from them mid-drag and
+	// making them reactive would re-run effects on every pointermove.
+	let dragFrom = null;
+	let dragX = 0;
+	let dragY = 0;
+
+	const seconds = $derived(timeLeftMs == null ? null : Math.max(0, Math.ceil(timeLeftMs / 1000)));
+	const locked = $derived(disabled || busy);
+
+	async function trySwap(a, b) {
+		if (locked || !areAdjacent(a, b)) {
+			flashReject(a);
+			return;
+		}
+		arm();
+		busy = true;
+		try {
+			const res = await onSwap?.(a, b);
+			if (res?.ok === false) {
+				flashReject(b);
+				playWrong();
+			} else if (res?.ok) {
+				// louder feedback the deeper the cascade ran
+				if ((res.cascades ?? 1) > 1) playWave();
+				else playCarromPocket('coin');
+				showGain(b, res.gained);
+			}
+		} catch {
+			/* a dropped request is not an illegal move — stay quiet */
+		} finally {
+			busy = false;
+			picked = null;
+		}
+	}
+
+	function flashReject(i) {
+		clearTimeout(rejectTimer);
+		rejected = i;
+		rejectTimer = setTimeout(() => (rejected = null), 300);
+	}
+
+	function showGain(at, amount) {
+		if (!amount) return;
+		clearTimeout(gainTimer);
+		gain = { at, amount };
+		gainTimer = setTimeout(() => (gain = null), 650);
+	}
+
+	function tapTile(i) {
+		if (locked) return;
+		if (picked == null) {
+			picked = i;
+			return;
+		}
+		if (picked === i) {
+			picked = null;
+			return;
+		}
+		const from = picked;
+		// Tapping a non-adjacent tile re-picks rather than failing — on a phone
+		// that is nearly always a change of mind, not an attempted illegal move.
+		if (!areAdjacent(from, i)) {
+			picked = i;
+			return;
+		}
+		trySwap(from, i);
+	}
+
+	function onPointerDown(e, i) {
+		if (locked) return;
+		dragFrom = i;
+		dragX = e.clientX;
+		dragY = e.clientY;
+	}
+
+	function onPointerUp(e) {
+		const from = dragFrom;
+		dragFrom = null;
+		if (from == null || locked) return;
+
+		const dx = e.clientX - dragX;
+		const dy = e.clientY - dragY;
+		// Below the threshold it was a tap, not a drag — let the click handler run.
+		if (Math.abs(dx) < 12 && Math.abs(dy) < 12) return;
+
+		// The dominant axis decides the direction; a drag off the edge of the board
+		// is simply dropped rather than wrapping to the far side.
+		let r = (from / SIZE) | 0;
+		let c = from % SIZE;
+		if (Math.abs(dx) > Math.abs(dy)) c += Math.sign(dx);
+		else r += Math.sign(dy);
+
+		picked = null;
+		if (r >= 0 && r < SIZE && c >= 0 && c < SIZE) trySwap(from, r * SIZE + c);
+	}
+</script>
+
+<svelte:window on:pointerup={onPointerUp} />
+
+<div class="m3">
+	<div class="hud">
+		<span class="stat"><small>Score</small> <strong>{score.toLocaleString()}</strong></span>
+		{#if seconds != null}
+			<span class="stat" class:stat--low={seconds <= 10}>
+				⏱ <strong>{Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, '0')}</strong>
+			</span>
+		{/if}
+	</div>
+
+	{#if rivals.length}
+		<ul class="rivals">
+			{#each rivals as r (r.uid)}
+				<li>
+					<span class="rname">{r.name}</span>
+					<span class="rscore">{(r.score ?? 0).toLocaleString()}</span>
+				</li>
+			{/each}
+		</ul>
+	{/if}
+
+	<div class="grid" class:locked>
+		{#each INDICES as i (i)}
+			<button
+				type="button"
+				class="tile"
+				class:picked={picked === i}
+				class:rejected={rejected === i}
+				onpointerdown={(e) => onPointerDown(e, i)}
+				onclick={() => tapTile(i)}
+				aria-label={`tile ${i}`}
+			>
+				{FACES[board[i]] ?? ''}
+				{#if gain?.at === i}
+					<span class="gain">+{gain.amount}</span>
+				{/if}
+			</button>
+		{/each}
+	</div>
+</div>
+
+<style>
+	.m3 {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+		align-items: center;
+	}
+
+	.hud {
+		display: flex;
+		gap: 8px;
+		align-items: center;
+		flex-wrap: wrap;
+		justify-content: center;
+	}
+	.stat {
+		display: inline-flex;
+		align-items: baseline;
+		gap: 5px;
+		padding: 3px 10px;
+		border-radius: var(--radius-sm);
+		background: var(--surface-2);
+		border: 1px solid var(--border);
+		color: var(--text-dim);
+		font-variant-numeric: tabular-nums;
+	}
+	.stat strong {
+		color: var(--text);
+		font-size: 1.05rem;
+	}
+	.stat--low {
+		color: var(--red);
+		border-color: color-mix(in srgb, var(--red) 55%, transparent);
+		background: color-mix(in srgb, var(--red) 14%, transparent);
+	}
+	.stat--low strong {
+		color: var(--red);
+	}
+
+	.rivals {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		width: 100%;
+		max-width: var(--board-cap, 520px);
+		display: flex;
+		gap: 8px;
+		justify-content: center;
+		flex-wrap: wrap;
+	}
+	.rivals li {
+		display: flex;
+		gap: 6px;
+		align-items: baseline;
+		font-size: 0.85rem;
+		color: var(--text-dim);
+		background: var(--surface-2);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		padding: 2px 8px;
+	}
+	.rname {
+		max-width: 7em;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.rscore {
+		font-variant-numeric: tabular-nums;
+		color: var(--text);
+		font-weight: 700;
+	}
+
+	.grid {
+		display: grid;
+		grid-template-columns: repeat(8, 1fr);
+		aspect-ratio: 1;
+		width: 100%;
+		max-width: var(--board-cap, 520px);
+		gap: 2px;
+		padding: 4px;
+		background: var(--surface-2);
+		border: 3px solid color-mix(in srgb, var(--border) 55%, #000);
+		border-radius: var(--radius-sm);
+		box-shadow: var(--shadow-lg);
+		container-type: inline-size;
+		touch-action: none; /* swipe-to-swap must not scroll the page */
+	}
+	.grid.locked {
+		opacity: 0.75;
+	}
+
+	.tile {
+		all: unset;
+		display: grid;
+		place-items: center;
+		aspect-ratio: 1;
+		background: var(--surface);
+		border-radius: var(--radius-sm);
+		cursor: pointer;
+		/* sized against the board, so it reads at the room's smaller --board-cap */
+		font-size: clamp(0.9rem, 7cqw, 2rem);
+		line-height: 1;
+		user-select: none;
+		transition: transform 0.12s ease, background 0.12s ease;
+	}
+	.tile.picked {
+		background: color-mix(in srgb, var(--accent) 32%, var(--surface));
+		outline: 2px solid var(--accent);
+		outline-offset: -2px;
+		transform: scale(1.08);
+	}
+	.tile.rejected {
+		background: color-mix(in srgb, var(--red) 28%, var(--surface));
+	}
+	/* the floating score gain — positioned against the tile it rose from */
+	.tile {
+		position: relative;
+	}
+	.gain {
+		position: absolute;
+		inset-block-start: 0;
+		font-size: 0.7em;
+		font-weight: 800;
+		color: var(--accent);
+		text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+		pointer-events: none;
+		animation: rise 0.65s ease-out forwards;
+	}
+	@keyframes rise {
+		to { transform: translateY(-140%); opacity: 0; }
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.tile { transition: none; }
+		.gain { animation: none; }
+	}
+</style>

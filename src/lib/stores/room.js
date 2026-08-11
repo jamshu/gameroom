@@ -89,6 +89,7 @@ export function createRoomStore(roomId) {
 	let signalHandler = null; // webrtc manager subscribes here
 	let systemHandler = null;
 	let aimHandler = null; // carroms live striker/aim subscribes here
+	let tickHandler = null; // match-3 live score ticker subscribes here
 	// True while the room's socket is up and proven — set on `welcome`, cleared the
 	// moment it drops. Keeps its old name deliberately: it is what cadence() reads
 	// and what the Stage 0a beacon measures, and both mean exactly what they always
@@ -173,6 +174,15 @@ export function createRoomStore(roomId) {
 	}
 	function onAim(fn) {
 		aimHandler = fn;
+	}
+	/** Match-3 live score ticker. Returns a disposer, unlike onAim/onSystem —
+	 *  the board mounts and unmounts with the game type, so a stale handler here
+	 *  would keep pushing scores into a component that has gone. */
+	function onTick(fn) {
+		tickHandler = fn;
+		return () => {
+			if (tickHandler === fn) tickHandler = null;
+		};
 	}
 
 	/**
@@ -672,6 +682,10 @@ export function createRoomStore(roomId) {
 				// Ephemeral: no state behind it, so deliberately no markActive/reconcile.
 				aimHandler?.(f.data);
 				break;
+			case 'tick':
+				// Ephemeral, same as 'aim' — a live score, with no state behind it.
+				tickHandler?.(f.data);
+				break;
 		}
 	}
 
@@ -846,7 +860,10 @@ export function createRoomStore(roomId) {
 
 	// `chat` inserts optimistically, so its echo poll would fetch a message we
 	// already have.
-	const NO_ECHO_POLL = new Set(['chat', 'carroms/aim']);
+	// match3/tick is ephemeral like carroms/aim — it writes nothing, so following
+	// it with a reconcile poll would be ~45 pointless round trips per player per
+	// round, on the hottest path either race game has.
+	const NO_ECHO_POLL = new Set(['chat', 'carroms/aim', 'match3/tick']);
 
 	/**
 	 * `signal` is conditional, which is why it can't just join the set above.
@@ -922,6 +939,7 @@ export function createRoomStore(roomId) {
 		onSignal,
 		onSystem,
 		onAim,
+		onTick,
 		pushLocalChat,
 		pushLocalMedia,
 		resolveLocalChat,

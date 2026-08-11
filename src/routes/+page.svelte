@@ -200,6 +200,23 @@
 
 	</section>
 
+	<!-- Solo play. Local-only and offline-capable, so it is the one thing on this
+	     page that always works — no room to create, nobody to wait for. -->
+	<section class="card solo-card">
+		<h2 class="section-title" style="margin-top:0;">Play solo</h2>
+		<p class="muted" style="margin:0 0 10px;">No room, no waiting — just you.</p>
+		<div class="game-tiles">
+			<a class="game-tile" href="/solo/sudoku">
+				<span class="game-tile-emoji emo">🔢</span>
+				<span class="game-tile-label">Sudoku</span>
+			</a>
+			<a class="game-tile" href="/solo/match3">
+				<span class="game-tile-emoji emo">🍬</span>
+				<span class="game-tile-label">Candy Match</span>
+			</a>
+		</div>
+	</section>
+
 	{#if showCreate}
 		<section class="card" style="padding:20px; margin-bottom:20px;">
 			<h2 class="section-title" style="margin-top:0;">+ New room</h2>
@@ -414,6 +431,16 @@
 	}
 	.game-tile-emoji {
 		font-size: 1.6rem;
+	}
+	.solo-card {
+		padding: 20px;
+		margin-bottom: 20px;
+	}
+	/* The solo tiles reuse .game-tile chrome but are links, not radio buttons —
+	   they navigate instead of selecting, so there is no --on state. */
+	a.game-tile {
+		text-decoration: none;
+		cursor: pointer;
 	}
 	@media (max-width: 420px) {
 		.game-tiles {

@@ -4,13 +4,16 @@
 //
 // ISOMORPHIC BY CONTRACT — no `$lib`, no `$env`. wrangler bundles this outside
 // the SvelteKit build where neither resolves; `check:noenv` enforces it.
-import { stateView, resolveClaims, filterPickRows, syncVoiceSince, VOICE_CAP } from '../shared/gamelogic.js';
+import {
+	stateView, resolveClaims, filterPickRows, syncVoiceSince, VOICE_CAP,
+	applySudokuFill, applyMatch3Finish, closeMatch3
+} from '../shared/gamelogic.js';
 import {
 	migrate, kvGet, kvSet, seedSequence,
 	appendEvent, eventsFor, newestFor, chatBefore, headSeq, oldestSeq, trim, rowsOfType,
 	REPLAY_MAX
 } from './schema.js';
-import { welcome, stateFrame, eventFrame, rosterFrame, aimFrame, ackFrame, errFrame, uptoOf, hasGap, withSeq, CLOSE } from './frames.js';
+import { welcome, stateFrame, eventFrame, rosterFrame, aimFrame, tickFrame, ackFrame, errFrame, uptoOf, hasGap, withSeq, CLOSE } from './frames.js';
 import { hydrate, recentEvents, roomExists, writeStateBack, archiveEvents, touchLastSeen } from './odoo-bridge.js';
 import { publicRoom, publicMembers, withPresence } from '../shared/roomview.js';
 
@@ -39,7 +42,10 @@ const ORPHAN_CHECK_EVERY_MS = 300_000;
    one-way ownership transfer first. Everything else — pushes from routes that
    still write Odoo themselves, roster updates, ephemeral aim — must NOT trigger
    it, or a room would flip the moment somebody merely spoke in chat. */
-const OWNING_OPS = new Set(['setState', 'append', 'thiefPick', 'voice']);
+// `tick` is deliberately absent: it is ephemeral score chatter, and letting it
+// flip a room to source-of-truth would transfer ownership on a frame that writes
+// nothing — the same reason chat and aim are not here.
+const OWNING_OPS = new Set(['setState', 'append', 'thiefPick', 'voice', 'sudokuFill', 'match3Finish']);
 
 export class RoomDO {
 	constructor(ctx, env) {
@@ -299,6 +305,16 @@ export class RoomDO {
 		// Ephemeral, deliberately before the op path: no ack, no seq, no storage.
 		if (msg.t === 'aim') {
 			this.broadcast(aimFrame({ ...msg.data, uid }), (u) => u !== uid);
+			return;
+		}
+
+		// The match-3 score ticker. Ephemeral for the same reason `aim` is: it
+		// fires every few seconds per player for 90 seconds and nothing durable
+		// rides on it — the authoritative score arrives once, at the finish.
+		// Routing it through the state version instead would bump `state.v` for
+		// pixels and thrash every client's merge gate.
+		if (msg.t === 'tick') {
+			this.broadcast(tickFrame({ ...msg.data, uid }), (u) => u !== uid);
 			return;
 		}
 
@@ -647,6 +663,29 @@ export class RoomDO {
 			}
 			case 'thiefPick':
 				return this.thiefPick(op);
+			case 'sudokuFill':
+				return this.raceWrite('sudoku', (game) =>
+					applySudokuFill(game, Number(op.uid), op.cell, op.digit)
+				);
+			case 'match3Finish':
+				return this.raceWrite('match3', (game) => {
+					const res = applyMatch3Finish(game, Number(op.uid), op.report);
+					/* Then try to close the round, EVEN IF the report above was refused.
+					   A player who already reported comes back once after the grace
+					   window precisely to trigger this, and that second call is the only
+					   thing that ends a round somebody never reported into — there is no
+					   alarm here by design. `closeMatch3` is itself a no-op before the
+					   grace window and after the round has ended, so this is safe to
+					   call on every request. */
+					const closed = closeMatch3(game);
+					if (res.ok || closed) return { ...res, ok: true, closed };
+					return res;
+				});
+			case 'tick':
+				// Ephemeral, exactly like `aim`: the match-3 score ticker. No seq, no
+				// storage, no ack, no state version — see the note on the socket path.
+				this.broadcast(tickFrame(op.data), (u) => u !== Number(op.data?.uid));
+				return { ok: true };
 			case 'aim':
 				// Ephemeral: no seq, no storage, no ack. Echoes to everyone but the
 				// shooter, who is already rendering their own drag locally.
@@ -779,6 +818,43 @@ export class RoomDO {
 		this.broadcastState(state);
 		this.markDirty();
 		return { ok: true, state, v: state.v };
+	}
+
+	/**
+	 * One player's write into a race game, applied and published as ONE step.
+	 *
+	 * The race games are the second place several players write at the same
+	 * instant — but unlike thief-finder's envelope grab, each of them writes only
+	 * their OWN sub-state (`boards[uid]` / `scores[uid]`). Two writes can never
+	 * describe conflicting futures, so there is nothing to rank and
+	 * `contendedProgress` deliberately does not cover them (see games.js).
+	 *
+	 * What makes that safe is the same property thiefPick relies on: the object is
+	 * single-threaded and nothing below awaits, so no second fill can observe or
+	 * interleave with a half-applied one. guardVersion would be meaningless here
+	 * for exactly the reason given there — there is no window.
+	 *
+	 * `apply` is the shared arbiter from shared/gamelogic.js, the same function
+	 * the /api route calls, so the two stores cannot drift.
+	 */
+	raceWrite(type, apply) {
+		const state = kvGet(this.sql, 'state');
+		const game = state?.game;
+		if (!game || game.type !== type) {
+			return { ok: false, status: 409, error: `No ${type} game in progress` };
+		}
+
+		// `game` is a live reference into `state`, so this mutates what we persist.
+		const res = apply(game);
+		// A refused write changed nothing — do not burn a version or a broadcast on
+		// it, or a frozen player mashing keys would fan out to the whole room.
+		if (!res.ok) return res;
+
+		state.v = (Number(state.v) || 0) + 1;
+		kvSet(this.sql, 'state', state);
+		this.broadcastState(state);
+		this.markDirty();
+		return { ...res, state, v: state.v };
 	}
 
 	/** Close a revoked member's sockets. Terminal on the client. */

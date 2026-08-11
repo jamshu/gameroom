@@ -70,6 +70,19 @@
 	const PUBLIC_ROUTES = ['/login', '/signup'];
 	const isPublic = (path) => PUBLIC_ROUTES.some((p) => path.startsWith(p));
 
+	/* Routes that need no session but are NOT auth pages — solo play is entirely
+	   local (no room, no Odoo row, no socket), so there is nothing to authorise.
+	   Distinct from PUBLIC_ROUTES because that list means "an auth page", and the
+	   gate below bounces a signed-in user OFF those; doing that here would throw
+	   a logged-in player out of their game.
+
+	   Load-bearing for the offline promise, not just for guests: checkSession
+	   turns any fetch failure into `user = null`, so with no network a signed-in
+	   player opening a precached solo page would otherwise be redirected to
+	   /signup — the one moment the game is most useful. */
+	const OPEN_ROUTES = ['/solo'];
+	const isOpen = (path) => OPEN_ROUTES.some((p) => path.startsWith(p));
+
 	// Keepalive: re-sync the session every 10 min / on tab focus so the rotated
 	// session id and sliding 30-day cookie never drift into logout.
 	const KEEPALIVE_MS = 10 * 60 * 1000;
@@ -150,7 +163,7 @@
 	// first-time visitor has no credentials, so the create-account page is the
 	// friendlier landing. Returning users reach /login from the link there.
 	$effect(() => {
-		if ($user === null && !isPublic($page.url.pathname)) goto('/signup');
+		if ($user === null && !isPublic($page.url.pathname) && !isOpen($page.url.pathname)) goto('/signup');
 		if ($user && isPublic($page.url.pathname)) goto('/');
 	});
 

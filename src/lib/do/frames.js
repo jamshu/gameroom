@@ -139,6 +139,18 @@ export function aimFrame(data) {
 	return { t: 'aim', data };
 }
 
+/** Ephemeral match-3 score ticker — `aim`'s sibling, and ephemeral for the same
+ *  reason: it fires every few seconds per player through a 90-second round to
+ *  keep the rival scoreboard live, and nothing durable rides on it. The score
+ *  that counts is reported once, at the finish, through match3Finish.
+ *
+ *  A separate frame rather than a reused `aim` because the two payloads have
+ *  nothing in common — an aim cursor is carrom geometry — and a client
+ *  switching on `t` should not have to guess which game sent it. */
+export function tickFrame(data) {
+	return { t: 'tick', data };
+}
+
 /** Reply to a client op. `id` echoes the request so postSocket can settle it. */
 export function ackFrame(id, ok, extra = {}) {
 	return { t: 'ack', id, ok, ...extra };

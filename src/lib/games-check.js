@@ -20,6 +20,11 @@ const seatIds = (...args) => [...seatedPlayerIds(...args)].sort((a, b) => a - b)
 	assert.equal(playerCapacity('ludo', 8), 4);
 	assert.equal(playerCapacity('thief_finder', 8), 8, 'thief uses the room max');
 	assert.equal(playerCapacity('thief_finder', 0), 10, 'and defaults when unset');
+	// The race games cap at 6 so the rival ticker stays readable. Asserted
+	// explicitly because the fallthrough (`maxPlayers || 10`) is silent: a missing
+	// branch would seat ten players and nothing would look wrong until the UI did.
+	assert.equal(playerCapacity('sudoku', 12), 6);
+	assert.equal(playerCapacity('match3', 12), 6);
 }
 
 // (b) the over-capacity case: 5 thief players -> chess seats the 2 lowest ids.
@@ -96,9 +101,15 @@ const seatIds = (...args) => [...seatedPlayerIds(...args)].sort((a, b) => a - b)
 	for (const phase of ['reveal', 'finished', 'idle']) {
 		assert.equal(contendedProgress({ type: 'thief_finder', phase, claims: {} }), null, phase);
 	}
-	// turn-serialized games never contend, so they keep the strict version rule
-	for (const type of ['chess', 'ludo', 'carroms']) {
+	// turn-serialized games never contend, so they keep the strict version rule.
+	// sudoku/match3 are in this list on purpose despite having many simultaneous
+	// writers: each player writes only their OWN sub-state, so two writes never
+	// describe conflicting futures and are merged by a per-player DO op instead of
+	// being ranked. Adding them to the ranking would destabilise thief-finder's
+	// total order for no gain — see the comment on contendedProgress.
+	for (const type of ['chess', 'ludo', 'carroms', 'sudoku', 'match3']) {
 		assert.equal(contendedProgress({ type, phase: 'picking' }), null, type);
+		assert.ok(!isContendedPhase({ type }), `${type} keeps the strict version rule`);
 	}
 	assert.equal(contendedProgress(null), null, 'no game at all');
 

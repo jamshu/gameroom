@@ -16,6 +16,12 @@ import {
 	ludoBlockedCells,
 	ludoLegalMoves
 } from '../ludo-rules.js';
+import {
+	generate as sudokuGenerate, progressOf, isComplete, FREEZE_MS as SUDOKU_FREEZE_MS
+} from './sudoku.js';
+import {
+	ROUND_MS as MATCH3_ROUND_MS, GRACE_MS as MATCH3_GRACE_MS, scoreCeiling
+} from './match3.js';
 
 /* --------------------------------- init ---------------------------------- */
 
@@ -98,6 +104,59 @@ export function initGame(gameType, playerUids, room) {
 		// may be on it; the mesh + presence ride the existing voice roster/signal.
 		if (playerUids.length < 2) throw httpError(400, 'Video Call needs at least 2 players');
 		return { type: 'videocall', players: playerUids, result: null };
+	}
+	if (gameType === 'sudoku') {
+		if (playerUids.length < 2 || playerUids.length > 6) {
+			throw httpError(400, 'Sudoku needs 2 to 6 players');
+		}
+		/* Fixed for the race. The solo page offers easy/medium/hard because the
+		   player is only competing with themselves; a room would need every player
+		   to agree, which means a host setting, an Odoo field and a create-room
+		   control. Medium is a 5-10 minute race — the right length for a room —
+		   so that is a deliberate non-goal rather than an oversight. */
+		const difficulty = 'medium';
+		// One deal, played by everyone on their own grid. The seed is minted HERE,
+		// like thief-finder's epoch, which is what makes /rematch and resetRound
+		// hand out a fresh puzzle for free — they re-run initGame. Reusing a room
+		// seed would replay the grid the players just solved.
+		const seed = crypto.randomUUID();
+		const { puzzle, solution } = sudokuGenerate(seed, difficulty);
+		return {
+			type: 'sudoku',
+			players: playerUids,
+			seed,
+			difficulty,
+			puzzle, // public: the dealt grid, identical for everyone
+			solution, // SECRET — stripped by gameView, never serialized to a client
+			startedAt: Date.now(),
+			// per-player sub-state; nobody ever writes anyone else's entry
+			boards: Object.fromEntries(
+				playerUids.map((u) => [u, { filled: {}, mistakes: 0, frozenUntil: 0, doneAt: null }])
+			),
+			result: null // winner uid once someone completes their grid
+		};
+	}
+	if (gameType === 'match3') {
+		if (playerUids.length < 2 || playerUids.length > 6) {
+			throw httpError(400, 'Candy Match needs 2 to 6 players');
+		}
+		// Only a seed: unlike sudoku there is no finite board to deal, because the
+		// refill queue is unbounded. Every client builds the same starting board
+		// from this and generates its own tiles from there (see shared/match3.js).
+		return {
+			type: 'match3',
+			players: playerUids,
+			seed: crypto.randomUUID(),
+			startedAt: Date.now(),
+			durationMs: MATCH3_ROUND_MS,
+			scores: Object.fromEntries(
+				playerUids.map((u) => [u, { score: 0, swaps: 0, finishedAt: null }])
+			),
+			// Per-player swap logs, kept for replay validation. Stripped by gameView:
+			// audit data, not gameplay data.
+			logs: Object.fromEntries(playerUids.map((u) => [u, []])),
+			result: null
+		};
 	}
 	throw httpError(400, 'Unknown game type');
 }
@@ -506,7 +565,141 @@ export function winnerUids(game) {
 			.filter((u) => totals[u] === top)
 			.map(Number);
 	}
+	if (game.type === 'sudoku') {
+		// The race ends the moment someone completes their grid, so there is
+		// exactly one winner and it is recorded in `result`.
+		return game.result ? [game.result] : [];
+	}
+	if (game.type === 'match3') {
+		if (!game.result) return [];
+		// Ties all score — two players genuinely reaching the same score in 90
+		// seconds is a joint win, the same way thief-finder treats a tied total.
+		const top = Math.max(0, ...Object.values(game.scores || {}).map((s) => s?.score || 0));
+		if (top <= 0) return []; // nobody scored: no winner rather than everyone
+		return Object.keys(game.scores || {})
+			.filter((u) => (game.scores[u]?.score || 0) === top)
+			.map(Number);
+	}
 	return []; // videocall and anything new that never finishes
+}
+
+/* ------------------------- race arbiters (shared) -------------------------
+   The rules for the two race games, written ONCE and called from both the /api
+   route and the Durable Object — the same "one arbiter, two stores" shape
+   resolveClaims already uses for thief-finder picks. Each mutates `game` in
+   place and reports what happened; neither reads a clock it wasn't given, so
+   the caller decides what "now" means and the check script can pin the edges. */
+
+/**
+ * Apply one sudoku entry for `uid`.
+ *
+ * A wrong digit is REJECTED, not placed: the grid therefore only ever holds
+ * correct digits, which is what lets the finish test be "every editable cell is
+ * filled" without re-deriving the solution client-side. The cost is a freeze,
+ * enforced here rather than in the UI — a client that ignores its own countdown
+ * still gets refused.
+ */
+export function applySudokuFill(game, uid, cell, digit, now = Date.now()) {
+	const board = game?.boards?.[uid];
+	if (!board) return { ok: false, status: 403, error: 'Not a player in this game' };
+	if (game.result) return { ok: false, status: 409, error: 'The race is over' };
+	if (board.doneAt) return { ok: false, status: 409, error: 'You have already finished' };
+
+	/* parseInt for the non-number cases, NOT Number(): `Number(null)` and
+	   `Number('')` are both 0, which is a valid cell index — so a request with a
+	   missing or empty `cell` would silently be applied to the top-left square
+	   instead of being refused. parseInt yields NaN for all of those. A float is
+	   kept as-is so `Number.isInteger` can still reject it. */
+	const i = typeof cell === 'number' ? cell : Number.parseInt(cell, 10);
+	const d = typeof digit === 'number' ? digit : Number.parseInt(digit, 10);
+	if (!Number.isInteger(i) || i < 0 || i > 80) return { ok: false, status: 400, error: 'No such cell' };
+	if (!Number.isInteger(d) || d < 1 || d > 9) return { ok: false, status: 400, error: 'Not a digit' };
+	if (game.puzzle[i] !== 0) return { ok: false, status: 400, error: 'That cell is a given' };
+	if (board.filled?.[i]) return { ok: false, status: 409, error: 'That cell is already filled' };
+	if ((board.frozenUntil || 0) > now) {
+		return { ok: false, status: 429, code: 'frozen', error: 'Still frozen', frozenUntil: board.frozenUntil };
+	}
+
+	if (game.solution[i] !== d) {
+		board.mistakes = (board.mistakes || 0) + 1;
+		board.frozenUntil = now + SUDOKU_FREEZE_MS;
+		return { ok: true, correct: false, frozenUntil: board.frozenUntil, mistakes: board.mistakes };
+	}
+
+	board.filled = { ...(board.filled || {}), [i]: d };
+	if (isComplete(game.puzzle, board.filled)) {
+		board.doneAt = now;
+		// First to complete wins outright; a later finisher cannot displace them.
+		if (!game.result) game.result = Number(uid);
+	}
+	return { ok: true, correct: true, finished: !!board.doneAt, won: game.result === Number(uid) };
+}
+
+/** Has the match-3 round's clock run out, by the server's own stamps? */
+export function match3Expired(game, now = Date.now()) {
+	if (!game?.startedAt) return false;
+	return now >= game.startedAt + (game.durationMs || MATCH3_ROUND_MS);
+}
+
+/**
+ * Record a player's final match-3 score.
+ *
+ * The score is computed by the client — it has to be, because the refill queue
+ * is generated client-side from the shared seed (see shared/match3.js). So it is
+ * CLAMPED here rather than trusted outright: `scoreCeiling` is an order of
+ * magnitude above good play, so it never touches an honest round but refuses a
+ * fabricated one. The swap log is kept so `replay()` can turn this into real
+ * validation later without a data migration.
+ *
+ * The round closes when every player has reported, or whenever the clock has
+ * run out — whichever comes first, so one player leaving their tab open cannot
+ * hold the room hostage.
+ */
+export function applyMatch3Finish(game, uid, { score, swaps, log } = {}, now = Date.now()) {
+	const entry = game?.scores?.[uid];
+	if (!entry) return { ok: false, status: 403, error: 'Not a player in this game' };
+	if (entry.finishedAt) return { ok: false, status: 409, error: 'Already reported' };
+	if (!match3Expired(game, now)) return { ok: false, status: 409, error: 'The round is still running' };
+
+	const elapsed = Math.max(0, now - game.startedAt);
+	const claimed = Math.max(0, Math.floor(Number(score) || 0));
+	entry.score = Math.min(claimed, scoreCeiling(elapsed));
+	entry.swaps = Math.max(0, Math.floor(Number(swaps) || 0));
+	entry.finishedAt = now;
+	if (Array.isArray(log)) game.logs[uid] = log;
+
+	const everyoneIn = Object.values(game.scores).every((s) => s.finishedAt);
+	if (everyoneIn && !game.result) game.result = 'done';
+	return { ok: true, score: entry.score, clamped: entry.score < claimed, finished: everyoneIn };
+}
+
+/**
+ * Close a match-3 round whose clock has expired, scoring everyone who never
+ * reported as they stand. Called by the finish endpoint so one straggler — a
+ * closed tab, a dead connection — cannot leave the room stuck mid-game.
+ */
+export function closeMatch3(game, now = Date.now()) {
+	if (game?.result) return false;
+	// Grace, not merely expiry: every player reports independently, so closing on
+	// the first report to arrive would write off everyone still mid-request — a
+	// race won by whoever has the fastest connection rather than the best round.
+	if (!match3Expired(game, now - MATCH3_GRACE_MS)) return false;
+	for (const s of Object.values(game.scores || {})) if (!s.finishedAt) s.finishedAt = now;
+	game.result = 'done';
+	return true;
+}
+
+/** One point to whoever completed the grid first. */
+export function sudokuScores(game) {
+	return Object.fromEntries(
+		gameSeatUids(game).map((u) => [u, Number(u) === Number(game.result) ? 1 : 0])
+	);
+}
+
+/** One point to the top scorer(s); a tie pays everyone who tied. */
+export function match3Scores(game) {
+	const winners = new Set(winnerUids(game).map(Number));
+	return Object.fromEntries(gameSeatUids(game).map((u) => [u, winners.has(Number(u)) ? 1 : 0]));
 }
 
 /**
@@ -544,7 +737,54 @@ export function gameView(game, uid) {
 		// remaining-ms exists to avoid.
 		return { ...game, clock: { w: live.w, b: live.b, ticking: live.ticking } };
 	}
+	if (game.type === 'sudoku') return sudokuView(game, uid);
+	if (game.type === 'match3') return match3View(game);
 	return game;
+}
+
+/**
+ * Sudoku as one player may see it. Two things are withheld, for two reasons:
+ *
+ *   `solution` — the answer key. Shipping it would end the game.
+ *   every OTHER player's `filled` map — their answers are the answer key. A
+ *   rival's grid is a live, growing copy of the solution, so leaking it is the
+ *   same leak by a slower route. This is the one people forget.
+ *
+ * Rivals are projected down to what the ticker actually renders: how far along
+ * they are, how many mistakes they've made, and whether they've finished.
+ *
+ * `uid` may hold no seat at all — spectators exist above playerCapacity, and
+ * they simply get every player projected. No branch here may assume the viewer
+ * is a player.
+ */
+function sudokuView(game, uid) {
+	const me = String(uid);
+	const boards = {};
+	for (const [id, b] of Object.entries(game.boards || {})) {
+		const progress = progressOf(game.puzzle, b?.filled);
+		const shared = {
+			progress: progress.done,
+			total: progress.total,
+			pct: progress.pct,
+			mistakes: b?.mistakes || 0,
+			doneAt: b?.doneAt ?? null
+		};
+		// own board carries the actual digits and the freeze the UI must honour
+		boards[id] = id === me ? { ...shared, filled: b?.filled || {}, frozenUntil: b?.frozenUntil || 0 } : shared;
+	}
+	const { solution, ...rest } = game;
+	return { ...rest, boards };
+}
+
+/**
+ * Match-3 as one player may see it. The seed is deliberately public — both
+ * players building the same board from it IS the game — so the only thing
+ * stripped is the per-player swap logs, which are audit data for replay
+ * validation and would otherwise let a client watch a rival's moves live.
+ */
+function match3View(game) {
+	const { logs, ...rest } = game;
+	return rest;
 }
 
 /** The per-session `state` envelope shared by the poll and POST responses. */

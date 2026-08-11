@@ -9,7 +9,12 @@ export const GAMES = [
 	{ id: 'chess', label: 'Chess', emoji: '♟️', needs: 'exactly 2 players' },
 	{ id: 'carroms', label: 'Carroms', emoji: '🎯', needs: '2 or 4 players' },
 	{ id: 'ludo', label: 'Ludo', emoji: '🎲', needs: '2 to 4 players' },
-	{ id: 'videocall', label: 'Video Call', emoji: '📹', needs: '2 to 6 players' }
+	{ id: 'videocall', label: 'Video Call', emoji: '📹', needs: '2 to 6 players' },
+	// The two race games: everyone plays their OWN board from one shared deal,
+	// simultaneously, rather than taking turns. Also the only two with a
+	// local-only solo mode (/solo/*), which needs no room at all.
+	{ id: 'sudoku', label: 'Sudoku', emoji: '🔢', needs: '2 to 6 players' },
+	{ id: 'match3', label: 'Candy Match', emoji: '🍬', needs: '2 to 6 players' }
 ];
 
 export const GAME_TYPES = GAMES.map((g) => g.id);
@@ -30,6 +35,10 @@ export function playerCapacity(gameType, maxPlayers) {
 	if (gameType === 'carroms') return 4;
 	if (gameType === 'ludo') return 4;
 	if (gameType === 'videocall') return 6;
+	// Race games have no structural seat limit — every player has their own
+	// board — so the cap is about the rival ticker staying readable, not rules.
+	if (gameType === 'sudoku') return 6;
+	if (gameType === 'match3') return 6;
 	return maxPlayers || 10;
 }
 
@@ -82,6 +91,16 @@ const PHASE_RANK = { picking: 0, guessing: 1 };
  * 1000 players — so the guessing flip always outranks any picking payload.
  */
 export function contendedProgress(game) {
+	/* DELIBERATELY thief_finder only — do not add sudoku or match3 here.
+	   They look like candidates (several players writing at once) but the
+	   conflict is the opposite shape. Thief-finder's writers contend for the SAME
+	   bytes and produce genuinely different room futures, so one of them has to
+	   be ranked the winner; that is what this total order is for. In a race every
+	   player writes only their own sub-state under `boards[uid]`/`scores[uid]`,
+	   so two writes never describe conflicting futures and there is nothing to
+	   rank — they are merged instead, by a per-player DO op (see sudokuFill in
+	   do/room-do.js, modelled on thiefPick). Extending the ranking to cover them
+	   would put two more games inside this invariant for no gain. */
 	if (game?.type !== 'thief_finder') return null;
 	const rank = PHASE_RANK[game.phase];
 	if (rank == null) return null;

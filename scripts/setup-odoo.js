@@ -7,6 +7,12 @@
 // Works on Odoo 19+ (unified ir.access) and 17/18 (ir.model.access).
 //
 // Run: npm run setup:odoo   (reads .env via node --env-file)
+import { GAMES } from '../src/lib/games.js';
+
+// Derived from the app's own game list rather than re-spelled here — the two
+// drifting is exactly how a game ends up unselectable in production. games.js is
+// dependency-free (no $lib, no browser, no Odoo), so plain node can import it.
+const GAME_TYPE_SELECTION = GAMES.map((g) => [g.id, g.label]);
 
 const URL_ = (process.env.ODOO_URL || '').replace(/\/$/, '');
 const DB = process.env.ODOO_DB;
@@ -83,6 +89,45 @@ async function ensureField(modelId, model, vals) {
 	const id = await x('ir.model.fields', 'create', [create]);
 	console.log(`  + field ${model}.${vals.name} (${vals.ttype})`);
 	return id;
+}
+
+/**
+ * Add any MISSING selection values to a field that already exists.
+ *
+ * ensureField returns early for an existing field and leaves its selection
+ * as-is, which is right for everything it does but means a new game type added
+ * to the list above is a silent no-op on an already-provisioned Odoo: the code
+ * ships, dev works (fresh database, field created with the full list), and
+ * production simply cannot select the new game — with no error anywhere. That
+ * is the single most likely way this feature fails, so it gets its own step.
+ *
+ * Additive only. Existing values are never renamed or deleted: rows in
+ * x_gameroom already hold them, and removing a selection value orphans every
+ * row using it.
+ */
+async function patchSelection(modelId, model, name, selection) {
+	const [field] = await x('ir.model.fields', 'search', [
+		[['model_id', '=', modelId], ['name', '=', name]]
+	]);
+	if (!field) return; // ensureField will have created it with the full list
+
+	const existing = await x('ir.model.fields.selection', 'search_read', [
+		[['field_id', '=', field]],
+		['value', 'sequence']
+	]);
+	const have = new Set(existing.map((r) => r.value));
+	const missing = selection.filter(([value]) => !have.has(value));
+	if (!missing.length) return;
+
+	// keep new values after the ones already there, in the order given
+	let seq = Math.max(0, ...existing.map((r) => r.sequence || 0));
+	for (const [value, label] of missing) {
+		seq += 10;
+		await x('ir.model.fields.selection', 'create', [
+			{ field_id: field, value, name: label, sequence: seq }
+		]);
+		console.log(`  + selection ${model}.${name} = ${value}`);
+	}
 }
 
 async function groupIdByXmlId(module, name) {
@@ -163,7 +208,7 @@ async function main() {
 	console.log('Models & fields:');
 	const roomModel = await ensureModel('x_gameroom', 'Game Room');
 	for (const f of [
-		{ name: 'x_studio_game_type', ttype: 'selection', selection: [['chess', 'Chess'], ['carroms', 'Carroms'], ['thief_finder', 'Thief Finder'], ['ludo', 'Ludo'], ['videocall', 'Video Call']] },
+		{ name: 'x_studio_game_type', ttype: 'selection', selection: GAME_TYPE_SELECTION },
 		{ name: 'x_studio_status', ttype: 'selection', selection: [['lobby', 'Lobby'], ['playing', 'Playing'], ['finished', 'Finished']] },
 		{ name: 'x_studio_host_id', ttype: 'many2one', relation: 'res.users' },
 		{ name: 'x_studio_max_players', ttype: 'integer' },
@@ -192,6 +237,10 @@ async function main() {
 			column1: 'x_gameroom_id', column2: 'user_id'
 		}
 	]) await ensureField(roomModel, 'x_gameroom', f);
+
+	// Adding a game to src/lib/games.js is otherwise invisible to an Odoo that
+	// already has this field — see patchSelection.
+	await patchSelection(roomModel, 'x_gameroom', 'x_studio_game_type', GAME_TYPE_SELECTION);
 
 	const memberModel = await ensureModel('x_room_member', 'Room Member');
 	for (const f of [

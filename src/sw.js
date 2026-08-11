@@ -9,6 +9,48 @@ clientsClaim();
 precacheAndRoute(self.__WB_MANIFEST);
 cleanupOutdatedCaches();
 
+/* ---------------------- offline solo play ------------------------------------
+   The precache manifest above carries every JS/CSS chunk but NO page shell:
+   vite-plugin-pwa globs the client build before SvelteKit's prerendered HTML is
+   merged into the adapter output, so the html glob pattern matches nothing.
+   Every navigation is therefore network-only.
+
+   That is fine for the rest of the app — a room is useless without the server
+   anyway — but solo sudoku and match-3 are entirely local: the puzzle is
+   generated in the tab and every move is resolved there. They are exactly the
+   thing you want on a plane, so they get a small network-first runtime cache of
+   their own. First visit online; every visit after that survives with no
+   network, since the chunks the page imports are already precached.
+
+   Scoped to /solo on purpose. A blanket navigation fallback would change how
+   every other route behaves offline, which is not this feature's call to make. */
+const SOLO_CACHE = 'gr-solo-v1';
+
+self.addEventListener('fetch', (event) => {
+	const { request } = event;
+	if (request.mode !== 'navigate') return;
+	const url = new URL(request.url);
+	if (url.origin !== self.location.origin || !url.pathname.startsWith('/solo')) return;
+
+	event.respondWith(
+		(async () => {
+			try {
+				const fresh = await fetch(request);
+				// Clone BEFORE returning: the body is a stream and can only be read
+				// once, so caching the original would hand the page an empty response.
+				const copy = fresh.clone();
+				caches.open(SOLO_CACHE).then((c) => c.put(request, copy)).catch(() => {});
+				return fresh;
+			} catch {
+				const cached = await caches.match(request, { cacheName: SOLO_CACHE });
+				// No cached copy means this is a first visit with no network — there is
+				// genuinely nothing to serve, so let the browser show its offline page.
+				return cached || Response.error();
+			}
+		})()
+	);
+});
+
 // Web push. Handles two payload shapes: the app's {title, body, url} and Odoo's
 // native {title, options: {body, data}}.
 self.addEventListener('push', (event) => {

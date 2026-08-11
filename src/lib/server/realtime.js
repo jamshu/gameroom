@@ -63,3 +63,14 @@ export async function publishAim(roomId, data) {
 	if (!isDoRoom(roomId)) return;
 	return doOp(roomId, { op: 'aim', data });
 }
+
+/**
+ * Push a live match-3 score. Ephemeral — no storage, no event id, no state
+ * version, exactly like publishAim. It fires every few seconds per player for
+ * the 90 seconds a round lasts; the score that actually counts is reported once
+ * at the finish, through the match3 finish endpoint.
+ */
+export async function publishTick(roomId, data) {
+	if (!isDoRoom(roomId)) return;
+	return doOp(roomId, { op: 'tick', data });
+}
