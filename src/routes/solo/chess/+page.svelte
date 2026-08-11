@@ -16,6 +16,7 @@
 	const YOU = 1;
 	const AI = 2;
 	const START = new Chess().fen();
+	const MIN_THINK_MS = 2000; // floor on the engine's reply so it doesn't snap back
 
 	// Skill Level (0..20) + search depth per tier. Easy is genuinely beatable;
 	// Hard is far past club strength. See chessengine.bestMove.
@@ -94,8 +95,13 @@
 		thinking = true;
 		error = '';
 		try {
+			const start = Date.now();
 			const best = await engine.bestMove(from, { skill: opts.skill, depth: opts.depth });
-			// a new game (or your move) may have started while it thought
+			// Floor the reply at ~2s: a low-depth search returns almost instantly and
+			// an opponent that snaps back before you've let go of your piece feels off.
+			const rest = MIN_THINK_MS - (Date.now() - start);
+			if (rest > 0) await new Promise((r) => setTimeout(r, rest));
+			// a new game (or your move) may have started while it thought/waited
 			if (!best || !game || game.result || game.fen !== from) return;
 			const mv = c.move({ from: best.from, to: best.to, promotion: 'q' });
 			game.fen = c.fen();
