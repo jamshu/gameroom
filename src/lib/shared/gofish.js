@@ -77,8 +77,31 @@ function passTurn(game) {
 	game.result = 'done'; // nobody holds a card and the ocean is empty
 }
 
+/**
+ * Is any progress still possible? With the ocean dry, the only productive move is
+ * an ask where the asker AND some other player both hold the same rank — nothing
+ * else can ever complete another book. If no two players share a rank, the game is
+ * dead (the remaining cards can never book), so it must end rather than let the
+ * turn ping-pong forever on futile asks.
+ */
+function anyProductiveAsk(game) {
+	for (const a of game.players) {
+		const ranksA = new Set(game.hands[a].map((c) => c.r));
+		for (const b of game.players) {
+			if (b === a) continue;
+			if (game.hands[b].some((c) => ranksA.has(c.r))) return true;
+		}
+	}
+	return false;
+}
+
 function endIfDone(game) {
-	if (totalBooks(game) === 13) game.result = 'done';
+	if (totalBooks(game) === 13) {
+		game.result = 'done';
+		return;
+	}
+	// Ocean dry and no two players share a rank → no book can ever be completed.
+	if (game.ocean.length === 0 && !anyProductiveAsk(game)) game.result = 'done';
 }
 
 /**
@@ -121,6 +144,11 @@ export function ask(game, uid, targetUid, rank) {
 	}
 
 	collectBooks(game, uid);
+	// A successful ask normally earns another turn — but if completing a book just
+	// emptied your hand, you have nothing left to ask with. Keeping the turn there
+	// deadlocks the game (no ranks to pick, and passTurn never runs), so drop the
+	// extra turn; passTurn refills you from the ocean when it comes back round.
+	if (game.hands[uid].length === 0) keepTurn = false;
 	endIfDone(game);
 	if (!game.result && !keepTurn) passTurn(game);
 	return { ok: true, keepTurn, result: game.lastAsk };

@@ -43,7 +43,7 @@ import {
 	const g = initGoFish([1, 2]);
 	g.hands[1] = [{ r: 5, s: 0 }];
 	g.hands[2] = [{ r: 9, s: 1 }];
-	g.ocean = [{ r: 3, s: 2 }]; // pop() serves this — not a 5, so the turn passes
+	g.ocean = [{ r: 4, s: 3 }, { r: 3, s: 2 }]; // pop() serves the 3 — not a 5, so the turn passes; ocean stays non-empty
 	g.turnIdx = 0;
 	const res = ask(g, 1, 2, 5);
 	assert.equal(res.keepTurn, false);
@@ -113,6 +113,42 @@ import {
 	assert.equal(g.result, 'done');
 	assert.deepEqual(gofishWinners(g), [1], '8 books beats 5');
 	assert.deepEqual(gofishScores(g), { 1: 1, 2: 0 });
+}
+
+// (h2) a hit that empties the hand by completing a book must PASS the turn, not
+//      keep it — otherwise the player has no cards to ask with and the game hangs.
+{
+	const g = initGoFish([1, 2]);
+	g.books[1] = [];
+	g.hands[1] = [{ r: 5, s: 0 }, { r: 5, s: 1 }, { r: 5, s: 2 }]; // three fives, nothing else
+	g.hands[2] = [{ r: 5, s: 3 }, { r: 8, s: 0 }];
+	g.ocean = [{ r: 9, s: 1 }];
+	g.turnIdx = 0;
+	const res = ask(g, 1, 2, 5); // takes the 5 → books it → hand empties
+	assert.deepEqual(g.books[1], [5], 'the four fives booked');
+	assert.equal(g.hands[1].length, 0, 'the hand emptied');
+	assert.equal(res.keepTurn, false, 'an emptying hit does NOT keep the turn');
+	assert.equal(g.turnIdx, 1, 'the turn passed instead of hanging');
+	assert.notEqual(g.result, 'done', 'the game is not over — the ocean still has cards');
+}
+
+// (h3) ocean dry + no two players share a rank → the game ends instead of hanging
+//      on futile asks (the infinite-loop bug: one player out, the other holding
+//      dead cards that can never book).
+{
+	const g = initGoFish([1, 2]);
+	g.books[1] = [2, 3, 4, 5, 6, 7]; // 6 books
+	g.books[2] = [9, 10, 11, 12]; // 4 books
+	g.hands[1] = [{ r: 8, s: 0 }]; // an 8 and a K, held by different players — no shared rank
+	g.hands[2] = [{ r: 13, s: 1 }];
+	g.ocean = [];
+	g.turnIdx = 0;
+	// p1 asks p2 for its 8 — a miss, ocean empty, no draw → normally passes the turn,
+	// but with no productive ask left the game must be declared over.
+	const res = ask(g, 1, 2, 8);
+	assert.equal(res.result.got, 'fish');
+	assert.equal(g.result, 'done', 'a dead position ends the game');
+	assert.deepEqual(gofishWinners(g), [1], '6 books beats 4');
 }
 
 // (i) the view hides rival hands but shows public books.
