@@ -16,6 +16,9 @@
 	import LudoBoard from '$lib/components/LudoBoard.svelte';
 	import SudokuRace from '$lib/components/SudokuRace.svelte';
 	import Match3Race from '$lib/components/Match3Race.svelte';
+	import Crazy8sBoard from '$lib/components/Crazy8sBoard.svelte';
+	import BlackjackBoard from '$lib/components/BlackjackBoard.svelte';
+	import GoFishBoard from '$lib/components/GoFishBoard.svelte';
 	import VideoCallRoom from '$lib/components/VideoCallRoom.svelte';
 	import Leaderboard from '$lib/components/Leaderboard.svelte';
 	import Scoreboard from '$lib/components/Scoreboard.svelte';
@@ -716,6 +719,12 @@
 						<SudokuRace {store} game={$store.game} {members} {myUid} />
 					{:else if $store.game?.type === 'match3'}
 						<Match3Race {store} game={$store.game} {members} {myUid} />
+					{:else if $store.game?.type === 'crazy8s'}
+						<Crazy8sBoard {store} game={$store.game} {members} {myUid} />
+					{:else if $store.game?.type === 'blackjack'}
+						<BlackjackBoard {store} game={$store.game} {members} {myUid} />
+					{:else if $store.game?.type === 'gofish'}
+						<GoFishBoard {store} game={$store.game} {members} {myUid} />
 					{:else}
 						<p class="muted">Loading game…</p>
 					{/if}

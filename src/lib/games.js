@@ -14,7 +14,11 @@ export const GAMES = [
 	// simultaneously, rather than taking turns. Also the only two with a
 	// local-only solo mode (/solo/*), which needs no room at all.
 	{ id: 'sudoku', label: 'Sudoku', emoji: '🔢', needs: '2 to 6 players' },
-	{ id: 'match3', label: 'Candy Match', emoji: '🍬', needs: '2 to 6 players' }
+	{ id: 'match3', label: 'Candy Match', emoji: '🍬', needs: '2 to 6 players' },
+	// Card games: turn-based, hidden hands, one shuffled deck dealt at start.
+	{ id: 'crazy8s', label: 'Crazy Eights', emoji: '🃏', needs: '2 to 6 players' },
+	{ id: 'blackjack', label: 'Blackjack', emoji: '🎰', needs: '1 to 6 players' },
+	{ id: 'gofish', label: 'Go Fish', emoji: '🐟', needs: '2 to 6 players' }
 ];
 
 export const GAME_TYPES = GAMES.map((g) => g.id);
@@ -39,6 +43,10 @@ export function playerCapacity(gameType, maxPlayers) {
 	// board — so the cap is about the rival ticker staying readable, not rules.
 	if (gameType === 'sudoku') return 6;
 	if (gameType === 'match3') return 6;
+	// Card games seat everyone at the table; a hand per player, dealt from one deck.
+	if (gameType === 'crazy8s') return 6;
+	if (gameType === 'blackjack') return 6;
+	if (gameType === 'gofish') return 6;
 	return maxPlayers || 10;
 }
 
