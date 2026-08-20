@@ -37,6 +37,9 @@
 		&& (window.matchMedia?.('(pointer: coarse)')?.matches || 'ontouchstart' in window);
 	let isFullscreen = $state(false);
 	let deathFlash = $state(false); // red screen flash when you're killed
+	// The win overlay waits ~1.2s after the round resolves so the blood/explosion
+	// death effects play before the screen is covered.
+	let resultShown = $state(false);
 	// Solo practice keeps its OWN round state (no store / no Durable Object);
 	// multiplayer reads the persisted `game` prop instead.
 	let localGame = $state(solo ? initHideFire([YOU, BOT]) : null);
@@ -208,6 +211,15 @@
 		if (status === 'running') pushRound();
 	});
 
+	// Hold the win overlay back so the death effects are visible first.
+	$effect(() => {
+		if (result) {
+			const t = setTimeout(() => { resultShown = true; }, 1200);
+			return () => clearTimeout(t);
+		}
+		resultShown = false;
+	});
+
 	async function nextRound() {
 		if (solo) {
 			localGame = nextRoundLogic(localGame);
@@ -343,7 +355,7 @@
 			</div>
 		{/if}
 
-		{#if result}
+		{#if resultShown}
 			<div class="overlay result">
 				<h2>{result === 'seekers' ? '🔫 Seekers win!' : '🫥 Hiders win!'}</h2>
 				<button onclick={nextRound}>Next round →</button>
