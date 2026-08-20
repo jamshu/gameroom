@@ -54,21 +54,34 @@ func _ready() -> void:
 
 	camera = Camera3D.new()
 	camera.position = Vector3(0, 1.5, 0)
-	camera.fov = 85.0
+	camera.keep_aspect = Camera3D.KEEP_HEIGHT  # fov is vertical → predictable framing
+	camera.fov = 75.0
 	add_child(camera)
 	camera.make_current()
 
 	# First-person gun viewmodel: a child of the camera so it's always in view.
-	# Gives the player a visible weapon even though their own body mesh is hidden.
-	var gun := MeshInstance3D.new()
-	var gm := BoxMesh.new()
-	gm.size = Vector3(0.12, 0.12, 0.6)
+	# First-person gun viewmodel: a child of the camera so it's always in view.
+	# Raised + KEEP_HEIGHT camera so it isn't cropped at the bottom on the (smaller)
+	# non-fullscreen 16:9 stage.
 	var gmat := StandardMaterial3D.new()
-	gmat.albedo_color = Color(0.15, 0.15, 0.17)
-	gm.material = gmat
-	gun.mesh = gm
-	gun.position = Vector3(0.32, -0.26, -0.7)
+	gmat.albedo_color = Color(0.13, 0.13, 0.15)
+	var gun := Node3D.new()
+	gun.position = Vector3(0.18, -0.13, -0.4)
 	camera.add_child(gun)
+	var barrel := MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = Vector3(0.07, 0.07, 0.5)
+	bm.material = gmat
+	barrel.mesh = bm
+	barrel.position = Vector3(0, 0, -0.2)
+	gun.add_child(barrel)
+	var grip := MeshInstance3D.new()
+	var gpm := BoxMesh.new()
+	gpm.size = Vector3(0.07, 0.18, 0.12)
+	gpm.material = gmat
+	grip.mesh = gpm
+	grip.position = Vector3(0, -0.12, 0.02)
+	gun.add_child(grip)
 
 	# Do NOT capture the mouse here: browsers reject pointer lock without a user
 	# gesture. The first click (fire branch) captures it instead — standard for a
