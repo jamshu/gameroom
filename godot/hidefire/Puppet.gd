@@ -19,21 +19,14 @@ func setup(u: int, main) -> void:
 
 	var col := CollisionShape3D.new()
 	var cap := CapsuleShape3D.new()
-	cap.height = 1.8
-	cap.radius = 0.4
+	cap.height = 1.6
+	cap.radius = 0.3
 	col.shape = cap
-	col.position = Vector3(0, 0.9, 0)
+	col.position = Vector3(0, 0.8, 0)
 	add_child(col)
 
-	var mesh := MeshInstance3D.new()
-	var cm := CapsuleMesh.new()
-	cm.height = 1.8
-	cm.radius = 0.4
 	body_mat = StandardMaterial3D.new()
-	cm.material = body_mat
-	mesh.mesh = cm
-	mesh.position = Vector3(0, 0.9, 0)
-	add_child(mesh)
+	add_child(CharacterMesh.make(body_mat))
 	visible = false  # stays hidden until the first position arrives
 
 func apply_state(d: Dictionary) -> void:

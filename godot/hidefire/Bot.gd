@@ -42,22 +42,15 @@ func setup(u: int, main, human: CharacterBody3D) -> void:
 
 	var col := CollisionShape3D.new()
 	var cap := CapsuleShape3D.new()
-	cap.height = 1.8
-	cap.radius = 0.4
+	cap.height = 1.6
+	cap.radius = 0.3
 	col.shape = cap
-	col.position = Vector3(0, 0.9, 0)
+	col.position = Vector3(0, 0.8, 0)
 	add_child(col)
 
-	var mesh := MeshInstance3D.new()
-	var cm := CapsuleMesh.new()
-	cm.height = 1.8
-	cm.radius = 0.4
 	body_mat = StandardMaterial3D.new()
 	body_mat.albedo_color = Color(0.9, 0.5, 0.1)  # loud default = clearly visible
-	cm.material = body_mat
-	mesh.mesh = cm
-	mesh.position = Vector3(0, 0.9, 0)
-	add_child(mesh)
+	add_child(CharacterMesh.make(body_mat))
 
 ## Shot by the player — death blast + hide + stop.
 func on_shot() -> void:

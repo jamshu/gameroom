@@ -17,6 +17,7 @@ const GRAVITY := 9.8
 const TOUCH_LOOK_SENS := 0.005
 
 var camera: Camera3D
+var body: Node3D
 var body_mat: StandardMaterial3D
 var _pitch := 0.0
 # Touch input (from the DOM overlay via Main._poll_inbound). Move is continuous;
@@ -38,27 +39,21 @@ func _ready() -> void:
 
 	var col := CollisionShape3D.new()
 	var cap := CapsuleShape3D.new()
-	cap.height = 1.8
-	cap.radius = 0.4
+	cap.height = 1.6
+	cap.radius = 0.3
 	col.shape = cap
-	col.position = Vector3(0, 0.9, 0)
+	col.position = Vector3(0, 0.8, 0)
 	add_child(col)
 
-	# Body mesh: what peers see, and what camo tints. Hidden from our own camera.
-	var mesh := MeshInstance3D.new()
-	var cm := CapsuleMesh.new()
-	cm.height = 1.8
-	cm.radius = 0.4
+	# Humanoid body: VISIBLE so you can see your own painted body + pose. The head
+	# is dropped so it doesn't block the first-person camera.
 	body_mat = StandardMaterial3D.new()
 	body_mat.albedo_color = camo_color
-	cm.material = body_mat
-	mesh.mesh = cm
-	mesh.position = Vector3(0, 0.9, 0)
-	mesh.visible = false
-	add_child(mesh)
+	body = CharacterMesh.make(body_mat, true)
+	add_child(body)
 
 	camera = Camera3D.new()
-	camera.position = Vector3(0, 1.6, 0)
+	camera.position = Vector3(0, 1.5, 0)
 	camera.fov = 85.0
 	add_child(camera)
 	camera.make_current()
@@ -92,10 +87,7 @@ func _unhandled_input(event) -> void:
 	elif event.is_action_pressed("camo") and can_camo:
 		_apply_camo()
 	elif event.is_action_pressed("pose") and can_camo:
-		posed = not posed          # toggle: freeze in a pose to mimic an object
-		if posed:
-			velocity = Vector3.ZERO
-			camo_still = true
+		_toggle_pose()
 	elif event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 
@@ -115,6 +107,7 @@ func spawn_at(pos: Vector3) -> void:
 		body_mat.albedo_color = Color.WHITE
 	if camera:
 		camera.rotation.x = 0.0
+	_apply_pose_visual()  # reset crouch + camera height
 	look_at(Vector3(0, pos.y, 0), Vector3.UP)
 
 ## Apply one poll of touch input from the DOM overlay. Look deltas + fire/paint/
@@ -138,12 +131,23 @@ func apply_touch(t: Dictionary) -> void:
 	if bool(t.get("paint", false)) and can_camo:
 		_apply_camo()
 	if bool(t.get("pose", false)) and can_camo:
-		posed = not posed
-		if posed:
-			velocity = Vector3.ZERO
-			camo_still = true
+		_toggle_pose()
 	if bool(t.get("jump", false)):
 		_touch_jump = true
+
+## Toggle the mimic pose: freeze in place and visibly crouch (peers see it too).
+func _toggle_pose() -> void:
+	posed = not posed
+	if posed:
+		velocity = Vector3.ZERO
+		camo_still = true
+	_apply_pose_visual()
+
+func _apply_pose_visual() -> void:
+	if body:
+		body.scale = Vector3(1.0, 0.55, 1.0) if posed else Vector3.ONE
+	if camera:
+		camera.position.y = 1.0 if posed else 1.5
 
 ## Marked dead by the round state (someone shot us): stop input, spectate in place.
 func die() -> void:
@@ -166,8 +170,10 @@ func _physics_process(delta: float) -> void:
 	# Posed: hold perfectly still to mimic the scenery. Look around, but no walking
 	# — the first movement key breaks the pose.
 	if posed:
-		if Input.get_vector("move_left", "move_right", "move_forward", "move_back").length() > 0.0:
+		if Input.get_vector("move_left", "move_right", "move_forward", "move_back").length() > 0.0 \
+				or _touch_move.length() > 0.0:
 			posed = false
+			_apply_pose_visual()  # stand back up
 		else:
 			velocity = Vector3.ZERO
 			return
@@ -232,7 +238,7 @@ func _muzzle_flash() -> void:
 func _apply_camo() -> void:
 	var space := get_world_3d().direct_space_state
 	var targets := [
-		camera.global_position - camera.global_transform.basis.z * 3.0,
+		camera.global_position - camera.global_transform.basis.z * 6.0,
 		global_position + Vector3(0, -2, 0)
 	]
 	for to in targets:
