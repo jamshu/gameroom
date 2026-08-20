@@ -38,10 +38,10 @@ function writeAll(all) {
    better). Keeping the direction with the key rather than at each call site is
    what stops a copy-paste from silently recording a WORSE best as an
    improvement — the bug would only show up as a best that never budges. */
-// Card games record a higher-is-better metric (win streak, or most books) — the
-// same direction as match3, listed explicitly so a future copy-paste can't
-// silently record a worse "best" as an improvement.
-const LOWER_IS_BETTER = { sudoku: true, match3: false, crazy8s: false, blackjack: false, gofish: false };
+// Blackjack records a higher-is-better metric (win streak) — the same direction as
+// match3, listed explicitly so a future copy-paste can't silently record a worse
+// "best" as an improvement.
+const LOWER_IS_BETTER = { sudoku: true, match3: false, blackjack: false };
 
 const slotKey = (game, variant) => `${game}:${variant ?? 'default'}`;
 

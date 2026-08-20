@@ -218,17 +218,9 @@
 				<span class="game-tile-emoji emo">♟️</span>
 				<span class="game-tile-label">Chess</span>
 			</a>
-			<a class="game-tile" href="/solo/crazy8s">
-				<span class="game-tile-emoji emo">🃏</span>
-				<span class="game-tile-label">Crazy Eights</span>
-			</a>
 			<a class="game-tile" href="/solo/blackjack">
 				<span class="game-tile-emoji emo">🎰</span>
 				<span class="game-tile-label">Blackjack</span>
-			</a>
-			<a class="game-tile" href="/solo/gofish">
-				<span class="game-tile-emoji emo">🐟</span>
-				<span class="game-tile-label">Go Fish</span>
 			</a>
 		</div>
 	</section>

@@ -22,11 +22,9 @@ import {
 import {
 	ROUND_MS as MATCH3_ROUND_MS, GRACE_MS as MATCH3_GRACE_MS, scoreCeiling
 } from './match3.js';
-import { initCrazy8s, crazy8sView, crazy8sScores } from './crazy8s.js';
 import { initBlackjack, blackjackView, blackjackScores } from './blackjack.js';
-import { initGoFish, gofishView, gofishScores, gofishWinners } from './gofish.js';
 
-export { crazy8sScores, blackjackScores, gofishScores };
+export { blackjackScores };
 
 /* --------------------------------- init ---------------------------------- */
 
@@ -163,12 +161,10 @@ export function initGame(gameType, playerUids, room) {
 			result: null
 		};
 	}
-	// The card games. Each mints its own shuffled deck here, so /rematch and
-	// resetRound re-deal for free by re-running initGame — the same trick the
-	// sudoku seed uses. Rules + hidden-hand views live in their own shared modules.
-	if (gameType === 'crazy8s') return initCrazy8s(playerUids);
+	// Blackjack mints its own shuffled deck here, so /rematch and resetRound re-deal
+	// for free by re-running initGame — the same trick the sudoku seed uses. Rules +
+	// the hidden dealer-hole view live in shared/blackjack.js.
 	if (gameType === 'blackjack') return initBlackjack(playerUids);
-	if (gameType === 'gofish') return initGoFish(playerUids);
 	throw httpError(400, 'Unknown game type');
 }
 
@@ -591,13 +587,11 @@ export function winnerUids(game) {
 			.filter((u) => (game.scores[u]?.score || 0) === top)
 			.map(Number);
 	}
-	if (game.type === 'crazy8s') return game.result ? [Number(game.result)] : [];
 	if (game.type === 'blackjack') {
 		if (game.result !== 'done') return [];
 		// Everyone who beat the dealer scores — a table can have several winners.
 		return game.players.filter((u) => game.outcomes?.[u] === 'win').map(Number);
 	}
-	if (game.type === 'gofish') return gofishWinners(game);
 	return []; // videocall and anything new that never finishes
 }
 
@@ -757,10 +751,8 @@ export function gameView(game, uid) {
 	}
 	if (game.type === 'sudoku') return sudokuView(game, uid);
 	if (game.type === 'match3') return match3View(game);
-	// Card games: each hides rival hands (and its stock/ocean) per session.
-	if (game.type === 'crazy8s') return crazy8sView(game, uid);
+	// Blackjack hides the dealer's hole card until the round is done.
 	if (game.type === 'blackjack') return blackjackView(game, uid);
-	if (game.type === 'gofish') return gofishView(game, uid);
 	return game;
 }
 

@@ -1,6 +1,6 @@
-// A 52-card deck, shared by every card game (crazy8s, blackjack, gofish) and by
-// their solo pages. Pure and isomorphic — no `$lib`/`$env` — because the rules
-// that consume it run inside the Durable Object bundle. See gamelogic.js's note.
+// A 52-card deck, used by Blackjack (rules + solo page). Pure and isomorphic —
+// no `$lib`/`$env` — because the rules that consume it run inside the Durable
+// Object bundle. See gamelogic.js's note.
 //
 // A card is { r, s }: rank 2..14 (11=J, 12=Q, 13=K, 14=A) and suit 0..3
 // (0=♣, 1=♦, 2=♥, 3=♠). Numbers, not strings, so a hand serializes small and a
