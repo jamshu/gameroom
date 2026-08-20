@@ -147,9 +147,18 @@ func apply_touch(t: Dictionary) -> void:
 
 ## Marked dead by the round state (someone shot us): stop input, spectate in place.
 func die() -> void:
+	if not alive:
+		return
 	alive = false
 	frozen = true
 	velocity = Vector3.ZERO
+	if arena:
+		arena.death_fx(global_position + Vector3(0, 1, 0))
+	# Red hit-flash in the DOM overlay.
+	if OS.has_feature("web"):
+		var w = JavaScriptBridge.get_interface("window")
+		if w and w.hidefireOnDeath:
+			w.hidefireOnDeath()
 
 func _physics_process(delta: float) -> void:
 	if frozen or not alive:
@@ -185,16 +194,38 @@ func _physics_process(delta: float) -> void:
 	move_and_slide()
 
 func _fire() -> void:
+	_muzzle_flash()
 	var space := get_world_3d().direct_space_state
 	var from := camera.global_position
 	var to := from - camera.global_transform.basis.z * 100.0
 	var q := PhysicsRayQueryParameters3D.create(from, to)
 	q.exclude = [self]
 	var hit := space.intersect_ray(q)
-	if hit.has("collider") and hit.collider.is_in_group("players"):
+	if not hit.has("collider"):
+		return
+	if hit.collider.is_in_group("players"):
 		var uid = hit.collider.get_meta("uid", 0)
+		# One hit kills, so this is a kill blast at the impact point.
+		if arena:
+			arena.death_fx(hit.position)
+		if hit.collider.has_method("on_shot"):
+			hit.collider.on_shot()
 		if uid and arena:
 			arena.report_hit(int(uid))
+	elif arena:
+		arena.spawn_blood(hit.position, false)  # wall spark/impact
+
+## Brief gunshot flash at the muzzle.
+func _muzzle_flash() -> void:
+	if camera == null:
+		return
+	var l := OmniLight3D.new()
+	l.position = Vector3(0.32, -0.26, -0.9)
+	l.light_color = Color(1.0, 0.85, 0.45)
+	l.light_energy = 4.0
+	l.omni_range = 4.0
+	camera.add_child(l)
+	get_tree().create_timer(0.06).timeout.connect(l.queue_free)
 
 ## Take the colour of whatever surface we're looking at (or standing over) and
 ## paint the body with it — the whole camo mechanic. Moving/firing clears `still`.

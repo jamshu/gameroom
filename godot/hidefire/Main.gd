@@ -183,6 +183,77 @@ func report_hit(uid: int) -> void:
 	if w and w.hidefireOnHit:
 		w.hidefireOnHit(uid)
 
+## A short red particle burst at a world point. `big` = a kill spray. CPUParticles
+## (not GPU) so it renders in the GL-compatibility web export.
+func spawn_blood(pos: Vector3, big := false) -> void:
+	var fx := CPUParticles3D.new()
+	fx.position = pos
+	fx.emitting = true
+	fx.one_shot = true
+	fx.amount = 28 if big else 12
+	fx.lifetime = 0.7
+	fx.explosiveness = 1.0
+	fx.direction = Vector3(0, 1, 0)
+	fx.spread = 80.0
+	fx.initial_velocity_min = 1.5
+	fx.initial_velocity_max = 6.0 if big else 3.5
+	fx.gravity = Vector3(0, -9.8, 0)
+	fx.scale_amount_min = 0.05
+	fx.scale_amount_max = 0.16 if big else 0.1
+	var drop := SphereMesh.new()
+	drop.radius = 0.06
+	drop.height = 0.12
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.7, 0.04, 0.04)
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	drop.material = mat
+	fx.mesh = drop
+	add_child(fx)
+	get_tree().create_timer(fx.lifetime + 0.2).timeout.connect(fx.queue_free)
+
+## A kill blast: fiery particle burst + a brief flash of light. Paired with a big
+## blood spray on death.
+func spawn_explosion(pos: Vector3) -> void:
+	var fx := CPUParticles3D.new()
+	fx.position = pos
+	fx.emitting = true
+	fx.one_shot = true
+	fx.amount = 40
+	fx.lifetime = 0.6
+	fx.explosiveness = 1.0
+	fx.direction = Vector3(0, 1, 0)
+	fx.spread = 180.0
+	fx.initial_velocity_min = 3.0
+	fx.initial_velocity_max = 9.0
+	fx.gravity = Vector3(0, -4.0, 0)
+	fx.scale_amount_min = 0.1
+	fx.scale_amount_max = 0.3
+	var chunk := SphereMesh.new()
+	chunk.radius = 0.08
+	chunk.height = 0.16
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(1.0, 0.55, 0.1)
+	mat.emission_enabled = true
+	mat.emission = Color(1.0, 0.5, 0.05)
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	chunk.material = mat
+	fx.mesh = chunk
+	add_child(fx)
+
+	var flash := OmniLight3D.new()
+	flash.position = pos
+	flash.light_color = Color(1.0, 0.7, 0.3)
+	flash.light_energy = 8.0
+	flash.omni_range = 8.0
+	add_child(flash)
+	get_tree().create_timer(0.12).timeout.connect(flash.queue_free)
+	get_tree().create_timer(fx.lifetime + 0.2).timeout.connect(fx.queue_free)
+
+## Convenience: the full death FX at a body position.
+func death_fx(pos: Vector3) -> void:
+	spawn_blood(pos, true)
+	spawn_explosion(pos)
+
 func _apply_peer(json: String) -> void:
 	var data = JSON.parse_string(json)
 	if typeof(data) != TYPE_DICTIONARY:
@@ -195,7 +266,7 @@ func _apply_peer(json: String) -> void:
 		p = CharacterBody3D.new()
 		p.set_script(PuppetScript)
 		add_child(p)
-		p.setup(uid)
+		p.setup(uid, self)
 		puppets[uid] = p
 	p.apply_state(data)
 

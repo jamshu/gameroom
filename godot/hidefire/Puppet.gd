@@ -5,12 +5,15 @@ extends CharacterBody3D
 ## sender so a well-hidden peer really does blend into the wall.
 
 var uid := 0
+var arena
 var body_mat: StandardMaterial3D
 var _target := Vector3.ZERO
 var _has_target := false
+var _alive := true
 
-func setup(u: int) -> void:
+func setup(u: int, main) -> void:
 	uid = u
+	arena = main
 	add_to_group("players")
 	set_meta("uid", u)
 
@@ -46,8 +49,19 @@ func apply_state(d: Dictionary) -> void:
 		rotation.y = float(d["yaw"])
 	if d.has("camo") and body_mat:
 		body_mat.albedo_color = Color.html(str(d["camo"]))
+	# Death spray when a peer flips from alive to dead (from the round state).
+	var now_alive := bool(d.get("alive", true))
+	if _alive and not now_alive and _has_target and arena:
+		arena.death_fx(global_position + Vector3(0, 1, 0))
+	_alive = now_alive
 	# Only show once we know where it is AND it's alive.
-	visible = _has_target and bool(d.get("alive", true))
+	visible = _has_target and now_alive
+
+## Shot by the local player — immediate feedback before the round state confirms.
+func on_shot() -> void:
+	if arena:
+		arena.death_fx(global_position + Vector3(0, 1, 0))
+	visible = false
 
 func _physics_process(delta: float) -> void:
 	if _has_target:

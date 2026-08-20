@@ -22,7 +22,7 @@
 	// is what makes a changed export actually reload. Dev: always fresh. Prod: bump
 	// on any redeploy that re-exports the game. // ponytail: manual bump; wire to a
 	// build hash if redeploys get frequent.
-	const ENGINE_VERSION = import.meta.env.DEV ? `dev-${Date.now()}` : 'v2';
+	const ENGINE_VERSION = import.meta.env.DEV ? `dev-${Date.now()}` : 'v3';
 	const ENGINE_BASE = `/godot/hidefire/${ENGINE_VERSION}`;
 	// Godot's single-threaded web export dodges SharedArrayBuffer / COOP-COEP.
 	const SEND_HZ = 15;
@@ -36,6 +36,7 @@
 	const isTouch = typeof window !== 'undefined'
 		&& (window.matchMedia?.('(pointer: coarse)')?.matches || 'ontouchstart' in window);
 	let isFullscreen = $state(false);
+	let deathFlash = $state(false); // red screen flash when you're killed
 	// Solo practice keeps its OWN round state (no store / no Durable Object);
 	// multiplayer reads the persisted `game` prop instead.
 	let localGame = $state(solo ? initHideFire([YOU, BOT]) : null);
@@ -74,6 +75,11 @@
 			return JSON.stringify(q);
 		};
 		window.hidefireRoundJson = () => window.__hidefireRound || '';
+		// Godot signals the local player's death → brief red screen flash.
+		window.hidefireOnDeath = () => {
+			deathFlash = true;
+			setTimeout(() => { deathFlash = false; }, 500);
+		};
 		// Touch input from the on-screen controls. Godot pulls this each frame; we
 		// clear the look deltas + one-shot buttons after each read.
 		window.__hidefireTouch = { mx: 0, my: 0, crouch: false, lookdx: 0, lookdy: 0, fire: false, paint: false, pose: false, jump: false };
@@ -114,7 +120,7 @@
 	function removeBridge() {
 		for (const k of ['hidefireOnReady', 'hidefireOnTick', 'hidefireOnHit',
 			'hidefirePushPeers', 'hidefireSetRound', 'hidefireDrain', 'hidefireRoundJson',
-			'hidefireTouchJson', '__hidefireInbox', '__hidefireRound', '__hidefireTouch'])
+			'hidefireOnDeath', 'hidefireTouchJson', '__hidefireInbox', '__hidefireRound', '__hidefireTouch'])
 			delete window[k];
 	}
 
@@ -302,6 +308,10 @@
 			<div class="crosshair" aria-hidden="true"></div>
 		{/if}
 
+		{#if deathFlash}
+			<div class="death-flash" aria-hidden="true"></div>
+		{/if}
+
 		{#if status === 'running' && !result && isTouch}
 			<!-- Look: drag anywhere; joystick + buttons sit on top and grab first. -->
 			<div class="look-zone" role="application" aria-label="Look" onpointerdown={lookStart}
@@ -382,6 +392,14 @@
 	}
 	.overlay code { background: #1f2937; padding: 1px 4px; border-radius: 4px; }
 	.controls { font-size: 12px; color: #6b7280; text-align: center; margin: 0; }
+
+	/* Red hit-flash when you're killed. */
+	.death-flash {
+		position: absolute; inset: 0; z-index: 4; pointer-events: none;
+		background: radial-gradient(circle, rgba(200, 0, 0, 0) 35%, rgba(180, 0, 0, 0.65) 100%);
+		animation: death-fade 0.5s ease-out forwards;
+	}
+	@keyframes death-fade { from { opacity: 1; } to { opacity: 0; } }
 
 	/* Fullscreen button (all devices). */
 	.fs-btn {

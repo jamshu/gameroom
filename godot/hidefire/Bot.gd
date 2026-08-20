@@ -59,6 +59,13 @@ func setup(u: int, main, human: CharacterBody3D) -> void:
 	mesh.position = Vector3(0, 0.9, 0)
 	add_child(mesh)
 
+## Shot by the player — death blast + hide + stop.
+func on_shot() -> void:
+	if arena:
+		arena.death_fx(global_position + Vector3(0, 1, 0))
+	frozen = true
+	visible = false
+
 ## Fresh round: take a side, spawn, revive.
 func begin_round(new_role: String, pos: Vector3) -> void:
 	role = new_role
