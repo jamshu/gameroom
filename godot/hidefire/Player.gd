@@ -81,8 +81,14 @@ func _unhandled_input(event) -> void:
 		camera.rotation.x = _pitch
 		camo_still = false
 	elif event.is_action_pressed("fire"):
-		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED   # click to (re)capture
-		_fire()
+		# Before pointer-lock the cursor is free, so aim at the CLICK position
+		# (otherwise the shot would come from the centre crosshair and miss what
+		# you clicked). After locking, fire from the centre.
+		if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+			_fire(event.position)
+			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+		else:
+			_fire()
 		camo_still = false
 	elif event.is_action_pressed("camo") and can_camo:
 		_apply_camo()
@@ -199,11 +205,20 @@ func _physics_process(delta: float) -> void:
 		velocity.z = move_toward(velocity.z, 0.0, speed)
 	move_and_slide()
 
-func _fire() -> void:
+func _fire(screen_pos = null) -> void:
 	_muzzle_flash()
 	var space := get_world_3d().direct_space_state
-	var from := camera.global_position
-	var to := from - camera.global_transform.basis.z * 100.0
+	var from: Vector3
+	var dir: Vector3
+	if screen_pos != null and camera:
+		# Cursor-aim (pointer not locked): shoot through the clicked pixel.
+		from = camera.project_ray_origin(screen_pos)
+		dir = camera.project_ray_normal(screen_pos)
+	else:
+		# Centre crosshair.
+		from = camera.global_position
+		dir = -camera.global_transform.basis.z
+	var to := from + dir * 100.0
 	var q := PhysicsRayQueryParameters3D.create(from, to)
 	q.exclude = [self]
 	var hit := space.intersect_ray(q)

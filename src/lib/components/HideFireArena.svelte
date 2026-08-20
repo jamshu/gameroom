@@ -22,7 +22,7 @@
 	// is what makes a changed export actually reload. Dev: always fresh. Prod: bump
 	// on any redeploy that re-exports the game. // ponytail: manual bump; wire to a
 	// build hash if redeploys get frequent.
-	const ENGINE_VERSION = import.meta.env.DEV ? `dev-${Date.now()}` : 'v4';
+	const ENGINE_VERSION = import.meta.env.DEV ? `dev-${Date.now()}` : 'v5';
 	const ENGINE_BASE = `/godot/hidefire/${ENGINE_VERSION}`;
 	// Godot's single-threaded web export dodges SharedArrayBuffer / COOP-COEP.
 	const SEND_HZ = 15;
@@ -273,16 +273,20 @@
 	const press = (k) => () => { T()[k] = true; };
 	const setCrouch = (v) => () => { T().crouch = v; };
 
+	// Fullscreen: a CSS-expand (fixed cover) is the source of truth — it works on
+	// iOS (which refuses element requestFullscreen) and never letterboxes to half
+	// the screen. We ALSO best-effort the native API so Android hides its chrome.
 	function toggleFullscreen() {
-		const el = stage;
-		if (!document.fullscreenElement && !document.webkitFullscreenElement) {
-			(el.requestFullscreen || el.webkitRequestFullscreen)?.call(el);
-		} else {
+		isFullscreen = !isFullscreen;
+		if (isFullscreen) {
+			(stage.requestFullscreen || stage.webkitRequestFullscreen)?.call(stage).catch?.(() => {});
+		} else if (document.fullscreenElement || document.webkitFullscreenElement) {
 			(document.exitFullscreen || document.webkitExitFullscreen)?.call(document);
 		}
 	}
 	function onFsChange() {
-		isFullscreen = !!(document.fullscreenElement || document.webkitFullscreenElement);
+		// Native FS exited (Esc/back) → collapse the CSS expand too.
+		if (!document.fullscreenElement && !document.webkitFullscreenElement) isFullscreen = false;
 	}
 	$effect(() => {
 		document.addEventListener('fullscreenchange', onFsChange);
@@ -307,7 +311,7 @@
 		</span>
 	</div>
 
-	<div class="stage" bind:this={stage}>
+	<div class="stage" class:expanded={isFullscreen} bind:this={stage}>
 		<!-- id is REQUIRED: Godot/Emscripten builds the WebGL context's canvas
 		     selector as `#<id>`, so a missing id yields the invalid selector `#`. -->
 		<canvas bind:this={canvas} id="hidefire-canvas" class="godot" tabindex="0"></canvas>
@@ -383,7 +387,17 @@
 	.clock.low { color: #f87171; }
 	.score { display: flex; gap: 12px; }
 	.stage { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: 8px; overflow: hidden; }
+	/* CSS "fullscreen": cover the whole viewport, works on every device. The canvas
+	   keeps a 16:9 box centred (no distortion, no half-screen letterbox). */
+	.stage.expanded {
+		position: fixed; inset: 0; z-index: 9999;
+		width: 100vw; height: 100vh; aspect-ratio: auto; border-radius: 0;
+		display: grid; place-items: center;
+	}
 	.godot { width: 100%; height: 100%; display: block; outline: none; }
+	.stage.expanded .godot {
+		width: auto; height: auto; max-width: 100vw; max-height: 100vh; aspect-ratio: 16 / 9;
+	}
 	.crosshair {
 		position: absolute; top: 50%; left: 50%; width: 18px; height: 18px;
 		transform: translate(-50%, -50%); pointer-events: none;
@@ -445,7 +459,4 @@
 		-webkit-user-select: none;
 	}
 	.tbtn.fire { width: 74px; height: 74px; font-size: 28px; background: rgba(248, 113, 113, 0.35); }
-	/* Let the game fill the screen in fullscreen. */
-	.stage:fullscreen { width: 100vw; height: 100vh; aspect-ratio: auto; border-radius: 0; }
-	.stage:fullscreen .godot { width: 100%; height: 100%; }
 </style>
