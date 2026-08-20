@@ -59,7 +59,7 @@ not_found_handling = "single-page-application"
 # parse as a module, the promise never resolves, start() never runs, and the page
 # renders as a BLANK SCREEN with no console 404 and a 200 in the network tab.
 # Everything else under /_app (immutable/, version.json) is a real static file.
-run_worker_first = ["/api/*", "/_app/env.js"]
+run_worker_first = ["/api/*", "/_app/env.js", "/godot/hidefire/*"]
 
 # NO ROOM SWEEP. There used to be an abandoned-room sweep on a daily trigger,
 # deleting any room whose every member had been offline for ten minutes. Rooms
@@ -95,6 +95,15 @@ enabled = true
 [[durable_objects.bindings]]
 name = "ROOM"
 class_name = "RoomDO"
+
+# The Godot Hide & Fire web export lives here, NOT in the static assets: its
+# ~38 MB .wasm exceeds the 25 MiB per-file limit on Workers Assets. The room
+# serves it same-origin through /godot/hidefire/[file] (src/routes) reading this
+# binding — no public bucket, no CORS. Upload with `wrangler r2 object put
+# gameroom-assets/hidefire/<file> --file godot/hidefire/build/web/<file>`.
+[[r2_buckets]]
+binding = "GODOT_R2"
+bucket_name = "gameroom-assets"
 
 # new_sqlite_classes, NOT new_classes — the SQLite backend is what provides
 # ctx.storage.sql, and this is the one line in this file that cannot be cleanly

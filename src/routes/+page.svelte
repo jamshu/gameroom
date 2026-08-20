@@ -222,6 +222,10 @@
 				<span class="game-tile-emoji emo">🎰</span>
 				<span class="game-tile-label">Blackjack</span>
 			</a>
+			<a class="game-tile" href="/solo/hidefire">
+				<span class="game-tile-emoji emo">🔫</span>
+				<span class="game-tile-label">Hide &amp; Fire</span>
+			</a>
 		</div>
 	</section>
 

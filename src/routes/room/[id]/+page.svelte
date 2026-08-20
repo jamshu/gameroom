@@ -13,6 +13,7 @@
 	import ThiefFinderTable from '$lib/components/ThiefFinderTable.svelte';
 	import ChessBoard from '$lib/components/ChessBoard.svelte';
 	import CarromBoard from '$lib/components/CarromBoard.svelte';
+	import HideFireArena from '$lib/components/HideFireArena.svelte';
 	import LudoBoard from '$lib/components/LudoBoard.svelte';
 	import SudokuRace from '$lib/components/SudokuRace.svelte';
 	import Match3Race from '$lib/components/Match3Race.svelte';
@@ -719,6 +720,8 @@
 						<Match3Race {store} game={$store.game} {members} {myUid} />
 					{:else if $store.game?.type === 'blackjack'}
 						<BlackjackBoard {store} game={$store.game} {members} {myUid} />
+					{:else if $store.game?.type === 'hidefire'}
+						<HideFireArena {store} game={$store.game} {members} {myUid} />
 					{:else}
 						<p class="muted">Loading game…</p>
 					{/if}

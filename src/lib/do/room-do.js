@@ -13,7 +13,7 @@ import {
 	appendEvent, eventsFor, newestFor, chatBefore, headSeq, oldestSeq, trim, rowsOfType,
 	REPLAY_MAX
 } from './schema.js';
-import { welcome, stateFrame, eventFrame, rosterFrame, aimFrame, tickFrame, ackFrame, errFrame, uptoOf, hasGap, withSeq, CLOSE } from './frames.js';
+import { welcome, stateFrame, eventFrame, rosterFrame, aimFrame, tickFrame, moveFrame, ackFrame, errFrame, uptoOf, hasGap, withSeq, CLOSE } from './frames.js';
 import { hydrate, recentEvents, roomExists, writeStateBack, archiveEvents, touchLastSeen } from './odoo-bridge.js';
 import { publicRoom, publicMembers, withPresence } from '../shared/roomview.js';
 
@@ -315,6 +315,14 @@ export class RoomDO {
 		// pixels and thrash every client's merge gate.
 		if (msg.t === 'tick') {
 			this.broadcast(tickFrame({ ...msg.data, uid }), (u) => u !== uid);
+			return;
+		}
+
+		// Hide & Fire player transform. Ephemeral for the same reason as aim/tick:
+		// it fires ~15/s per player and only drives how peers render the moving
+		// puppet; kills and scores travel the durable state path instead.
+		if (msg.t === 'move') {
+			this.broadcast(moveFrame({ ...msg.data, uid }), (u) => u !== uid);
 			return;
 		}
 
@@ -690,6 +698,11 @@ export class RoomDO {
 				// Ephemeral: no seq, no storage, no ack. Echoes to everyone but the
 				// shooter, who is already rendering their own drag locally.
 				this.broadcast(aimFrame(op.data), (u) => u !== Number(op.data?.uid));
+				return { ok: true };
+			case 'move':
+				// Ephemeral Hide & Fire transform — same contract as aim/tick. Echoes
+				// to everyone but the mover, who renders their own view locally.
+				this.broadcast(moveFrame(op.data), (u) => u !== Number(op.data?.uid));
 				return { ok: true };
 			case 'kick':
 				this.kick(op.uid);

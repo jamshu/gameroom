@@ -1,0 +1,6 @@
+# Godot editor cache
+/.godot/
+# Web export output (shipped via R2, not committed)
+/build/
+# Stray blank project the editor created by accident
+/hide-fire/

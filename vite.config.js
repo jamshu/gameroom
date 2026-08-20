@@ -18,7 +18,9 @@ export default defineConfig({
 				// The vendored Stockfish is premium-only, ~656 KB, and fetched on demand.
 				// Its .wasm escapes globPatterns but its glue .js does not, so without this
 				// every user would re-download the engine on each service-worker update.
-				globIgnores: ['**/engine/**']
+				// Same treatment for the Godot Hide & Fire export (~15-30 MB): only loaded
+				// inside a hidefire room, must never sit in the SW precache manifest.
+				globIgnores: ['**/engine/**', '**/godot/**']
 			},
 			manifest: {
 				id: '/',

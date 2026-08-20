@@ -151,6 +151,15 @@ export function tickFrame(data) {
 	return { t: 'tick', data };
 }
 
+/** Ephemeral Hide & Fire player transform — `aim`/`tick`'s sibling. Carries one
+ *  player's position, yaw/pitch, camo colour and alive flag, relayed to peers so
+ *  they can render the moving puppet. Fires ~12-15/s per player through a 90s
+ *  round and nothing durable rides on it: the round result (who's dead, who won)
+ *  is the SLOW plane and lives in state via hidefire/hit + hidefire/next. */
+export function moveFrame(data) {
+	return { t: 'move', data };
+}
+
 /** Reply to a client op. `id` echoes the request so postSocket can settle it. */
 export function ackFrame(id, ok, extra = {}) {
 	return { t: 'ack', id, ok, ...extra };

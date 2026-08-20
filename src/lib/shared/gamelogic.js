@@ -23,6 +23,7 @@ import {
 	ROUND_MS as MATCH3_ROUND_MS, GRACE_MS as MATCH3_GRACE_MS, scoreCeiling
 } from './match3.js';
 import { initBlackjack, blackjackView, blackjackScores } from './blackjack.js';
+import { initHideFire } from './hidefire.js';
 
 export { blackjackScores };
 
@@ -165,6 +166,12 @@ export function initGame(gameType, playerUids, room) {
 	// for free by re-running initGame — the same trick the sudoku seed uses. Rules +
 	// the hidden dealer-hole view live in shared/blackjack.js.
 	if (gameType === 'blackjack') return initBlackjack(playerUids);
+	if (gameType === 'hidefire') {
+		if (playerUids.length !== 2) throw httpError(400, 'Hide & Fire needs exactly 2 players');
+		// First round only — subsequent rounds swap sides in-place via the
+		// hidefire/next action (nextRound), not by re-running initGame.
+		return initHideFire(playerUids);
+	}
 	throw httpError(400, 'Unknown game type');
 }
 

@@ -90,6 +90,7 @@ export function createRoomStore(roomId) {
 	let systemHandler = null;
 	let aimHandler = null; // carroms live striker/aim subscribes here
 	let tickHandler = null; // match-3 live score ticker subscribes here
+	let moveHandler = null; // Hide & Fire live player transforms subscribe here
 	// True while the room's socket is up and proven — set on `welcome`, cleared the
 	// moment it drops. Keeps its old name deliberately: it is what cadence() reads
 	// and what the Stage 0a beacon measures, and both mean exactly what they always
@@ -182,6 +183,15 @@ export function createRoomStore(roomId) {
 		tickHandler = fn;
 		return () => {
 			if (tickHandler === fn) tickHandler = null;
+		};
+	}
+	/** Hide & Fire live player transforms. Returns a disposer, like onTick — the
+	 *  arena mounts and unmounts with the game type, so a stale handler would keep
+	 *  pushing peer positions into a component that has gone. */
+	function onMove(fn) {
+		moveHandler = fn;
+		return () => {
+			if (moveHandler === fn) moveHandler = null;
 		};
 	}
 
@@ -686,6 +696,10 @@ export function createRoomStore(roomId) {
 				// Ephemeral, same as 'aim' — a live score, with no state behind it.
 				tickHandler?.(f.data);
 				break;
+			case 'move':
+				// Ephemeral, same as 'aim' — a live Hide & Fire transform, no state.
+				moveHandler?.(f.data);
+				break;
 		}
 	}
 
@@ -863,7 +877,7 @@ export function createRoomStore(roomId) {
 	// match3/tick is ephemeral like carroms/aim — it writes nothing, so following
 	// it with a reconcile poll would be ~45 pointless round trips per player per
 	// round, on the hottest path either race game has.
-	const NO_ECHO_POLL = new Set(['chat', 'carroms/aim', 'match3/tick']);
+	const NO_ECHO_POLL = new Set(['chat', 'carroms/aim', 'match3/tick', 'hidefire/move']);
 
 	/**
 	 * `signal` is conditional, which is why it can't just join the set above.
@@ -940,6 +954,7 @@ export function createRoomStore(roomId) {
 		onSystem,
 		onAim,
 		onTick,
+		onMove,
 		pushLocalChat,
 		pushLocalMedia,
 		resolveLocalChat,

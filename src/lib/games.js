@@ -16,7 +16,11 @@ export const GAMES = [
 	{ id: 'sudoku', label: 'Sudoku', emoji: '🔢', needs: '2 to 6 players' },
 	{ id: 'match3', label: 'Candy Match', emoji: '🍬', needs: '2 to 6 players' },
 	// Card game: turn-based, hidden dealer hole card, one shuffled deck dealt at start.
-	{ id: 'blackjack', label: 'Blackjack', emoji: '🎰', needs: '1 to 6 players' }
+	{ id: 'blackjack', label: 'Blackjack', emoji: '🎰', needs: '1 to 6 players' },
+	// Real-time 3D: one hides & camouflages, one seeks & fires; 90s rounds, sides
+	// switch each round. Rendered by Godot (WASM), positions relayed live over the
+	// DO's ephemeral `move` frame — see src/lib/shared/hidefire.js.
+	{ id: 'hidefire', label: 'Hide & Fire', emoji: '🔫', needs: 'exactly 2 players' }
 ];
 
 export const GAME_TYPES = GAMES.map((g) => g.id);
@@ -34,6 +38,8 @@ export const gameLabel = (id) => `${gameById(id).emoji} ${gameById(id).label}`;
  */
 export function playerCapacity(gameType, maxPlayers) {
 	if (gameType === 'chess') return 2;
+	if (gameType === 'hidefire') return 2; // thin slice: 1 hider vs 1 seeker
+
 	if (gameType === 'carroms') return 4;
 	if (gameType === 'ludo') return 4;
 	if (gameType === 'videocall') return 6;

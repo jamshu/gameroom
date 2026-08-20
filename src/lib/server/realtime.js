@@ -74,3 +74,14 @@ export async function publishTick(roomId, data) {
 	if (!isDoRoom(roomId)) return;
 	return doOp(roomId, { op: 'tick', data });
 }
+
+/**
+ * Push a live Hide & Fire player transform. Ephemeral — no storage, no event id,
+ * no state version, exactly like publishAim. Fires ~15x/second per player for the
+ * 90 seconds a round lasts; kills and the round result travel the durable state
+ * path (hidefire/hit, hidefire/next) instead.
+ */
+export async function publishMove(roomId, data) {
+	if (!isDoRoom(roomId)) return;
+	return doOp(roomId, { op: 'move', data });
+}
