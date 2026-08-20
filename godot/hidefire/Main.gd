@@ -161,6 +161,13 @@ func _poll_inbound() -> void:
 	if typeof(r) == TYPE_STRING and r != "" and r != _last_round:
 		_last_round = r
 		_apply_round(r)
+	# Touch input from the on-screen mobile controls (getter clears one-shots).
+	if player:
+		var tj = w.hidefireTouchJson()
+		if typeof(tj) == TYPE_STRING and tj != "":
+			var t = JSON.parse_string(tj)
+			if typeof(t) == TYPE_DICTIONARY:
+				player.apply_touch(t)
 
 func _emit_tick() -> void:
 	if player == null or not OS.has_feature("web"):

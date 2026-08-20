@@ -22,15 +22,20 @@
 	// is what makes a changed export actually reload. Dev: always fresh. Prod: bump
 	// on any redeploy that re-exports the game. // ponytail: manual bump; wire to a
 	// build hash if redeploys get frequent.
-	const ENGINE_VERSION = import.meta.env.DEV ? `dev-${Date.now()}` : 'v1';
+	const ENGINE_VERSION = import.meta.env.DEV ? `dev-${Date.now()}` : 'v2';
 	const ENGINE_BASE = `/godot/hidefire/${ENGINE_VERSION}`;
 	// Godot's single-threaded web export dodges SharedArrayBuffer / COOP-COEP.
 	const SEND_HZ = 15;
 	const YOU = 0, BOT = 1; // solo-mode uids
 
 	let canvas;
+	let stage;
 	let status = $state('loading'); // loading | running | missing | error
 	let now = $state(Date.now());
+	// Coarse pointer / touch → show the on-screen controls.
+	const isTouch = typeof window !== 'undefined'
+		&& (window.matchMedia?.('(pointer: coarse)')?.matches || 'ontouchstart' in window);
+	let isFullscreen = $state(false);
 	// Solo practice keeps its OWN round state (no store / no Durable Object);
 	// multiplayer reads the persisted `game` prop instead.
 	let localGame = $state(solo ? initHideFire([YOU, BOT]) : null);
@@ -69,6 +74,15 @@
 			return JSON.stringify(q);
 		};
 		window.hidefireRoundJson = () => window.__hidefireRound || '';
+		// Touch input from the on-screen controls. Godot pulls this each frame; we
+		// clear the look deltas + one-shot buttons after each read.
+		window.__hidefireTouch = { mx: 0, my: 0, crouch: false, lookdx: 0, lookdy: 0, fire: false, paint: false, pose: false, jump: false };
+		window.hidefireTouchJson = () => {
+			const t = window.__hidefireTouch;
+			const out = JSON.stringify(t);
+			t.lookdx = 0; t.lookdy = 0; t.fire = false; t.paint = false; t.pose = false; t.jump = false;
+			return out;
+		};
 
 		window.hidefireOnReady = () => {
 			status = 'running';
@@ -100,7 +114,7 @@
 	function removeBridge() {
 		for (const k of ['hidefireOnReady', 'hidefireOnTick', 'hidefireOnHit',
 			'hidefirePushPeers', 'hidefireSetRound', 'hidefireDrain', 'hidefireRoundJson',
-			'__hidefireInbox', '__hidefireRound'])
+			'hidefireTouchJson', '__hidefireInbox', '__hidefireRound', '__hidefireTouch'])
 			delete window[k];
 	}
 
@@ -140,7 +154,11 @@
 			const engine = new Engine({
 				canvas,
 				executable: `${ENGINE_BASE}/hidefire`,
-				mainPack: `${ENGINE_BASE}/hidefire.pck`
+				mainPack: `${ENGINE_BASE}/hidefire.pck`,
+				// 1 = Project: render to a fixed buffer that CSS scales into the stage.
+				// The default (Adaptive) sizes the buffer to the whole WINDOW and
+				// letterboxes, so on a tall phone the stage clips to a black bar.
+				canvasResizePolicy: 1
 			});
 			window.__hidefireEngine = engine;
 			await engine.startGame();
@@ -192,6 +210,70 @@
 		}
 		try { await store.post('hidefire/next', {}); } catch (e) { console.error(e); }
 	}
+
+	// --- touch controls -----------------------------------------------------
+	const T = () => window.__hidefireTouch; // shorthand; defined in installBridge
+	let joyOn = $state(false);
+	let joyX = $state(0), joyY = $state(0); // knob offset in px for rendering
+	let joyId = null, lookId = null, lookX = 0, lookY = 0;
+	const JOY_R = 46; // joystick radius (px)
+
+	function joyStart(e) {
+		joyId = e.pointerId;
+		joyOn = true;
+		e.currentTarget.setPointerCapture(e.pointerId);
+		joyMove(e);
+	}
+	function joyMove(e) {
+		if (e.pointerId !== joyId) return;
+		const r = e.currentTarget.getBoundingClientRect();
+		let dx = e.clientX - (r.left + r.width / 2);
+		let dy = e.clientY - (r.top + r.height / 2);
+		const len = Math.hypot(dx, dy) || 1;
+		if (len > JOY_R) { dx = (dx / len) * JOY_R; dy = (dy / len) * JOY_R; }
+		joyX = dx; joyY = dy;
+		// Up (negative screen dy) → forward; get_vector maps move_forward to -y.
+		T().mx = dx / JOY_R;
+		T().my = dy / JOY_R;
+	}
+	function joyEnd(e) {
+		if (e.pointerId !== joyId) return;
+		joyId = null; joyOn = false; joyX = 0; joyY = 0;
+		T().mx = 0; T().my = 0;
+	}
+
+	// Drag anywhere on the look zone (right side of the stage) to aim.
+	function lookStart(e) { lookId = e.pointerId; lookX = e.clientX; lookY = e.clientY; e.currentTarget.setPointerCapture(e.pointerId); }
+	function lookMove(e) {
+		if (e.pointerId !== lookId) return;
+		T().lookdx += e.clientX - lookX;
+		T().lookdy += e.clientY - lookY;
+		lookX = e.clientX; lookY = e.clientY;
+	}
+	function lookEnd(e) { if (e.pointerId === lookId) lookId = null; }
+
+	const press = (k) => () => { T()[k] = true; };
+	const setCrouch = (v) => () => { T().crouch = v; };
+
+	function toggleFullscreen() {
+		const el = stage;
+		if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+			(el.requestFullscreen || el.webkitRequestFullscreen)?.call(el);
+		} else {
+			(document.exitFullscreen || document.webkitExitFullscreen)?.call(document);
+		}
+	}
+	function onFsChange() {
+		isFullscreen = !!(document.fullscreenElement || document.webkitFullscreenElement);
+	}
+	$effect(() => {
+		document.addEventListener('fullscreenchange', onFsChange);
+		document.addEventListener('webkitfullscreenchange', onFsChange);
+		return () => {
+			document.removeEventListener('fullscreenchange', onFsChange);
+			document.removeEventListener('webkitfullscreenchange', onFsChange);
+		};
+	});
 </script>
 
 <div class="arena">
@@ -207,13 +289,35 @@
 		</span>
 	</div>
 
-	<div class="stage">
+	<div class="stage" bind:this={stage}>
 		<!-- id is REQUIRED: Godot/Emscripten builds the WebGL context's canvas
 		     selector as `#<id>`, so a missing id yields the invalid selector `#`. -->
 		<canvas bind:this={canvas} id="hidefire-canvas" class="godot" tabindex="0"></canvas>
 
+		<button class="fs-btn" onclick={toggleFullscreen} title="Fullscreen" aria-label="Toggle fullscreen">
+			{isFullscreen ? '🡴' : '⛶'}
+		</button>
+
 		{#if status === 'running' && !result}
 			<div class="crosshair" aria-hidden="true"></div>
+		{/if}
+
+		{#if status === 'running' && !result && isTouch}
+			<!-- Look: drag anywhere; joystick + buttons sit on top and grab first. -->
+			<div class="look-zone" role="application" aria-label="Look" onpointerdown={lookStart}
+				onpointermove={lookMove} onpointerup={lookEnd} onpointercancel={lookEnd}></div>
+			<div class="joystick" class:on={joyOn} role="application" aria-label="Move"
+				onpointerdown={joyStart} onpointermove={joyMove} onpointerup={joyEnd} onpointercancel={joyEnd}>
+				<div class="knob" style="transform: translate({joyX}px, {joyY}px)"></div>
+			</div>
+			<div class="tbtns">
+				{#if myRole === 'hider'}
+					<button class="tbtn" onpointerdown={press('paint')} aria-label="Paint">🎨</button>
+					<button class="tbtn" onpointerdown={press('pose')} aria-label="Pose">🧍</button>
+				{/if}
+				<button class="tbtn" onpointerdown={press('jump')} aria-label="Jump">⤒</button>
+				<button class="tbtn fire" onpointerdown={press('fire')} aria-label="Fire">🔥</button>
+			</div>
 		{/if}
 
 		{#if status !== 'running'}
@@ -237,7 +341,11 @@
 		{/if}
 	</div>
 
-	<p class="controls">WASD move · mouse look · click fire · <b>E</b> paint body · <b>F</b> pose · <b>Shift</b> crouch</p>
+	{#if isTouch}
+		<p class="controls">Left stick move · drag to look · 🔥 fire · 🎨 paint · 🧍 pose · ⤒ jump</p>
+	{:else}
+		<p class="controls">WASD move · mouse look · click fire · <b>E</b> paint body · <b>F</b> pose · <b>Shift</b> crouch</p>
+	{/if}
 </div>
 
 <style>
@@ -274,4 +382,40 @@
 	}
 	.overlay code { background: #1f2937; padding: 1px 4px; border-radius: 4px; }
 	.controls { font-size: 12px; color: #6b7280; text-align: center; margin: 0; }
+
+	/* Fullscreen button (all devices). */
+	.fs-btn {
+		position: absolute; top: 8px; right: 8px; z-index: 5;
+		width: 34px; height: 34px; border: 0; border-radius: 8px;
+		background: rgba(11, 17, 32, 0.6); color: #fff; font-size: 16px;
+		cursor: pointer; line-height: 1; display: grid; place-items: center;
+	}
+
+	/* Touch controls. */
+	.look-zone { position: absolute; inset: 0; z-index: 1; touch-action: none; }
+	.joystick {
+		position: absolute; left: 18px; bottom: 18px; z-index: 3;
+		width: 116px; height: 116px; border-radius: 50%;
+		background: rgba(255, 255, 255, 0.08); border: 2px solid rgba(255, 255, 255, 0.25);
+		touch-action: none; display: grid; place-items: center;
+	}
+	.joystick.on { background: rgba(255, 255, 255, 0.14); }
+	.knob {
+		width: 52px; height: 52px; border-radius: 50%;
+		background: rgba(255, 255, 255, 0.6); pointer-events: none;
+	}
+	.tbtns {
+		position: absolute; right: 14px; bottom: 18px; z-index: 3;
+		display: flex; align-items: flex-end; gap: 12px; touch-action: none;
+	}
+	.tbtn {
+		width: 58px; height: 58px; border-radius: 50%; border: 0;
+		background: rgba(255, 255, 255, 0.14); color: #fff; font-size: 22px;
+		display: grid; place-items: center; touch-action: none; user-select: none;
+		-webkit-user-select: none;
+	}
+	.tbtn.fire { width: 74px; height: 74px; font-size: 28px; background: rgba(248, 113, 113, 0.35); }
+	/* Let the game fill the screen in fullscreen. */
+	.stage:fullscreen { width: 100vw; height: 100vh; aspect-ratio: auto; border-radius: 0; }
+	.stage:fullscreen .godot { width: 100%; height: 100%; }
 </style>

@@ -14,9 +14,16 @@ const JUMP := 5.0
 const MOUSE_SENS := 0.0025
 const GRAVITY := 9.8
 
+const TOUCH_LOOK_SENS := 0.005
+
 var camera: Camera3D
 var body_mat: StandardMaterial3D
 var _pitch := 0.0
+# Touch input (from the DOM overlay via Main._poll_inbound). Move is continuous;
+# jump is a one-shot consumed in _physics_process.
+var _touch_move := Vector2.ZERO
+var _touch_crouch := false
+var _touch_jump := false
 # Meccha-Chameleon style: the hider's body starts PURE WHITE and you paint it to
 # mimic the stage. White = obviously unpainted / easy to spot.
 var camo_color := Color.WHITE
@@ -110,6 +117,34 @@ func spawn_at(pos: Vector3) -> void:
 		camera.rotation.x = 0.0
 	look_at(Vector3(0, pos.y, 0), Vector3.UP)
 
+## Apply one poll of touch input from the DOM overlay. Look deltas + fire/paint/
+## pose/jump arrive as one-shots (the JS getter clears them after we read).
+func apply_touch(t: Dictionary) -> void:
+	_touch_move = Vector2(float(t.get("mx", 0)), float(t.get("my", 0)))
+	_touch_crouch = bool(t.get("crouch", false))
+	var ldx := float(t.get("lookdx", 0))
+	var ldy := float(t.get("lookdy", 0))
+	if ldx != 0.0 or ldy != 0.0:
+		rotate_y(-ldx * TOUCH_LOOK_SENS)
+		_pitch = clamp(_pitch - ldy * TOUCH_LOOK_SENS, -1.4, 1.4)
+		if camera:
+			camera.rotation.x = _pitch
+		camo_still = false
+	if frozen or not alive:
+		return
+	if bool(t.get("fire", false)):
+		_fire()
+		camo_still = false
+	if bool(t.get("paint", false)) and can_camo:
+		_apply_camo()
+	if bool(t.get("pose", false)) and can_camo:
+		posed = not posed
+		if posed:
+			velocity = Vector3.ZERO
+			camo_still = true
+	if bool(t.get("jump", false)):
+		_touch_jump = true
+
 ## Marked dead by the round state (someone shot us): stop input, spectate in place.
 func die() -> void:
 	alive = false
@@ -129,12 +164,17 @@ func _physics_process(delta: float) -> void:
 			return
 	if not is_on_floor():
 		velocity.y -= GRAVITY * delta
-	elif Input.is_action_just_pressed("jump"):
+	elif Input.is_action_just_pressed("jump") or _touch_jump:
 		velocity.y = JUMP
+	_touch_jump = false
 
+	# Keyboard OR the touch joystick, whichever is active.
 	var input_dir := Input.get_vector("move_left", "move_right", "move_forward", "move_back")
+	if input_dir.length() == 0.0:
+		input_dir = _touch_move
 	var dir := (transform.basis * Vector3(input_dir.x, 0, input_dir.y)).normalized()
-	var speed := CROUCH_SPEED if Input.is_action_pressed("crouch") else SPEED
+	var crouching := Input.is_action_pressed("crouch") or _touch_crouch
+	var speed := CROUCH_SPEED if crouching else SPEED
 	if dir.length() > 0.0:
 		velocity.x = dir.x * speed
 		velocity.z = dir.z * speed
