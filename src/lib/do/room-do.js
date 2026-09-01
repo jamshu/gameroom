@@ -6,7 +6,7 @@
 // the SvelteKit build where neither resolves; `check:noenv` enforces it.
 import {
 	stateView, resolveClaims, filterPickRows, syncVoiceSince, VOICE_CAP,
-	applySudokuFill, applyMatch3Finish, closeMatch3
+	applySudokuFill, applyMatch3Finish, closeMatch3, applyBirdsortMove, closeBirdsort
 } from '../shared/gamelogic.js';
 import {
 	migrate, kvGet, kvSet, seedSequence,
@@ -45,7 +45,7 @@ const ORPHAN_CHECK_EVERY_MS = 300_000;
 // `tick` is deliberately absent: it is ephemeral score chatter, and letting it
 // flip a room to source-of-truth would transfer ownership on a frame that writes
 // nothing — the same reason chat and aim are not here.
-const OWNING_OPS = new Set(['setState', 'append', 'thiefPick', 'voice', 'sudokuFill', 'match3Finish']);
+const OWNING_OPS = new Set(['setState', 'append', 'thiefPick', 'voice', 'sudokuFill', 'match3Finish', 'birdsortMove']);
 
 export class RoomDO {
 	constructor(ctx, env) {
@@ -675,6 +675,17 @@ export class RoomDO {
 				return this.raceWrite('sudoku', (game) =>
 					applySudokuFill(game, Number(op.uid), op.cell, op.digit)
 				);
+			case 'birdsortMove':
+				return this.raceWrite('birdsort', (game) => {
+					const res = applyBirdsortMove(game, Number(op.uid), op.from, op.to);
+					// Close on the timeout leader even if this pour was refused — a client
+					// pokes once after the safety cap to end a puzzle nobody solved.
+					// closeBirdsort is a no-op before expiry and after a result, so this is
+					// safe on every request.
+					const closed = closeBirdsort(game);
+					if (res.ok || closed) return { ...res, ok: true, closed };
+					return res;
+				});
 			case 'match3Finish':
 				return this.raceWrite('match3', (game) => {
 					const res = applyMatch3Finish(game, Number(op.uid), op.report);

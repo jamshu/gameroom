@@ -22,7 +22,7 @@
 	// is what makes a changed export actually reload. Dev: always fresh. Prod: bump
 	// on any redeploy that re-exports the game. // ponytail: manual bump; wire to a
 	// build hash if redeploys get frequent.
-	const ENGINE_VERSION = import.meta.env.DEV ? `dev-${Date.now()}` : 'v6';
+	const ENGINE_VERSION = import.meta.env.DEV ? `dev-${Date.now()}` : 'v7';
 	const ENGINE_BASE = `/godot/hidefire/${ENGINE_VERSION}`;
 	// Godot's single-threaded web export dodges SharedArrayBuffer / COOP-COEP.
 	const SEND_HZ = 15;
@@ -52,7 +52,11 @@
 			? (Number(uid) === BOT ? 'Bot' : 'You')
 			: members?.find((m) => Number(m.uid) === Number(uid))?.name || `Player ${uid}`;
 
-	const myRole = $derived(g?.roles?.[me] ?? null);
+	const myTeam = $derived(g?.teams?.[me] ?? null);
+	// Legacy spawn/camo label the OLD Godot pck understands (team A -> hider corner,
+	// team B -> seeker corner). A rebuilt pck reads `team`/`slot` instead; sending
+	// both means team combat works before AND after the export is rebuilt.
+	const teamRole = (t) => (t === 'A' ? 'hider' : 'seeker');
 	const remainingMs = $derived(Math.max(0, (g?.endsAt ?? 0) - now));
 	const remaining = $derived(Math.ceil(remainingMs / 1000));
 	const result = $derived(g?.result ?? null);
@@ -111,7 +115,9 @@
 		window.hidefireOnHit = (victimUid) => {
 			const v = Number(victimUid);
 			if (solo) {
-				applyHit(localGame, v);
+				// Only two combatants in solo, so the shooter is whichever one isn't the
+				// victim — enough for applyHit's friendly-fire guard.
+				applyHit(localGame, v, v === YOU ? BOT : YOU);
 				resolve(localGame, Date.now());
 				localGame = { ...localGame }; // nudge reactivity
 				pushRound();
@@ -135,8 +141,20 @@
 		window.hidefirePushPeers?.(JSON.stringify(data));
 	}
 	function pushRound() {
-		const payload = { role: myRole, you: me, endsAt: g?.endsAt, alive: g?.alive, result };
-		if (solo) payload.solo = true, (payload.bot = { uid: BOT, role: g?.roles?.[BOT] });
+		const payload = {
+			team: myTeam,
+			role: teamRole(myTeam), // legacy fallback for an un-rebuilt pck
+			slot: g?.players?.indexOf(me) ?? 0, // spawn offset so teammates don't stack
+			you: me,
+			endsAt: g?.endsAt,
+			alive: g?.alive,
+			result
+		};
+		if (solo) {
+			payload.solo = true;
+			const botTeam = g?.teams?.[BOT];
+			payload.bot = { uid: BOT, team: botTeam, role: teamRole(botTeam) };
+		}
 		window.hidefireSetRound?.(JSON.stringify(payload));
 	}
 
@@ -185,7 +203,7 @@
 
 		const clock = setInterval(() => {
 			now = Date.now();
-			// Round clock hit zero with no kill: hand it to the hiders.
+			// Safety cap hit with both teams still standing: resolve on survivor count.
 			if (isTimekeeper && !result && g?.endsAt && Date.now() >= g.endsAt) {
 				if (solo) {
 					resolve(localGame, Date.now());
@@ -300,8 +318,8 @@
 
 <div class="arena">
 	<div class="hud">
-		<span class="role" class:hider={myRole === 'hider'} class:seeker={myRole === 'seeker'}>
-			{myRole === 'hider' ? '🫥 Hide' : myRole === 'seeker' ? '🔫 Seek' : '…'}
+		<span class="role" class:hider={myTeam === 'A'} class:seeker={myTeam === 'B'}>
+			{myTeam === 'A' ? '🟢 Team A' : myTeam === 'B' ? '🔴 Team B' : '…'}
 		</span>
 		<span class="clock" class:low={remaining <= 10}>{remaining}s</span>
 		<span class="score">
@@ -337,10 +355,10 @@
 				<div class="knob" style="transform: translate({joyX}px, {joyY}px)"></div>
 			</div>
 			<div class="tbtns">
-				{#if myRole === 'hider'}
-					<button class="tbtn" onpointerdown={press('paint')} aria-label="Paint">🎨</button>
-					<button class="tbtn" onpointerdown={press('pose')} aria-label="Pose">🧍</button>
-				{/if}
+				<!-- Everyone can hide AND fire in team combat, so camo is available to
+				     all (a rebuilt pck enables it; the old one ignores it for team B). -->
+				<button class="tbtn" onpointerdown={press('paint')} aria-label="Paint">🎨</button>
+				<button class="tbtn" onpointerdown={press('pose')} aria-label="Pose">🧍</button>
 				<button class="tbtn" onpointerdown={press('jump')} aria-label="Jump">⤒</button>
 				<button class="tbtn fire" onpointerdown={press('fire')} aria-label="Fire">🔥</button>
 			</div>
@@ -361,7 +379,13 @@
 
 		{#if resultShown}
 			<div class="overlay result">
-				<h2>{result === 'seekers' ? '🔫 Seekers win!' : '🫥 Hiders win!'}</h2>
+				<h2>
+					{result === 'draw'
+						? '🤝 Draw!'
+						: result === myTeam
+							? '🏆 Your team wins!'
+							: `Team ${result} wins!`}
+				</h2>
 				<button onclick={nextRound}>Next round →</button>
 			</div>
 		{/if}

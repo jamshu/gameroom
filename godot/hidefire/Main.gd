@@ -14,9 +14,18 @@ const PlayerScript = preload("res://Player.gd")
 const PuppetScript = preload("res://Puppet.gd")
 const BotScript = preload("res://Bot.gd")
 
-# Opposite corners so hider and seeker never spawn on top of each other — the bug
-# that made the other player's puppet appear inside your own camera.
-const SPAWNS := { "hider": Vector3(-16, 1, -16), "seeker": Vector3(16, 1, 16) }
+# Opposite corners so the two teams never spawn on top of each other. Keyed by
+# BOTH the team id (A/B, current) and the legacy role (hider/seeker) so the bot,
+# which still reasons in roles, spawns at the right corner too.
+const SPAWNS := {
+	"A": Vector3(-16, 1, -16), "B": Vector3(16, 1, 16),
+	"hider": Vector3(-16, 1, -16), "seeker": Vector3(16, 1, 16)
+}
+
+# Fan up to four teammates out from a corner so they don't spawn inside each other.
+func _team_spawn(key: String, slot: int) -> Vector3:
+	var base = SPAWNS.get(key, Vector3(16, 1, 16))
+	return base + Vector3(float(slot % 2) * 3.0, 0.0, float((slot / 2) % 2) * 3.0)
 
 var player: CharacterBody3D
 var puppets := {}                 # uid -> Puppet
@@ -274,7 +283,11 @@ func _apply_round(json: String) -> void:
 	var data = JSON.parse_string(json)
 	if typeof(data) != TYPE_DICTIONARY:
 		return
-	var new_role := str(data.get("role", ""))
+	# Team combat: spawn by team, fall back to the legacy role field for an old host.
+	var new_team := str(data.get("team", ""))
+	if new_team == "":
+		new_team = str(data.get("role", ""))
+	var slot := int(data.get("slot", 0))
 	my_uid = int(data.get("you", 0))
 	round_over = data.get("result", null) != null
 
@@ -283,14 +296,15 @@ func _apply_round(json: String) -> void:
 	if player:
 		player.set_meta("uid", my_uid)
 
-	# (Re)spawn by role at the start of a live round or when the side swaps.
-	if not round_over and new_role != "":
-		if new_role != my_role and SPAWNS.has(new_role):
-			my_role = new_role
+	# (Re)spawn by team at the start of a live round. Everyone can camo now — both
+	# teams hide AND fire.
+	if not round_over and new_team != "":
+		if new_team != my_role:
+			my_role = new_team
 			if player:
-				player.spawn_at(SPAWNS[new_role])
+				player.spawn_at(_team_spawn(new_team, slot))
 		if player:
-			player.can_camo = my_role == "hider"
+			player.can_camo = true
 
 	# Death / round-over from the authoritative round state.
 	var alive_map = data.get("alive", {})

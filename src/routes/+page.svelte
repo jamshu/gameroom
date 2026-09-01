@@ -214,6 +214,10 @@
 				<span class="game-tile-emoji emo">🍬</span>
 				<span class="game-tile-label">Candy Survival</span>
 			</a>
+			<a class="game-tile" href="/solo/birdsort">
+				<span class="game-tile-emoji emo">🐦</span>
+				<span class="game-tile-label">Bird Sort</span>
+			</a>
 			<a class="game-tile" href="/solo/chess">
 				<span class="game-tile-emoji emo">♟️</span>
 				<span class="game-tile-label">Chess</span>

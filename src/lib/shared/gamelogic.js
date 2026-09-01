@@ -24,6 +24,10 @@ import {
 } from './match3.js';
 import { initBlackjack, blackjackView, blackjackScores } from './blackjack.js';
 import { initHideFire } from './hidefire.js';
+import {
+	genTubes as birdsortGen, applyMove as birdsortApply, isSolved as birdsortSolved,
+	progressOf as birdsortProgress, sortedCount as birdsortSorted, ROUND_MS as BIRDSORT_ROUND_MS
+} from './birdsort.js';
 
 export { blackjackScores };
 
@@ -162,14 +166,41 @@ export function initGame(gameType, playerUids, room) {
 			result: null
 		};
 	}
+	if (gameType === 'birdsort') {
+		if (playerUids.length < 2 || playerUids.length > 6) {
+			throw httpError(400, 'Bird Sort needs 2 to 6 players');
+		}
+		// One deal, played by everyone on their own tubes. Seed minted here like
+		// sudoku's, so /rematch and resetRound hand out a fresh puzzle for free by
+		// re-running initGame. `start` ships whole (no hidden solution, unlike
+		// sudoku) — every player begins from the identical scramble and races.
+		const seed = crypto.randomUUID();
+		const start = birdsortGen(seed);
+		return {
+			type: 'birdsort',
+			players: playerUids,
+			seed,
+			start, // public: the dealt tubes, identical for everyone
+			startedAt: Date.now(),
+			durationMs: BIRDSORT_ROUND_MS,
+			// per-player sub-state; nobody ever writes anyone else's tubes
+			boards: Object.fromEntries(
+				playerUids.map((u) => [u, { tubes: start.map((t) => t.slice()), moves: 0, doneAt: null }])
+			),
+			result: null // winner uid once someone sorts, or the timeout leader
+		};
+	}
 	// Blackjack mints its own shuffled deck here, so /rematch and resetRound re-deal
 	// for free by re-running initGame — the same trick the sudoku seed uses. Rules +
 	// the hidden dealer-hole view live in shared/blackjack.js.
 	if (gameType === 'blackjack') return initBlackjack(playerUids);
 	if (gameType === 'hidefire') {
-		if (playerUids.length !== 2) throw httpError(400, 'Hide & Fire needs exactly 2 players');
-		// First round only — subsequent rounds swap sides in-place via the
-		// hidefire/next action (nextRound), not by re-running initGame.
+		if (playerUids.length < 2 || playerUids.length > 8) {
+			throw httpError(400, 'Hide & Fire needs 2 to 8 players');
+		}
+		// Two teams (A/B), last team standing. First round only — subsequent rounds
+		// re-arm in place via the hidefire/next action (nextRound), keeping teams and
+		// carrying the score, not by re-running initGame.
 		return initHideFire(playerUids);
 	}
 	throw httpError(400, 'Unknown game type');
@@ -584,6 +615,10 @@ export function winnerUids(game) {
 		// exactly one winner and it is recorded in `result`.
 		return game.result ? [game.result] : [];
 	}
+	if (game.type === 'birdsort') {
+		// Like sudoku: first to sort (or the timeout leader) is recorded in `result`.
+		return game.result ? [game.result] : [];
+	}
 	if (game.type === 'match3') {
 		if (!game.result) return [];
 		// Ties all score — two players genuinely reaching the same score in 90
@@ -652,6 +687,72 @@ export function applySudokuFill(game, uid, cell, digit, now = Date.now()) {
 		if (!game.result) game.result = Number(uid);
 	}
 	return { ok: true, correct: true, finished: !!board.doneAt, won: game.result === Number(uid) };
+}
+
+/**
+ * Apply one bird-sort pour for `uid` to their own tubes.
+ *
+ * Validated server-side (unlike match-3, whose board is client-generated): the
+ * move is legal or it is refused, and the tubes the server holds are the truth,
+ * so "first to sort" cannot be faked. First to fully sort wins outright; a later
+ * finisher cannot displace them.
+ */
+export function applyBirdsortMove(game, uid, from, to, now = Date.now()) {
+	const board = game?.boards?.[uid];
+	if (!board) return { ok: false, status: 403, error: 'Not a player in this game' };
+	if (game.result) return { ok: false, status: 409, error: 'The race is over' };
+	if (board.doneAt) return { ok: false, status: 409, error: 'You have already finished' };
+
+	const f = typeof from === 'number' ? from : Number.parseInt(from, 10);
+	const t = typeof to === 'number' ? to : Number.parseInt(to, 10);
+	if (!Number.isInteger(f) || !Number.isInteger(t)) {
+		return { ok: false, status: 400, error: 'No such tube' };
+	}
+
+	const next = birdsortApply(board.tubes, f, t);
+	if (!next) return { ok: false, status: 400, error: 'Illegal pour' };
+
+	board.tubes = next;
+	board.moves = (board.moves || 0) + 1;
+	if (birdsortSolved(next)) {
+		board.doneAt = now;
+		if (!game.result) game.result = Number(uid);
+	}
+	return { ok: true, moves: board.moves, finished: !!board.doneAt, won: game.result === Number(uid) };
+}
+
+/** Has the bird-sort round's safety clock run out? */
+export function birdsortExpired(game, now = Date.now()) {
+	if (!game?.startedAt) return false;
+	return now >= game.startedAt + (game.durationMs || BIRDSORT_ROUND_MS);
+}
+
+/**
+ * Close a bird-sort round whose clock expired with nobody finished: the leader by
+ * completed tubes (ties broken by join order) is declared the winner, so the room
+ * cannot hang if the puzzle proves too hard in the time. No-op once someone won.
+ */
+export function closeBirdsort(game, now = Date.now()) {
+	if (game?.result) return false;
+	if (!birdsortExpired(game, now)) return false;
+	let best = null;
+	let bestSorted = -1;
+	for (const u of game.players) {
+		const s = birdsortSorted(game.boards?.[u]?.tubes || []);
+		if (s > bestSorted) {
+			bestSorted = s;
+			best = u;
+		}
+	}
+	game.result = best != null ? Number(best) : null;
+	return true;
+}
+
+/** One point to whoever sorted first (or led at the timeout). */
+export function birdsortScores(game) {
+	return Object.fromEntries(
+		gameSeatUids(game).map((u) => [u, Number(u) === Number(game.result) ? 1 : 0])
+	);
 }
 
 /** Has the match-3 round's clock run out, by the server's own stamps? */
@@ -757,6 +858,7 @@ export function gameView(game, uid) {
 		return { ...game, clock: { w: live.w, b: live.b, ticking: live.ticking } };
 	}
 	if (game.type === 'sudoku') return sudokuView(game, uid);
+	if (game.type === 'birdsort') return birdsortView(game, uid);
 	if (game.type === 'match3') return match3View(game);
 	// Blackjack hides the dealer's hole card until the round is done.
 	if (game.type === 'blackjack') return blackjackView(game, uid);
@@ -795,6 +897,30 @@ function sudokuView(game, uid) {
 	}
 	const { solution, ...rest } = game;
 	return { ...rest, boards };
+}
+
+/**
+ * Bird Sort as one player may see it. Rivals are projected down to the ticker's
+ * metrics — how far along, how many moves, whether finished — rather than their
+ * full tube arrangement, which is a live worked example a rival could copy. The
+ * viewer's own board carries the actual tubes. `uid` may be a spectator with no
+ * seat, so no branch may assume the viewer is a player.
+ */
+function birdsortView(game, uid) {
+	const me = String(uid);
+	const boards = {};
+	for (const [id, b] of Object.entries(game.boards || {})) {
+		const progress = birdsortProgress(b?.tubes);
+		const shared = {
+			progress: progress.done,
+			total: progress.total,
+			pct: progress.pct,
+			moves: b?.moves || 0,
+			doneAt: b?.doneAt ?? null
+		};
+		boards[id] = id === me ? { ...shared, tubes: b?.tubes || [] } : shared;
+	}
+	return { ...game, boards };
 }
 
 /**

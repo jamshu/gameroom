@@ -25,6 +25,9 @@ const seatIds = (...args) => [...seatedPlayerIds(...args)].sort((a, b) => a - b)
 	// branch would seat ten players and nothing would look wrong until the UI did.
 	assert.equal(playerCapacity('sudoku', 12), 6);
 	assert.equal(playerCapacity('match3', 12), 6);
+	assert.equal(playerCapacity('birdsort', 12), 6);
+	// Hide & Fire now seats two teams of up to four — last team standing.
+	assert.equal(playerCapacity('hidefire', 12), 8);
 }
 
 // (b) the over-capacity case: 5 thief players -> chess seats the 2 lowest ids.
@@ -107,7 +110,7 @@ const seatIds = (...args) => [...seatedPlayerIds(...args)].sort((a, b) => a - b)
 	// describe conflicting futures and are merged by a per-player DO op instead of
 	// being ranked. Adding them to the ranking would destabilise thief-finder's
 	// total order for no gain — see the comment on contendedProgress.
-	for (const type of ['chess', 'ludo', 'carroms', 'sudoku', 'match3']) {
+	for (const type of ['chess', 'ludo', 'carroms', 'sudoku', 'match3', 'birdsort']) {
 		assert.equal(contendedProgress({ type, phase: 'picking' }), null, type);
 		assert.ok(!isContendedPhase({ type }), `${type} keeps the strict version rule`);
 	}

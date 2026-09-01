@@ -9,9 +9,11 @@ export const prerender = false;
  * Register a kill and/or resolve the round.
  *
  * Client-authoritative: the shooter's Godot raycast decided the hit, so the body
- * carries the victim's uid. Called with NO victim by the host's clock watcher
- * when the 90s timer expires, so `resolve` can hand the round to the surviving
- * hiders — one endpoint covers both the kill and the timeout.
+ * carries the victim's uid. The shooter is the CALLER (`uid`), passed to applyHit
+ * so friendly fire is rejected server-side — the Godot ray names any body it hits,
+ * it does not filter teammates. Called with NO victim by the host's clock watcher
+ * when the safety timer expires, so `resolve` can decide the round on survivor
+ * count — one endpoint covers both the kill and the timeout.
  * // ponytail: shooter trusted, no server position check — add one here if
  * // cheating ever matters.
  */
@@ -23,7 +25,7 @@ export async function POST({ params, cookies, request }) {
 		if (!game || game.type !== 'hidefire') throw httpError(409, 'No Hide & Fire game in progress');
 
 		const { victim } = await request.json().catch(() => ({}));
-		const killed = victim != null ? applyHit(game, Number(victim)).killed : false;
+		const killed = victim != null ? applyHit(game, Number(victim), Number(uid)).killed : false;
 		const result = resolve(game);
 
 		await writeState(params.id, state);
