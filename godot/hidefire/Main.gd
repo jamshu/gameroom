@@ -18,8 +18,8 @@ const BotScript = preload("res://Bot.gd")
 # BOTH the team id (A/B, current) and the legacy role (hider/seeker) so the bot,
 # which still reasons in roles, spawns at the right corner too.
 const SPAWNS := {
-	"A": Vector3(-16, 1, -16), "B": Vector3(16, 1, 16),
-	"hider": Vector3(-16, 1, -16), "seeker": Vector3(16, 1, 16)
+	"A": Vector3(-26, 1, -26), "B": Vector3(26, 1, 26),
+	"hider": Vector3(-26, 1, -26), "seeker": Vector3(26, 1, 26)
 }
 
 # Fan up to four teammates out from a corner so they don't spawn inside each other.
@@ -108,21 +108,36 @@ func _box(size: Vector3, pos: Vector3, color: Color) -> void:
 
 func _build_arena() -> void:
 	var h := 4.0
-	# Floor + outer walls
-	_box(Vector3(40, 1, 40), Vector3(0, -0.5, 0), Color(0.45, 0.42, 0.38))
-	_box(Vector3(40, h, 1), Vector3(0, h / 2, -20), Color(0.6, 0.6, 0.62))
-	_box(Vector3(40, h, 1), Vector3(0, h / 2, 20), Color(0.6, 0.6, 0.62))
-	_box(Vector3(1, h, 40), Vector3(-20, h / 2, 0), Color(0.6, 0.6, 0.62))
-	_box(Vector3(1, h, 40), Vector3(20, h / 2, 0), Color(0.6, 0.6, 0.62))
-	# Inner dividers -> a few rooms to hide between
-	_box(Vector3(1, h, 22), Vector3(-6, h / 2, -9), Color(0.55, 0.5, 0.5))
-	_box(Vector3(1, h, 22), Vector3(8, h / 2, 9), Color(0.5, 0.55, 0.5))
-	_box(Vector3(16, h, 1), Vector3(-12, h / 2, 4), Color(0.5, 0.5, 0.55))
-	# Camo props: distinct colours a hider can match against
-	_box(Vector3(2, 2, 2), Vector3(-14, 1, -14), Color(0.2, 0.5, 0.8))
-	_box(Vector3(2, 3, 2), Vector3(12, 1.5, -12), Color(0.8, 0.3, 0.3))
+	# Floor + outer walls — 60x60, wide enough for two teams of four to spread out.
+	_box(Vector3(60, 1, 60), Vector3(0, -0.5, 0), Color(0.45, 0.42, 0.38))
+	_box(Vector3(60, h, 1), Vector3(0, h / 2, -30), Color(0.6, 0.6, 0.62))
+	_box(Vector3(60, h, 1), Vector3(0, h / 2, 30), Color(0.6, 0.6, 0.62))
+	_box(Vector3(1, h, 60), Vector3(-30, h / 2, 0), Color(0.6, 0.6, 0.62))
+	_box(Vector3(1, h, 60), Vector3(30, h / 2, 0), Color(0.6, 0.6, 0.62))
+	# Inner dividers -> a maze of rooms and lanes to break sightlines.
+	_box(Vector3(1, h, 34), Vector3(-10, h / 2, -12), Color(0.55, 0.5, 0.5))
+	_box(Vector3(1, h, 34), Vector3(12, h / 2, 12), Color(0.5, 0.55, 0.5))
+	_box(Vector3(24, h, 1), Vector3(-18, h / 2, 6), Color(0.5, 0.5, 0.55))
+	_box(Vector3(24, h, 1), Vector3(18, h / 2, -6), Color(0.52, 0.5, 0.53))
+	_box(Vector3(1, h, 16), Vector3(2, h / 2, 22), Color(0.54, 0.52, 0.5))
+	_box(Vector3(1, h, 16), Vector3(-2, h / 2, -22), Color(0.5, 0.53, 0.52))
+	_box(Vector3(14, h, 1), Vector3(0, h / 2, 0), Color(0.53, 0.51, 0.55))
+	# Camo props: distinct colours a hider can match against, scattered across the
+	# whole floor so there is cover near every route.
+	_box(Vector3(2, 2, 2), Vector3(-24, 1, -24), Color(0.2, 0.5, 0.8))
+	_box(Vector3(2, 3, 2), Vector3(22, 1.5, -22), Color(0.8, 0.3, 0.3))
 	_box(Vector3(3, 1, 3), Vector3(0, 0.5, 0), Color(0.3, 0.7, 0.35))
-	_box(Vector3(2, 2, 2), Vector3(14, 1, 14), Color(0.8, 0.7, 0.2))
+	_box(Vector3(2, 2, 2), Vector3(24, 1, 24), Color(0.8, 0.7, 0.2))
+	_box(Vector3(2.5, 2.5, 2.5), Vector3(-22, 1.25, 20), Color(0.6, 0.35, 0.75))
+	_box(Vector3(2, 2, 3), Vector3(18, 1, 4), Color(0.25, 0.65, 0.7))
+	_box(Vector3(3, 2, 2), Vector3(-16, 1, -4), Color(0.75, 0.55, 0.25))
+	_box(Vector3(2, 4, 2), Vector3(8, 2, -18), Color(0.4, 0.6, 0.4))
+	_box(Vector3(2, 2, 2), Vector3(-8, 1, 16), Color(0.7, 0.4, 0.5))
+	_box(Vector3(2.5, 1.5, 2.5), Vector3(14, 0.75, 20), Color(0.45, 0.5, 0.7))
+	_box(Vector3(2, 3, 2), Vector3(-14, 1.5, 10), Color(0.65, 0.65, 0.3))
+	_box(Vector3(3, 2, 3), Vector3(6, 1, 26), Color(0.3, 0.55, 0.6))
+	_box(Vector3(2, 2, 2), Vector3(26, 1, -8), Color(0.55, 0.45, 0.6))
+	_box(Vector3(2, 2.5, 2), Vector3(-26, 1.25, 2), Color(0.5, 0.6, 0.45))
 
 func _spawn_local_player() -> void:
 	player = CharacterBody3D.new()
