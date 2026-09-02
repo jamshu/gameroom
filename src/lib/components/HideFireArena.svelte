@@ -22,7 +22,7 @@
 	// is what makes a changed export actually reload. Dev: always fresh. Prod: bump
 	// on any redeploy that re-exports the game. // ponytail: manual bump; wire to a
 	// build hash if redeploys get frequent.
-	const ENGINE_VERSION = import.meta.env.DEV ? `dev-${Date.now()}` : 'v14';
+	const ENGINE_VERSION = import.meta.env.DEV ? `dev-${Date.now()}` : 'v15';
 	const ENGINE_BASE = `/godot/hidefire/${ENGINE_VERSION}`;
 	// Godot's single-threaded web export dodges SharedArrayBuffer / COOP-COEP.
 	const SEND_HZ = 15;
@@ -178,13 +178,18 @@
 		try {
 			// The export defines a global `Engine`. Loading via a script tag keeps its
 			// own module resolution intact (it fetches the .wasm/.pck relative to base).
-			await new Promise((res, rej) => {
-				const s = document.createElement('script');
-				s.src = `${ENGINE_BASE}/hidefire.js`;
-				s.onload = res;
-				s.onerror = rej;
-				document.head.appendChild(s);
-			});
+			// Guard: on a remount the script is already loaded — appending it again
+			// re-runs the engine bundle and throws "Identifier 'Features' has already
+			// been declared", so reuse the existing global instead.
+			if (typeof window.Engine === 'undefined') {
+				await new Promise((res, rej) => {
+					const s = document.createElement('script');
+					s.src = `${ENGINE_BASE}/hidefire.js`;
+					s.onload = res;
+					s.onerror = rej;
+					document.head.appendChild(s);
+				});
+			}
 			// eslint-disable-next-line no-undef
 			const engine = new Engine({
 				canvas,

@@ -383,7 +383,9 @@ func _apply_round(json: String) -> void:
 		player.set_meta("uid", my_uid)
 
 	var alive_map = data.get("alive", {})
-	var me_should_live := typeof(alive_map) == TYPE_DICTIONARY \
+	# Explicit bool: alive_map is an untyped Variant, so `:=` can't infer a type here
+	# and Main.gd fails to load (blank/frozen arena).
+	var me_should_live: bool = typeof(alive_map) == TYPE_DICTIONARY \
 			and alive_map.has(str(my_uid)) and bool(alive_map[str(my_uid)])
 
 	# Respawn at the start of a live round, at a fresh randomized spot (never where
