@@ -114,14 +114,25 @@ func _build_arena() -> void:
 	_box(Vector3(60, h, 1), Vector3(0, h / 2, 30), Color(0.6, 0.6, 0.62))
 	_box(Vector3(1, h, 60), Vector3(-30, h / 2, 0), Color(0.6, 0.6, 0.62))
 	_box(Vector3(1, h, 60), Vector3(30, h / 2, 0), Color(0.6, 0.6, 0.62))
-	# Inner dividers -> a maze of rooms and lanes to break sightlines.
-	_box(Vector3(1, h, 34), Vector3(-10, h / 2, -12), Color(0.55, 0.5, 0.5))
-	_box(Vector3(1, h, 34), Vector3(12, h / 2, 12), Color(0.5, 0.55, 0.5))
-	_box(Vector3(24, h, 1), Vector3(-18, h / 2, 6), Color(0.5, 0.5, 0.55))
-	_box(Vector3(24, h, 1), Vector3(18, h / 2, -6), Color(0.52, 0.5, 0.53))
-	_box(Vector3(1, h, 16), Vector3(2, h / 2, 22), Color(0.54, 0.52, 0.5))
-	_box(Vector3(1, h, 16), Vector3(-2, h / 2, -22), Color(0.5, 0.53, 0.52))
-	_box(Vector3(14, h, 1), Vector3(0, h / 2, 0), Color(0.53, 0.51, 0.55))
+	# Inner dividers -> a maze of rooms and lanes, but EVERY long wall has a ~4-unit
+	# doorway (player radius is 0.3) so you can always cross into the next room. Long
+	# walls are built as two segments with the gap between them.
+	# Vertical wall x=-10 (z -29..5), doorway at z≈-12.
+	_box(Vector3(1, h, 15), Vector3(-10, h / 2, -21.5), Color(0.55, 0.5, 0.5))
+	_box(Vector3(1, h, 15), Vector3(-10, h / 2, -2.5), Color(0.55, 0.5, 0.5))
+	# Vertical wall x=12 (z -5..29), doorway at z≈12.
+	_box(Vector3(1, h, 15), Vector3(12, h / 2, 2.5), Color(0.5, 0.55, 0.5))
+	_box(Vector3(1, h, 15), Vector3(12, h / 2, 21.5), Color(0.5, 0.55, 0.5))
+	# Horizontal wall z=6 (x -30..-6), doorway at x≈-18.
+	_box(Vector3(10, h, 1), Vector3(-25, h / 2, 6), Color(0.5, 0.5, 0.55))
+	_box(Vector3(10, h, 1), Vector3(-11, h / 2, 6), Color(0.5, 0.5, 0.55))
+	# Horizontal wall z=-6 (x 6..30), doorway at x≈18.
+	_box(Vector3(10, h, 1), Vector3(11, h / 2, -6), Color(0.52, 0.5, 0.53))
+	_box(Vector3(10, h, 1), Vector3(25, h / 2, -6), Color(0.52, 0.5, 0.53))
+	# Short stub walls (open ends -> you round them, no doorway needed).
+	_box(Vector3(1, h, 12), Vector3(2, h / 2, 23), Color(0.54, 0.52, 0.5))
+	_box(Vector3(1, h, 12), Vector3(-2, h / 2, -23), Color(0.5, 0.53, 0.52))
+	_box(Vector3(12, h, 1), Vector3(0, h / 2, 0), Color(0.53, 0.51, 0.55))
 	# Camo props: distinct colours a hider can match against, scattered across the
 	# whole floor so there is cover near every route.
 	_box(Vector3(2, 2, 2), Vector3(-24, 1, -24), Color(0.2, 0.5, 0.8))
