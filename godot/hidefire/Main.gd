@@ -288,6 +288,53 @@ func spawn_explosion(pos: Vector3) -> void:
 func death_fx(pos: Vector3) -> void:
 	spawn_blood(pos, true)
 	spawn_explosion(pos)
+	spawn_blood_pool(pos)
+
+## A visible tracer round travelling muzzle -> impact. The hit is already resolved
+## by the instant raycast; this is the cosmetic bullet, fast enough to read as a
+## shot but slow enough to SEE it move.
+func spawn_bullet(from: Vector3, to: Vector3) -> void:
+	var b := MeshInstance3D.new()
+	var s := SphereMesh.new()
+	s.radius = 0.06
+	s.height = 0.12
+	var m := StandardMaterial3D.new()
+	m.albedo_color = Color(1.0, 0.9, 0.45)
+	m.emission_enabled = true
+	m.emission = Color(1.0, 0.8, 0.25)
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	s.material = m
+	b.mesh = s
+	b.position = from
+	add_child(b)
+	# ~140 units/sec, clamped so point-blank still shows a blink and long shots
+	# don't crawl.
+	var dur := clampf(from.distance_to(to) / 140.0, 0.03, 0.22)
+	var tw := create_tween()
+	tw.tween_property(b, "position", to, dur)
+	tw.tween_callback(b.queue_free)
+
+## A dark blood pool that spreads on the floor under a kill, lingers, then fades.
+func spawn_blood_pool(pos: Vector3) -> void:
+	var disc := MeshInstance3D.new()
+	var cyl := CylinderMesh.new()
+	cyl.top_radius = 0.6
+	cyl.bottom_radius = 0.6
+	cyl.height = 0.02
+	var m := StandardMaterial3D.new()
+	m.albedo_color = Color(0.38, 0.02, 0.02)
+	m.roughness = 0.4
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	cyl.material = m
+	disc.mesh = cyl
+	disc.position = Vector3(pos.x, 0.02, pos.z)
+	disc.scale = Vector3(0.2, 1.0, 0.2)
+	add_child(disc)
+	var tw := create_tween()
+	tw.tween_property(disc, "scale", Vector3(1.0, 1.0, 1.0), 0.4) # spreads out
+	tw.tween_interval(3.5)                                        # lingers
+	tw.tween_property(m, "albedo_color:a", 0.0, 1.2)             # then soaks away
+	tw.tween_callback(disc.queue_free)
 
 func _apply_peer(json: String) -> void:
 	var data = JSON.parse_string(json)

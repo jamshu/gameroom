@@ -109,7 +109,8 @@ func spawn_at(pos: Vector3) -> void:
 		body_mat.albedo_color = Color.WHITE
 	if camera:
 		camera.rotation.x = 0.0
-	_apply_pose_visual()  # reset crouch + camera height
+		camera.rotation.z = 0.0  # undo the death-cam tip-over
+	_apply_pose_visual()  # reset crouch + camera height (position.y)
 	look_at(Vector3(0, pos.y, 0), Vector3.UP)
 
 ## Apply one poll of touch input from the DOM overlay. Look deltas + fire/paint/
@@ -151,7 +152,8 @@ func _apply_pose_visual() -> void:
 	if camera:
 		camera.position.y = 1.0 if posed else 1.5
 
-## Marked dead by the round state (someone shot us): stop input, spectate in place.
+## Marked dead by the round state (someone shot us): stop input, drop to the floor
+## and spectate from a fallen death-cam.
 func die() -> void:
 	if not alive:
 		return
@@ -160,11 +162,23 @@ func die() -> void:
 	velocity = Vector3.ZERO
 	if arena:
 		arena.death_fx(global_position + Vector3(0, 1, 0))
-	# Red hit-flash in the DOM overlay.
+	_fall_camera()
+	# Red hit-flash + death recap in the DOM overlay.
 	if OS.has_feature("web"):
 		var w = JavaScriptBridge.get_interface("window")
 		if w and w.hidefireOnDeath:
 			w.hidefireOnDeath()
+
+## Death cam: sink to the ground and tip over, so being hit reads as collapsing
+## rather than freezing on your feet.
+func _fall_camera() -> void:
+	if camera == null:
+		return
+	var tw := create_tween()
+	tw.set_trans(Tween.TRANS_SINE)
+	tw.tween_property(camera, "position:y", 0.35, 0.6)
+	tw.parallel().tween_property(camera, "rotation:z", 1.2, 0.6)  # tip sideways
+	tw.parallel().tween_property(camera, "rotation:x", 0.25, 0.6) # look up from floor
 
 func _physics_process(delta: float) -> void:
 	if frozen or not alive:
@@ -221,6 +235,14 @@ func _fire(screen_pos = null) -> void:
 	var q := PhysicsRayQueryParameters3D.create(from, to)
 	q.exclude = [self]
 	var hit := space.intersect_ray(q)
+
+	# Visible tracer: from the gun muzzle to whatever the ray met (or 100u into the
+	# distance on a miss). Spawned before the early-return so misses fly too.
+	var muzzle := camera.to_global(Vector3(0.18, -0.14, -1.0)) if camera else from
+	var endpoint: Vector3 = hit.position if hit.has("collider") else to
+	if arena:
+		arena.spawn_bullet(muzzle, endpoint)
+
 	if not hit.has("collider"):
 		return
 	if hit.collider.is_in_group("players"):

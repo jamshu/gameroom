@@ -1,5 +1,5 @@
 import { json } from '@sveltejs/kit';
-import { requireMember, parseState, writeState, appendEvent, jsonError, httpError } from '$lib/server/room.js';
+import { requireMemberCached, parseState, writeState, appendEvent, jsonError, httpError } from '$lib/server/room.js';
 import { stateView } from '$lib/server/gamelogic.js';
 import { applyHit, resolve } from '$lib/shared/hidefire.js';
 
@@ -19,7 +19,12 @@ export const prerender = false;
  */
 export async function POST({ params, cookies, request }) {
 	try {
-		const { uid, room } = await requireMember(cookies, params.id);
+		// Cached: kills + the end-of-round timeout poke can arrive from up to 8
+		// players at once. requireMember does two uncached Odoo reads per call, which
+		// at that burst rate-limits the whole app (429). The 750ms room-snapshot
+		// cache collapses the concurrent room+members reads; the STATE overlay is
+		// still fresh (state:true default), so applyHit works on the real board.
+		const { uid, room } = await requireMemberCached(cookies, params.id);
 		const state = parseState(room);
 		const game = state?.game;
 		if (!game || game.type !== 'hidefire') throw httpError(409, 'No Hide & Fire game in progress');

@@ -22,7 +22,7 @@
 	// is what makes a changed export actually reload. Dev: always fresh. Prod: bump
 	// on any redeploy that re-exports the game. // ponytail: manual bump; wire to a
 	// build hash if redeploys get frequent.
-	const ENGINE_VERSION = import.meta.env.DEV ? `dev-${Date.now()}` : 'v10';
+	const ENGINE_VERSION = import.meta.env.DEV ? `dev-${Date.now()}` : 'v12';
 	const ENGINE_BASE = `/godot/hidefire/${ENGINE_VERSION}`;
 	// Godot's single-threaded web export dodges SharedArrayBuffer / COOP-COEP.
 	const SEND_HZ = 15;
@@ -63,7 +63,15 @@
 	// One player drives the timeout resolve (solo: always you).
 	const isTimekeeper = $derived(solo || Number(g?.players?.[0]) === Number(me));
 
+	// Death recap: I'm down but the round is still going -> spectate with a banner
+	// showing how many of each side are still standing.
+	const aliveOf = (team) =>
+		(g?.players ?? []).filter((u) => g?.teams?.[u] === team && g?.alive?.[u]).length;
+	const iAmDead = $derived(!!g && me != null && g?.alive && g.alive[me] === false && !result);
+	const enemyTeam = $derived(myTeam === 'A' ? 'B' : 'A');
+
 	let lastSent = 0;
+	let timeoutPoked = false; // timekeeper fired the end-of-round resolve for THIS round
 
 	// --- bridge -------------------------------------------------------------
 	// Godot -> JS works by calling window.* directly (onReady/onTick/onHit).
@@ -209,8 +217,12 @@
 					resolve(localGame, Date.now());
 					localGame = { ...localGame };
 					pushRound();
-				} else {
-					store.post('hidefire/hit', {}).catch(() => {});
+				} else if (!timeoutPoked) {
+					// Fire the timeout resolve ONCE, not every 250ms — otherwise the
+					// timekeeper hammers the (Odoo-backed) hit route for the ~seconds it
+					// takes the result to propagate back, which rate-limits the app (429).
+					timeoutPoked = true;
+					store.post('hidefire/hit', {}).catch(() => { timeoutPoked = false; });
 				}
 			}
 		}, 250);
@@ -227,6 +239,12 @@
 	// Re-push the round to Godot whenever the persisted round state changes.
 	$effect(() => {
 		if (status === 'running') pushRound();
+	});
+
+	// A fresh round (new endsAt) re-arms the one-shot timeout poke.
+	$effect(() => {
+		g?.endsAt;
+		timeoutPoked = false;
 	});
 
 	// Hold the win overlay back so the death effects are visible first.
@@ -377,6 +395,17 @@
 			</div>
 		{/if}
 
+		{#if iAmDead && status === 'running'}
+			<div class="recap" aria-live="polite">
+				<h3>💀 You're down!</h3>
+				<p>
+					{myTeam ? `Team ${myTeam}` : 'Your team'}: {aliveOf(myTeam)} left ·
+					Team {enemyTeam}: {aliveOf(enemyTeam)} left
+				</p>
+				<small>Spectating — wait for the round to end.</small>
+			</div>
+		{/if}
+
 		{#if resultShown}
 			<div class="overlay result">
 				<h2>
@@ -436,6 +465,19 @@
 		background: rgba(11, 17, 32, 0.85); color: #e5e7eb; padding: 16px;
 	}
 	.overlay.result h2 { margin: 0; }
+
+	/* Death recap: a bottom banner, NOT a full cover, so the fallen death-cam view
+	   stays visible behind it. */
+	.recap {
+		position: absolute; left: 0; right: 0; bottom: 0; z-index: 6;
+		display: flex; flex-direction: column; align-items: center; gap: 2px;
+		padding: 10px 12px; text-align: center;
+		background: linear-gradient(transparent, rgba(120, 0, 0, 0.55) 40%, rgba(80, 0, 0, 0.85));
+		color: #fee2e2; pointer-events: none;
+	}
+	.recap h3 { margin: 0; font-size: 1.05rem; }
+	.recap p { margin: 0; font-size: 0.85rem; }
+	.recap small { color: #fca5a5; }
 	.overlay button {
 		padding: 8px 16px; border: 0; border-radius: 8px; background: #7c3aed;
 		color: #fff; font-weight: 700; cursor: pointer;

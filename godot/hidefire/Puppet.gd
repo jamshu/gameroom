@@ -7,10 +7,12 @@ extends CharacterBody3D
 var uid := 0
 var arena
 var body_mat: StandardMaterial3D
-var gun_pivot: Node3D              # holds the shotgun; tilts with the peer's pitch
+var body_node: Node3D             # the humanoid mesh; laid flat as a corpse on death
+var gun_pivot: Node3D             # holds the shotgun; tilts with the peer's pitch
 var _target := Vector3.ZERO
 var _has_target := false
 var _alive := true
+var _downed := false              # corpse already laid down (idempotent guard)
 
 func setup(u: int, main) -> void:
 	uid = u
@@ -27,7 +29,8 @@ func setup(u: int, main) -> void:
 	add_child(col)
 
 	body_mat = StandardMaterial3D.new()
-	add_child(CharacterMesh.make(body_mat))
+	body_node = CharacterMesh.make(body_mat)
+	add_child(body_node)
 
 	# Visible shotgun held in front of the body at the right hand / chest height.
 	# On its own pivot so `pitch` can tilt the barrel up/down like real aim. Uses
@@ -57,19 +60,43 @@ func apply_state(d: Dictionary) -> void:
 		gun_pivot.rotation.x = float(d["pitch"])
 	if d.has("camo") and body_mat:
 		body_mat.albedo_color = Color.html(str(d["camo"]))
-	# Death spray when a peer flips from alive to dead (from the round state).
+	# Death (peer flips alive -> dead) or revive (new round) from the round state.
 	var now_alive := bool(d.get("alive", true))
-	if _alive and not now_alive and _has_target and arena:
-		arena.death_fx(global_position + Vector3(0, 1, 0))
+	if _alive and not now_alive and _has_target:
+		_go_down()
+	elif not _alive and now_alive:
+		_stand_up()
 	_alive = now_alive
-	# Only show once we know where it is AND it's alive.
-	visible = _has_target and now_alive
+	# Show once placed — a corpse stays visible so its killer can see the body.
+	visible = _has_target
 
 ## Shot by the local player — immediate feedback before the round state confirms.
 func on_shot() -> void:
+	_go_down()
+
+## Collapse into a corpse: death spray, then lay the body (and gun) flat. Idempotent.
+func _go_down() -> void:
+	if _downed:
+		return
+	_downed = true
 	if arena:
 		arena.death_fx(global_position + Vector3(0, 1, 0))
-	visible = false
+	var tw := create_tween()
+	tw.set_trans(Tween.TRANS_SINE)
+	if body_node:
+		tw.tween_property(body_node, "rotation:x", deg_to_rad(-88), 0.5)
+		tw.parallel().tween_property(body_node, "position:y", 0.15, 0.5)
+	if gun_pivot:
+		tw.parallel().tween_property(gun_pivot, "position:y", 0.2, 0.5)
+
+## Stand back up for a fresh round.
+func _stand_up() -> void:
+	_downed = false
+	if body_node:
+		body_node.rotation.x = 0.0
+		body_node.position.y = 0.0
+	if gun_pivot:
+		gun_pivot.position.y = 1.0
 
 func _physics_process(delta: float) -> void:
 	if _has_target:

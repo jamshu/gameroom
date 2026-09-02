@@ -1,5 +1,5 @@
 import { json } from '@sveltejs/kit';
-import { requireMember, parseState, writeState, appendEvent, jsonError, httpError } from '$lib/server/room.js';
+import { requireMemberCached, parseState, writeState, appendEvent, jsonError, httpError } from '$lib/server/room.js';
 import { stateView } from '$lib/server/gamelogic.js';
 import { nextRound } from '$lib/shared/hidefire.js';
 
@@ -15,7 +15,10 @@ export const prerender = false;
  */
 export async function POST({ params, cookies }) {
 	try {
-		const { uid, room } = await requireMember(cookies, params.id);
+		// Cached read (state overlay stays fresh): several players may tap "Next
+		// round" at once — the guard on `result` dedupes, but the uncached auth reads
+		// would still each hit Odoo twice. Mirror of the hit route.
+		const { uid, room } = await requireMemberCached(cookies, params.id);
 		const state = parseState(room);
 		const game = state?.game;
 		if (!game || game.type !== 'hidefire') throw httpError(409, 'No Hide & Fire game in progress');
