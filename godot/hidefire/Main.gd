@@ -382,23 +382,32 @@ func _apply_round(json: String) -> void:
 	if player:
 		player.set_meta("uid", my_uid)
 
+	var alive_map = data.get("alive", {})
+	var me_should_live := typeof(alive_map) == TYPE_DICTIONARY \
+			and alive_map.has(str(my_uid)) and bool(alive_map[str(my_uid)])
+
 	# Respawn at the start of a live round, at a fresh randomized spot (never where
-	# you fell). Everyone can camo now — both teams hide AND fire.
+	# you fell). Everyone can camo — both teams hide AND fire.
+	#
+	# `need_respawn` is fresh (a new clock) OR a SAFETY NET: the authoritative state
+	# says I'm alive but I'm still lying dead or frozen from last round. The net is
+	# what actually guarantees the loser gets up and the winner unfreezes even if
+	# the new-round clock detection ever misses.
+	var need_respawn := false
 	if not round_over and new_team != "":
 		my_role = new_team
-		if fresh and player:
+		need_respawn = fresh or (player != null and me_should_live and (not player.alive or player.frozen))
+		if need_respawn and player:
 			player.spawn_at(_team_spawn(new_team, slot))
 		if player:
 			player.can_camo = true
 
-	# Death / round-over from the authoritative round state. Skip on a fresh round —
-	# spawn_at just revived us and the new alive-map is all true.
-	var alive_map = data.get("alive", {})
-	if player and not fresh:
+	# Death / round-over from the authoritative round state. Skip when we just
+	# respawned — spawn_at revived us and the new alive-map is all true.
+	if player and not need_respawn:
 		if round_over:
 			player.frozen = true
-		elif typeof(alive_map) == TYPE_DICTIONARY \
-				and alive_map.has(str(my_uid)) and not bool(alive_map[str(my_uid)]):
+		elif not me_should_live and typeof(alive_map) == TYPE_DICTIONARY and alive_map.has(str(my_uid)):
 			player.die()
 
 	# Solo practice: spawn / update the AI opponent.

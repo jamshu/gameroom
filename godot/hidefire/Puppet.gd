@@ -60,12 +60,14 @@ func apply_state(d: Dictionary) -> void:
 		gun_pivot.rotation.x = float(d["pitch"])
 	if d.has("camo") and body_mat:
 		body_mat.albedo_color = Color.html(str(d["camo"]))
-	# Death (peer flips alive -> dead) or revive (new round) from the round state.
+	# Death / revive from the peer's relayed alive flag. Keyed on `_downed` (the real
+	# corpse state) rather than `_alive`, because on_shot() can lay the body down
+	# before the alive flag catches up — so a revived peer ALWAYS stands back up.
 	var now_alive := bool(d.get("alive", true))
-	if _alive and not now_alive and _has_target:
-		_go_down()
-	elif not _alive and now_alive:
+	if now_alive and _downed:
 		_stand_up()
+	elif not now_alive and not _downed and _has_target:
+		_go_down()
 	_alive = now_alive
 	# Show once placed — a corpse stays visible so its killer can see the body.
 	visible = _has_target
