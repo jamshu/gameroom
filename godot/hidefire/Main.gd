@@ -22,10 +22,13 @@ const SPAWNS := {
 	"hider": Vector3(-26, 1, -26), "seeker": Vector3(26, 1, 26)
 }
 
-# Fan up to four teammates out from a corner so they don't spawn inside each other.
+# A spawn point in the team's corner: fan teammates out by slot so they don't
+# stack, plus a random jitter so you never respawn on the exact spot you died.
 func _team_spawn(key: String, slot: int) -> Vector3:
 	var base = SPAWNS.get(key, Vector3(16, 1, 16))
-	return base + Vector3(float(slot % 2) * 3.0, 0.0, float((slot / 2) % 2) * 3.0)
+	var fan := Vector3(float(slot % 2) * 3.0, 0.0, float((slot / 2) % 2) * 3.0)
+	var jitter := Vector3(randf_range(-3.0, 3.0), 0.0, randf_range(-3.0, 3.0))
+	return base + fan + jitter
 
 var player: CharacterBody3D
 var puppets := {}                 # uid -> Puppet
@@ -33,6 +36,7 @@ var bot                           # solo AI opponent, or null
 var my_uid := 0
 var my_role := ""
 var round_over := false
+var _round_start := 0.0            # endsAt of the round we last spawned for (new-round detector)
 
 var _tick_accum := 0.0
 var _last_round := ""
@@ -361,27 +365,36 @@ func _apply_round(json: String) -> void:
 	if new_team == "":
 		new_team = str(data.get("role", ""))
 	var slot := int(data.get("slot", 0))
+	var ends_at := float(data.get("endsAt", 0))
 	my_uid = int(data.get("you", 0))
 	round_over = data.get("result", null) != null
+
+	# A NEW round is a new endsAt. Teams no longer swap each round (deathmatch), so
+	# the round can only be detected by its clock — NOT by the team changing. This
+	# is the fix for "winner stays frozen / loser never gets up": every fresh round
+	# we revive, unfreeze and reposition, regardless of team.
+	var fresh := (not round_over) and new_team != "" and ends_at != _round_start
+	if fresh:
+		_round_start = ends_at
 
 	# Stamp our identity so a shooter's ray names the right victim (and the bot
 	# knows which body is the human).
 	if player:
 		player.set_meta("uid", my_uid)
 
-	# (Re)spawn by team at the start of a live round. Everyone can camo now — both
-	# teams hide AND fire.
+	# Respawn at the start of a live round, at a fresh randomized spot (never where
+	# you fell). Everyone can camo now — both teams hide AND fire.
 	if not round_over and new_team != "":
-		if new_team != my_role:
-			my_role = new_team
-			if player:
-				player.spawn_at(_team_spawn(new_team, slot))
+		my_role = new_team
+		if fresh and player:
+			player.spawn_at(_team_spawn(new_team, slot))
 		if player:
 			player.can_camo = true
 
-	# Death / round-over from the authoritative round state.
+	# Death / round-over from the authoritative round state. Skip on a fresh round —
+	# spawn_at just revived us and the new alive-map is all true.
 	var alive_map = data.get("alive", {})
-	if player:
+	if player and not fresh:
 		if round_over:
 			player.frozen = true
 		elif typeof(alive_map) == TYPE_DICTIONARY \
@@ -391,16 +404,17 @@ func _apply_round(json: String) -> void:
 	# Solo practice: spawn / update the AI opponent.
 	var bot_info = data.get("bot", null)
 	if bool(data.get("solo", false)) and typeof(bot_info) == TYPE_DICTIONARY:
-		_ensure_bot(int(bot_info.get("uid", 0)), str(bot_info.get("role", "")), round_over)
+		_ensure_bot(int(bot_info.get("uid", 0)), str(bot_info.get("role", "")), round_over, fresh)
 
-## Create the bot once, then re-seat it only when its role changes (round swap).
-func _ensure_bot(buid: int, brole: String, over: bool) -> void:
+## Create the bot once, then re-seat it at the start of every fresh round so it
+## revives and moves to a new spot too.
+func _ensure_bot(buid: int, brole: String, over: bool, fresh: bool) -> void:
 	if bot == null:
 		bot = CharacterBody3D.new()
 		bot.set_script(BotScript)
 		add_child(bot)
 		bot.setup(buid, self, player)
-		bot.begin_round(brole, SPAWNS.get(brole, Vector3(16, 1, 16)))
-	elif brole != bot.role:
-		bot.begin_round(brole, SPAWNS.get(brole, Vector3(16, 1, 16)))
+		bot.begin_round(brole, _team_spawn(brole, 1))
+	elif fresh:
+		bot.begin_round(brole, _team_spawn(brole, 1))
 	bot.frozen = over
