@@ -59,29 +59,12 @@ func _ready() -> void:
 	add_child(camera)
 	camera.make_current()
 
-	# First-person gun viewmodel: a child of the camera so it's always in view.
-	# First-person gun viewmodel: a child of the camera so it's always in view.
-	# Raised + KEEP_HEIGHT camera so it isn't cropped at the bottom on the (smaller)
-	# non-fullscreen 16:9 stage.
-	var gmat := StandardMaterial3D.new()
-	gmat.albedo_color = Color(0.13, 0.13, 0.15)
-	var gun := Node3D.new()
-	gun.position = Vector3(0.18, -0.13, -0.4)
+	# First-person gun viewmodel: a shotgun, child of the camera so it's always in
+	# view. Raised + KEEP_HEIGHT camera so it isn't cropped at the bottom on the
+	# (smaller) non-fullscreen 16:9 stage. Same model the opponent puppet holds.
+	var gun := CharacterMesh.make_shotgun()
+	gun.position = Vector3(0.18, -0.16, -0.1)
 	camera.add_child(gun)
-	var barrel := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = Vector3(0.07, 0.07, 0.5)
-	bm.material = gmat
-	barrel.mesh = bm
-	barrel.position = Vector3(0, 0, -0.2)
-	gun.add_child(barrel)
-	var grip := MeshInstance3D.new()
-	var gpm := BoxMesh.new()
-	gpm.size = Vector3(0.07, 0.18, 0.12)
-	gpm.material = gmat
-	grip.mesh = gpm
-	grip.position = Vector3(0, -0.12, 0.02)
-	gun.add_child(grip)
 
 	# Do NOT capture the mouse here: browsers reject pointer lock without a user
 	# gesture. The first click (fire branch) captures it instead — standard for a
@@ -228,9 +211,12 @@ func _fire(screen_pos = null) -> void:
 		from = camera.project_ray_origin(screen_pos)
 		dir = camera.project_ray_normal(screen_pos)
 	else:
-		# Centre crosshair.
-		from = camera.global_position
-		dir = -camera.global_transform.basis.z
+		# Locked: shoot through the EXACT viewport centre where the crosshair sits,
+		# so the shot lands pinpoint under the dot at any fov/aspect (projecting the
+		# centre pixel is exact; camera.basis.z drifts with KEEP_HEIGHT framing).
+		var c := get_viewport().get_visible_rect().size * 0.5
+		from = camera.project_ray_origin(c)
+		dir = camera.project_ray_normal(c)
 	var to := from + dir * 100.0
 	var q := PhysicsRayQueryParameters3D.create(from, to)
 	q.exclude = [self]
@@ -254,7 +240,7 @@ func _muzzle_flash() -> void:
 	if camera == null:
 		return
 	var l := OmniLight3D.new()
-	l.position = Vector3(0.32, -0.26, -0.9)
+	l.position = Vector3(0.18, -0.14, -1.0) # at the shotgun muzzle
 	l.light_color = Color(1.0, 0.85, 0.45)
 	l.light_energy = 4.0
 	l.omni_range = 4.0

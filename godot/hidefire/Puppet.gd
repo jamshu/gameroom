@@ -7,6 +7,7 @@ extends CharacterBody3D
 var uid := 0
 var arena
 var body_mat: StandardMaterial3D
+var gun_pivot: Node3D              # holds the shotgun; tilts with the peer's pitch
 var _target := Vector3.ZERO
 var _has_target := false
 var _alive := true
@@ -27,6 +28,16 @@ func setup(u: int, main) -> void:
 
 	body_mat = StandardMaterial3D.new()
 	add_child(CharacterMesh.make(body_mat))
+
+	# Visible shotgun held in front of the body at the right hand / chest height.
+	# On its own pivot so `pitch` can tilt the barrel up/down like real aim. Uses
+	# the gun's own dark material (not body_mat), so it's readable even when the
+	# peer is fully camouflaged.
+	gun_pivot = Node3D.new()
+	gun_pivot.position = Vector3(0.22, 1.0, -0.15)
+	gun_pivot.add_child(CharacterMesh.make_shotgun())
+	add_child(gun_pivot)
+
 	visible = false  # stays hidden until the first position arrives
 
 func apply_state(d: Dictionary) -> void:
@@ -40,6 +51,10 @@ func apply_state(d: Dictionary) -> void:
 		_has_target = true
 	if d.has("yaw"):
 		rotation.y = float(d["yaw"])
+	# Tilt the held gun up/down to match the peer's real aim (yaw already turns the
+	# whole body). Mirrors Player's camera.rotation.x = _pitch.
+	if d.has("pitch") and gun_pivot:
+		gun_pivot.rotation.x = float(d["pitch"])
 	if d.has("camo") and body_mat:
 		body_mat.albedo_color = Color.html(str(d["camo"]))
 	# Death spray when a peer flips from alive to dead (from the round state).
