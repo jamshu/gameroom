@@ -288,10 +288,10 @@ func spawn_explosion(pos: Vector3) -> void:
 	get_tree().create_timer(0.12).timeout.connect(flash.queue_free)
 	get_tree().create_timer(fx.lifetime + 0.2).timeout.connect(fx.queue_free)
 
-## Convenience: the full death FX at a body position.
+## Death FX: a blood spill only — a big spray plus a spreading floor pool. No
+## explosion, no corpse.
 func death_fx(pos: Vector3) -> void:
 	spawn_blood(pos, true)
-	spawn_explosion(pos)
 	spawn_blood_pool(pos)
 
 ## A visible tracer round travelling muzzle -> impact. The hit is already resolved

@@ -152,8 +152,8 @@ func _apply_pose_visual() -> void:
 	if camera:
 		camera.position.y = 1.0 if posed else 1.5
 
-## Marked dead by the round state (someone shot us): stop input, drop to the floor
-## and spectate from a fallen death-cam.
+## Marked dead by the round state (someone shot us): blood spill, stop input, and
+## spectate in place until the next round. No lay-down.
 func die() -> void:
 	if not alive:
 		return
@@ -162,23 +162,11 @@ func die() -> void:
 	velocity = Vector3.ZERO
 	if arena:
 		arena.death_fx(global_position + Vector3(0, 1, 0))
-	_fall_camera()
 	# Red hit-flash + death recap in the DOM overlay.
 	if OS.has_feature("web"):
 		var w = JavaScriptBridge.get_interface("window")
 		if w and w.hidefireOnDeath:
 			w.hidefireOnDeath()
-
-## Death cam: sink to the ground and tip over, so being hit reads as collapsing
-## rather than freezing on your feet.
-func _fall_camera() -> void:
-	if camera == null:
-		return
-	var tw := create_tween()
-	tw.set_trans(Tween.TRANS_SINE)
-	tw.tween_property(camera, "position:y", 0.35, 0.6)
-	tw.parallel().tween_property(camera, "rotation:z", 1.2, 0.6)  # tip sideways
-	tw.parallel().tween_property(camera, "rotation:x", 0.25, 0.6) # look up from floor
 
 func _physics_process(delta: float) -> void:
 	if frozen or not alive:
