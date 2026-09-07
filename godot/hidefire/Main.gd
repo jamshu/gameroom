@@ -24,11 +24,19 @@ const SPAWNS := {
 
 # A spawn point in the team's corner: fan teammates out by slot so they don't
 # stack, plus a random jitter so you never respawn on the exact spot you died.
+# The fan points TOWARD the arena centre — a blind +x/+z shoved team B (the +26/+26
+# corner) past the wall at ±30, so they respawned stuck in geometry. Clamped inside
+# the walls as a hard guarantee.
 func _team_spawn(key: String, slot: int) -> Vector3:
 	var base = SPAWNS.get(key, Vector3(16, 1, 16))
-	var fan := Vector3(float(slot % 2) * 3.0, 0.0, float((slot / 2) % 2) * 3.0)
+	var toward := Vector3(-signf(base.x), 0.0, -signf(base.z))
+	var fan := Vector3(toward.x * float(slot % 2) * 3.0, 0.0, toward.z * float((slot / 2) % 2) * 3.0)
 	var jitter := Vector3(randf_range(-3.0, 3.0), 0.0, randf_range(-3.0, 3.0))
-	return base + fan + jitter
+	var pos := base + fan + jitter
+	pos.x = clampf(pos.x, -27.0, 27.0)  # walls at ±30; stay well inside
+	pos.z = clampf(pos.z, -27.0, 27.0)
+	pos.y = 1.0
+	return pos
 
 var player: CharacterBody3D
 var puppets := {}                 # uid -> Puppet
