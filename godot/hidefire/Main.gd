@@ -28,7 +28,7 @@ const SPAWNS := {
 # corner) past the wall at ±30, so they respawned stuck in geometry. Clamped inside
 # the walls as a hard guarantee.
 func _team_spawn(key: String, slot: int) -> Vector3:
-	var base = SPAWNS.get(key, Vector3(16, 1, 16))
+	var base: Vector3 = SPAWNS.get(key, Vector3(16, 1, 16))
 	var toward := Vector3(-signf(base.x), 0.0, -signf(base.z))
 	var fan := Vector3(toward.x * float(slot % 2) * 3.0, 0.0, toward.z * float((slot / 2) % 2) * 3.0)
 	var jitter := Vector3(randf_range(-3.0, 3.0), 0.0, randf_range(-3.0, 3.0))
