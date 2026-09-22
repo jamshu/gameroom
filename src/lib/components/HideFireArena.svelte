@@ -444,7 +444,14 @@
 	.clock { font-variant-numeric: tabular-nums; font-weight: 700; margin-left: auto; }
 	.clock.low { color: #f87171; }
 	.score { display: flex; gap: 12px; }
-	.stage { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: 8px; overflow: hidden; }
+	/* touch-action: none — the browser must NOT claim horizontal drags over the
+	   game (pan / iOS edge-swipe-back), which was eating strafe + look-turn on
+	   phones. overscroll-behavior stops the pull-to-refresh / rubber-band too. */
+	.stage {
+		position: relative; width: 100%; aspect-ratio: 16 / 9; background: #000;
+		border-radius: 8px; overflow: hidden;
+		touch-action: none; overscroll-behavior: none;
+	}
 	/* CSS "fullscreen": cover the whole viewport, works on every device. The canvas
 	   keeps a 16:9 box centred (no distortion, no half-screen letterbox). */
 	.stage.expanded {
@@ -452,7 +459,7 @@
 		width: 100vw; height: 100vh; aspect-ratio: auto; border-radius: 0;
 		display: grid; place-items: center;
 	}
-	.godot { width: 100%; height: 100%; display: block; outline: none; }
+	.godot { width: 100%; height: 100%; display: block; outline: none; touch-action: none; }
 	.stage.expanded .godot {
 		width: auto; height: auto; max-width: 100vw; max-height: 100vh; aspect-ratio: 16 / 9;
 	}
